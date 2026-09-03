@@ -1,0 +1,97 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Test / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.tox/
+.mypy_cache/
+.ruff_cache/
+.pyright_cache/
+.hypothesis/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Project-specific ---
+
+# Internal scratch / log directory — not part of the product
+.remember/
+
+# FFmpeg source tree + build outputs (rebuildable from scripts/build_ffmpeg.sh)
+vendor/ffmpeg/
+vendor/ffmpeg-build/
+
+# Valkey data dir (local dev only)
+var/valkey/
+
+# Job worker runtime data (artifacts, logs) — regenerated on every run
+var/jobs/
+var/rq/
+
+# Downloaded / cached assets — re-downloaded from documented sources
+assets/salamander/
+assets/bravura/
+
+# Downloaded models (Ollama + others)
+assets/models/
+
+# Build / packaging artefacts
+*.dmg
+*.pkg
+*.AppImage
+*.deb
+*.rpm
+dist-build/
+
+# Environment files (NEVER commit API keys)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Secrets that may have ended up on disk
+secrets/
+*.pem
+*.key
+
+# OS scratch
+*.log
+logs/

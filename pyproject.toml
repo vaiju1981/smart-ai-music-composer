@@ -1,0 +1,155 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saimc"
+version = "0.1.0"
+description = "Smart AI Music Composer — prompt-driven music composition with auditable, license-clean output."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Smart AI Music Composer contributors" }]
+keywords = ["music", "composition", "ollama", "music21"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Music Composition",
+]
+dependencies = [
+    "music21==9.5.0",
+    "pydantic==2.9.2",
+    "FastAPI==0.115.5",
+    "uvicorn[standard]==0.32.0",
+    "ollama==0.4.4",
+    "pydub==0.25.1",
+    "moviepy==1.0.3",
+    "rq==2.0.0",
+    "valkey-glide==1.3.1",
+    "httpx==0.27.2",
+    "typer==0.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8.0",
+    "mypy==1.13.0",
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "pytest-asyncio==0.24.0",
+    "types-requests",
+]
+render = [
+    "Pillow==11.0.0",
+    "mido==1.3.0",
+]
+benchmark = [
+    "tenacity==9.0.0",
+]
+
+[project.scripts]
+saimc-benchmark = "saimc.benchmark_cli:main"
+saimc-jobs = "saimc.jobs.worker:main"
+saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
+
+[project.urls]
+Homepage = "https://github.com/example/smart-ai-music-composer"
+Documentation = "https://github.com/example/smart-ai-music-composer/blob/main/docs/roadmap.md"
+Issues = "https://github.com/example/smart-ai-music-composer/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "C4",  # flake8-comprehensions
+    "PT",  # flake8-pytest-style
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501", # line-too-long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B008", "PT011"]
+"src/saimc/llm/**/*.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["music21.*", "moviepy.*", "pydub.*", "rq.*", "ollama.*", "valkey_glide.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+    "--tb=short",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:music21",
+    "ignore::DeprecationWarning:moviepy",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/saimc"]
+omit = ["src/saimc/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+fail_under = 80
