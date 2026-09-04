@@ -617,6 +617,100 @@ class TestDedicatedFontPresets:
         assert "Wetthasinghe_Harmonium.sf2" in str(exc_info.value)
 
 
+class TestAttributionTags:
+    """OGG metadata tags carry the rendered font's license (§10 #12)."""
+
+    def test_default_is_salamander(self) -> None:
+        from saimc.render.attribution import audio_metadata_tags
+
+        tags = audio_metadata_tags()
+        assert tags["LIBRARY"] == "Salamander Grand Piano"
+        assert tags["LICENSE"] == "CC BY 3.0"
+
+    def test_dedicated_fonts_carry_their_own_license(self) -> None:
+        from saimc.render.attribution import audio_metadata_tags
+
+        boston = audio_metadata_tags("MFA_Boston_1.sf2")
+        assert boston["LIBRARY"] == "MFA Boston 1"
+        assert boston["LICENSE"] == "CC BY 3.0"
+        sitar = audio_metadata_tags("105-Sitar.sf2")
+        assert sitar["LICENSE"] == "Public domain"
+        harmonium = audio_metadata_tags("Wetthasinghe_Harmonium.sf2")
+        assert harmonium["LICENSE"] == "CC BY 4.0"
+
+    def test_unknown_font_is_unverified_not_borrowed(self) -> None:
+        from saimc.render.attribution import audio_metadata_tags
+
+        tags = audio_metadata_tags("Mystery_Kit.sf2")
+        assert tags["LIBRARY"] == "Mystery_Kit.sf2"
+        assert tags["LICENSE"] == "unverified"
+
+
+class TestBostonFontPresets:
+    """MFA Boston 1's preset layout is its own — (bank, preset) pairs."""
+
+    @staticmethod
+    def _boston_programs(instrument: str) -> list[tuple[bool, int]]:
+        """(is_bank_select, value) events emitted for `instrument`."""
+        boston = Path("./assets/soundfonts/MFA_Boston_1.sf2")
+        smf = build_smf(
+            TestDedicatedFontPresets._plan(),
+            bpm=120.0,
+            voice_instruments={0: instrument},
+            soundfont_path=boston,
+        )
+        events: list[tuple[bool, int]] = []
+        for m in smf.tracks[0]:
+            if m.type == "control_change" and m.control == 0 and m.channel == 0:
+                events.append((True, m.value))  # bank select CC0
+            elif m.type == "program_change" and m.channel == 0:
+                events.append((False, m.program))
+        return events
+
+    def test_font_only_instruments_select_their_boston_preset(self) -> None:
+        from saimc.render.instruments import preset_for_instrument
+
+        boston = Path("./assets/soundfonts/MFA_Boston_1.sf2")
+        expected = {
+            "bansuri": (0, 77),
+            "sarangi": (1, 110),
+            "rudra_veena": (1, 104),
+            "sarasvati_veena": (2, 104),
+            "qanoon": (1, 107),
+            "ud": (3, 105),
+            "kora": (8, 105),
+        }
+        for instrument, pair in expected.items():
+            assert preset_for_instrument(instrument, boston) == pair
+            assert preset_for_instrument(instrument, Path("./assets/FluidR3_GM.sf2")) is None
+
+    def test_bank_select_precedes_program_change_for_nonzero_banks(self) -> None:
+        # sarangi lives in bank 1: a CC0 bank select must precede the
+        # program change, and ud (bank 3, preset 105) selects program 105.
+        sarangi = self._boston_programs("sarangi")
+        assert sarangi == [(True, 1), (False, 110)]
+        ud = self._boston_programs("ud")
+        assert ud == [(True, 3), (False, 105)]
+
+    def test_bank_zero_instruments_get_program_change_only(self) -> None:
+        bansuri = self._boston_programs("bansuri")
+        assert bansuri == [(False, 77)]
+        koto = self._boston_programs("koto")
+        assert koto == [(False, 107)]  # Boston's koto, not GM 107
+
+    def test_gm_backed_upgrade_falls_back_to_gm_without_boston(self, tmp_path: Path) -> None:
+        gm = tmp_path / "FluidR3_GM.sf2"
+        gm.write_bytes(b"SF2")
+        smf = build_smf(
+            TestDedicatedFontPresets._plan(),
+            bpm=120.0,
+            voice_instruments={0: "shamisen"},
+            soundfont_path=gm,
+        )
+        programs = [m.program for m in smf.tracks[0] if m.type == "program_change"]
+        assert programs == [106]  # GM shamisen
+
+
 class TestInstrumentRegistry:
     def test_all_programs_are_valid_gm_numbers(self) -> None:
         from saimc.render.instruments import INSTRUMENT_PROGRAMS

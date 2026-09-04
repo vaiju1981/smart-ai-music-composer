@@ -68,10 +68,11 @@ FLUIDR3: _FluidR3Spec = {
 # of what you placed and reports it for THIRD_PARTY_NOTICES.md. No
 # license file ships with these — the license URL is the attribution.
 MANUAL_FONTS: dict[str, dict[str, str]] = {
-    "mfa_boston_1.sf2": {
+    "MFA_Boston_1.sf2": {
         "page": "https://musical-artifacts.com/artifacts/3593",
         "license": "CC-BY 3.0",
         "covers": "bansuri, sarangi, rudra veena, sarasvati veena, koto, shamisen, ud, qanoon, kora",
+        "sha256": "14cd3e4a6c413468e30ec920f2ef1d17375f6f6d3b6f98b1c19358423d287118",
     },
     "105-Sitar.sf2": {
         "page": "https://musical-artifacts.com/artifacts/3847",

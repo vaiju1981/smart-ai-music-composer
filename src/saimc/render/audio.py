@@ -437,12 +437,14 @@ def encode_opus(
     ffmpeg_bin: str | None = None,
     bitrate_kbps: int = 128,
     timeout_s: float = DEFAULT_FFMPEG_TIMEOUT_S,
+    soundfont_name: str | None = None,
 ) -> tuple[str, str, str]:
     """Encode WAV -> OGG Opus via the audited ffmpeg binary.
 
     Returns (version, build_sha, configuration_line) for the manifest
-    toolchain block. The OGG carries the Salamander attribution as
-    Vorbis comments (§10 #12).
+    toolchain block. The OGG carries the rendered font's attribution as
+    Vorbis comments (§10 #12); `soundfont_name` picks which attribution
+    record to embed (None keeps the Salamander default).
     """
     bin_path = find_ffmpeg(ffmpeg_bin)
     audit = audit_ffmpeg(bin_path)
@@ -466,7 +468,7 @@ def encode_opus(
         "-vbr",
         "on",
     ]
-    for tag, value in audio_metadata_tags().items():
+    for tag, value in audio_metadata_tags(soundfont_name).items():
         cmd += ["-metadata", f"{tag}={value}"]
     cmd.append(str(out_ogg_path))
     t0 = time.perf_counter()
@@ -551,6 +553,7 @@ def render_audio(
         ogg_path,
         ffmpeg_bin=ffmpeg_bin,
         timeout_s=ffmpeg_timeout_s,
+        soundfont_name=soundfont_path.name,
     )
 
     primary_sha = _hash_file(wav_path)

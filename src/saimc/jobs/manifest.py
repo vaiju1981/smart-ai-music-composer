@@ -178,11 +178,7 @@ def emit_manifest(job: Job, jobs_root: Path) -> Path:
 
     from saimc.compose.serialization import read_engine_output
     from saimc.render.attribution import (
-        SOUNDFONT_LICENSE,
-        SOUNDFONT_NAME,
-        SOUNDFONT_NOTICE_PATH,
-        SOUNDFONT_SOURCE_URL,
-        SOUNDFONT_VERSION,
+        attribution_for_soundfont,
         license_obligations,
     )
 
@@ -238,13 +234,17 @@ def emit_manifest(job: Job, jobs_root: Path) -> Path:
     audio_record = job.artifacts.get("audio")
     audio_tc = dict(audio_record.toolchain) if audio_record is not None else {}
     if audio_tc:
+        # Attribute the font that actually rendered, not a default —
+        # dedicated fonts (MFA Boston 1, 105-Sitar, Wetthasinghe's
+        # Harmonium) carry their own licenses.
+        sf = attribution_for_soundfont(str(audio_tc.get("soundfont", "")))
         assets["soundfont"] = AssetRecord(
-            name=SOUNDFONT_NAME,
-            version=SOUNDFONT_VERSION,
+            name=sf.name,
+            version=sf.version,
             sha256=audio_tc.get("soundfont_sha256", ""),
-            license=SOUNDFONT_LICENSE,
-            source_url=SOUNDFONT_SOURCE_URL,
-            notice_path=SOUNDFONT_NOTICE_PATH,
+            license=sf.license,
+            source_url=sf.source_url,
+            notice_path=sf.notice_path,
         )
 
     dependencies: dict[str, str] = {}

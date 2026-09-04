@@ -133,6 +133,16 @@ class Instrument(StrEnum):
     # Dedicated-font instrument — GM has no harmonium voice; it renders
     # from Wetthasinghe's Harmonium (CC-BY 4.0) via `FONT_PRESETS`.
     HARMONIUM = "harmonium"
+    # Dedicated-font instruments — GM has no voice for any of these; they
+    # render from MFA Boston 1 (CC-BY 3.0, museum-sampled) via
+    # `FONT_PRESETS`.
+    BANSURI = "bansuri"
+    SARANGI = "sarangi"
+    RUDRA_VEENA = "rudra_veena"
+    SARASVATI_VEENA = "sarasvati_veena"
+    QANOON = "qanoon"
+    UD = "ud"
+    KORA = "kora"
 
 
 class WesternKey(StrEnum):

@@ -20,15 +20,15 @@ fetches it with a pinned sha256.
 
 Planned dedicated fonts (commercial-safe, verified licenses — see
 `scripts/download_soundfonts.py --status` for what is installed):
-- MFA Boston 1 (CC-BY 3.0, museum-sampled): bansuri, sarangi, rudra
-  veena, sarasvati veena, plus koto/shamisen/ud/qanoon/kora quality
-  upgrades. Requires per-font preset mapping, since its preset layout
-  is its own (not GM).
-Wired dedicated fonts live in `FONT_PRESETS` (105-Sitar — public
-domain — upgrades the GM sitar; Wetthasinghe's Harmonium — CC-BY 4.0 —
-adds harmonium, which GM has no voice for). Instruments with no GM
-voice and no wired font (tabla, tanpura, mridangam, ghatam) wait for
-their fonts; /meta never advertises an instrument that cannot sound.
+none currently. Wired dedicated fonts live in `FONT_PRESETS`: 105-Sitar
+(public domain — upgrades the GM sitar), Wetthasinghe's Harmonium
+(CC-BY 4.0 — adds harmonium, which GM has no voice for), and MFA Boston
+1 (CC-BY 3.0, museum-sampled — adds the bansuri/sarangi/veena/qanoon/ud/
+kora voices GM has no presets for, and upgrades GM's koto and shamisen;
+its preset layout is its own, not GM, hence the (bank, preset) pairs).
+Instruments with no GM voice and no wired font (tabla, tanpura,
+mridangam, ghatam) wait for their fonts; /meta never advertises an
+instrument that cannot sound.
 
 Voice IDs live with the score format (`saimc.compose.score`); this
 module maps a voice's instrument name to everything the audio stage
@@ -175,6 +175,13 @@ INSTRUMENT_FAMILIES: dict[str, str] = {
     "drum_set": "western",
     # Dedicated-font instruments (no GM voice)
     "harmonium": "world",
+    "bansuri": "world",
+    "sarangi": "world",
+    "rudra_veena": "world",
+    "sarasvati_veena": "world",
+    "qanoon": "world",
+    "ud": "world",
+    "kora": "world",
 }
 
 # Instruments with no GM melodic program: they render through the
@@ -193,12 +200,26 @@ SUPPORTED_INSTRUMENTS: frozenset[str] = frozenset(INSTRUMENT_PROGRAMS) | PERCUSS
 # SOUNDFONT_DIR, bank, preset). These fonts number their presets their
 # own way, so the (bank, preset) pair is what `build_smf` selects via a
 # bank-select CC0 + program_change — valid only while THAT font is the
-# one loaded. Instruments here have no GM program: sitar falls back to
-# GM 104 only while its dedicated font is absent; harmonium (GM has no
-# harmonium voice) simply needs its font present.
+# one loaded. Instruments here with no GM program (harmonium, bansuri,
+# sarangi, the veenas, qanoon, ud, kora) simply need their font present;
+# GM-backed ones (sitar, koto, shamisen) fall back to their GM program
+# when the dedicated font is absent.
 FONT_PRESETS: dict[str, tuple[str, int, int]] = {
     "sitar": ("105-Sitar.sf2", 0, 0),  # public domain, Musical Artifacts #3847
     "harmonium": ("Wetthasinghe_Harmonium.sf2", 0, 0),  # CC-BY 4.0, Musical Artifacts #1391
+    # MFA Boston 1 (CC-BY 3.0, Musical Artifacts #3593) — museum-sampled
+    # historical instruments; (bank, preset) pairs verified with
+    # scripts/sf2_presets.py.
+    "bansuri": ("MFA_Boston_1.sf2", 0, 77),  # "MFA Bansuri"
+    "sarangi": ("MFA_Boston_1.sf2", 1, 110),  # "MFA Sarangi"
+    "rudra_veena": ("MFA_Boston_1.sf2", 1, 104),  # "MFA Rudra Veena"
+    "sarasvati_veena": ("MFA_Boston_1.sf2", 2, 104),  # "MFA Sarasvati Veena"
+    "qanoon": ("MFA_Boston_1.sf2", 1, 107),  # "MFA Qanoon"
+    "ud": ("MFA_Boston_1.sf2", 3, 105),  # "MFA Ud 1"
+    "kora": ("MFA_Boston_1.sf2", 8, 105),  # "MFA Kora d0 v2"
+    # GM-backed instruments whose dedicated font beats the GM patch
+    "koto": ("MFA_Boston_1.sf2", 0, 107),  # "MFA Koto" (GM: 107)
+    "shamisen": ("MFA_Boston_1.sf2", 0, 106),  # "MFA Shamisen 1" (GM: 106)
 }
 
 SUPPORTED_INSTRUMENTS = SUPPORTED_INSTRUMENTS | frozenset(FONT_PRESETS)

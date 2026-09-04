@@ -119,6 +119,35 @@ def test_emit_manifest_from_persisted_job(tmp_path: Path) -> None:
     )
 
 
+def test_emit_manifest_attributes_the_font_that_rendered(tmp_path: Path) -> None:
+    """A dedicated-font render carries that font's license, not Salamander's."""
+    store, job = _completed_job(tmp_path)
+    job.artifacts["audio"].toolchain["soundfont"] = "MFA_Boston_1.sf2"
+    store.save(job)
+
+    emit_manifest(store.get(job.job_id), store.root)
+    payload = json.loads((store.root / job.job_id / "manifest.json").read_text(encoding="utf-8"))
+    soundfont = payload["assets"]["soundfont"]
+    assert soundfont["name"] == "MFA Boston 1"
+    assert soundfont["license"] == "CC BY 3.0"
+    assert soundfont["source_url"] == "https://musical-artifacts.com/artifacts/3593"
+    assert soundfont["notice_path"] == "THIRD_PARTY_NOTICES.md#mfa-boston-1-soundfont"
+
+
+def test_emit_manifest_never_inherits_attribution_for_unknown_fonts(tmp_path: Path) -> None:
+    """A font outside the registry shows as unverified, not as another font."""
+    store, job = _completed_job(tmp_path)
+    job.artifacts["audio"].toolchain["soundfont"] = "Mystery_Kit.sf2"
+    store.save(job)
+
+    emit_manifest(store.get(job.job_id), store.root)
+    payload = json.loads((store.root / job.job_id / "manifest.json").read_text(encoding="utf-8"))
+    soundfont = payload["assets"]["soundfont"]
+    assert soundfont["name"] == "Mystery_Kit.sf2"
+    assert soundfont["license"] == "unverified"
+    assert soundfont["source_url"] == ""
+
+
 def test_emit_manifest_records_installed_dependency_versions(tmp_path: Path) -> None:
     store, job = _completed_job(tmp_path)
     emit_manifest(job, store.root)

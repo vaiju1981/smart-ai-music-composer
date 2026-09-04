@@ -80,6 +80,23 @@ LGPL posture described here at every render.
   `FONT_PRESETS`. CC-BY attribution is carried by this file and the
   job manifest's soundfont record.
 
+## MFA Boston 1 (soundfont)
+
+- License: CC-BY 3.0 — commercial use permitted with attribution.
+- Source: Musical Artifacts artifact #3593
+  (https://musical-artifacts.com/artifacts/3593), file
+  `assets/soundfonts/MFA_Boston_1.sf2`, sha256
+  `14cd3e4a6c413468e30ec920f2ef1d17375f6f6d3b6f98b1c19358423d287118`
+  (pinned in `scripts/download_soundfonts.py`; the pin is verified by
+  `--status`).
+- Renders the `bansuri`, `sarangi`, `rudra_veena`, `sarasvati_veena`,
+  `qanoon`, `ud`, and `kora` instruments (General MIDI has no preset
+  for any of them), and upgrades the `koto` and `shamisen` over their
+  General MIDI patches. Preset selection is via `FONT_PRESETS`
+  (bank-select CC0 + program_change pairs verified with
+  `scripts/sf2_presets.py`). CC-BY attribution is carried by this file
+  and the job manifest's soundfont record.
+
 ## OpenSheetMusicDisplay (render-service)
 
 - License: BSD-3-Clause, version 2.1.2, pinned in
