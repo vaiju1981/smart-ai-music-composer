@@ -136,6 +136,11 @@ echo "${BIN_SHA256}  ffmpeg" > "${DIST_DIR_ABS}/ffmpeg.sha256"
 log "binary sha256: ${BIN_SHA256}"
 
 log "running release-gate audit"
+# The audit imports saimc, so prefer the repo venv's interpreter — a
+# bare python3 usually does not have the package installed.
+if [ -z "${SAIMC_PYTHON:-}" ] && [ -x "${REPO_ROOT}/.venv/bin/python" ]; then
+    SAIMC_PYTHON="${REPO_ROOT}/.venv/bin/python"
+fi
 SAIMC_PYTHON="${SAIMC_PYTHON:-python3}"
 "${SAIMC_PYTHON}" "${REPO_ROOT}/scripts/audit_ffmpeg.py" "${DIST_DIR_ABS}/ffmpeg" | tee "${DIST_DIR_ABS}/audit.json"
 
