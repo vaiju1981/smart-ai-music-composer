@@ -1,0 +1,146 @@
+"""Unit tests for the FastAPI job routes (no live server, no RQ)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from saimc.jobs.api import create_app
+from saimc.jobs.state import JobState
+from saimc.jobs.storage import ArtifactRecord, JobStorage
+from saimc.spec import CompositionSpec, Mood
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    app = create_app(jobs_root=tmp_path)
+    return TestClient(app)
+
+
+def _spec(**overrides) -> CompositionSpec:
+    base = {"mood": Mood.CALMING.value}
+    base.update(overrides)
+    return CompositionSpec.model_validate(base)
+
+
+class TestCreateJob:
+    def test_create_returns_202_and_job_id(self, client: TestClient) -> None:
+        resp = client.post("/jobs", json={"prompt": "calming piano music"})
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["state"] == "queued"
+        assert body["input_prompt"] == "calming piano music"
+        assert body["progress"] == 0.0
+        assert "job_id" in body
+
+    def test_empty_prompt_rejected(self, client: TestClient) -> None:
+        resp = client.post("/jobs", json={"prompt": ""})
+        assert resp.status_code == 422
+
+    def test_missing_prompt_rejected(self, client: TestClient) -> None:
+        resp = client.post("/jobs", json={})
+        assert resp.status_code == 422
+
+
+class TestCreateFromSpec:
+    def test_internal_endpoint_accepts_spec(self, client: TestClient) -> None:
+        spec = _spec()
+        resp = client.post("/jobs/from-spec", json={"spec": spec.model_dump(mode="json")})
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["parser_source"] == "from-spec"
+        assert body["artifacts"] == {}
+
+    def test_internal_endpoint_rejects_invalid_spec(self, client: TestClient) -> None:
+        resp = client.post("/jobs/from-spec", json={"spec": {"mood": "angsty"}})
+        assert resp.status_code == 422
+
+
+class TestGetJob:
+    def test_returns_persisted_job(self, client: TestClient) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        resp = client.get(f"/jobs/{create['job_id']}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["job_id"] == create["job_id"]
+        assert body["state"] == "queued"
+
+    def test_unknown_job_returns_404(self, client: TestClient) -> None:
+        resp = client.get("/jobs/does-not-exist")
+        assert resp.status_code == 404
+
+
+class TestArtifactEndpoint:
+    def test_streams_existing_artifact(self, client: TestClient, tmp_path: Path) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        job_id = create["job_id"]
+        storage = JobStorage(tmp_path)
+        storage.ensure_artifact_dir(job_id).joinpath("audio.wav").write_bytes(b"RIFF\x00\x00")
+
+        job = storage.get(job_id)
+        storage.attach_artifact(
+            job,
+            ArtifactRecord(
+                kind="audio",
+                container="wav",
+                codec="pcm_s24le",
+                path="audio.wav",
+                sha256="0" * 64,
+                size_bytes=6,
+            ),
+        )
+        storage.save(job)
+        resp = client.get(f"/jobs/{job_id}/artifact/audio")
+        assert resp.status_code == 200
+        assert resp.content == b"RIFF\x00\x00"
+        assert resp.headers["content-type"].startswith("audio/")
+
+    def test_missing_artifact_returns_404(self, client: TestClient) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        resp = client.get(f"/jobs/{create['job_id']}/artifact/audio")
+        assert resp.status_code == 404
+
+    def test_unknown_kind_returns_404(self, client: TestClient) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        resp = client.get(f"/jobs/{create['job_id']}/artifact/video")
+        assert resp.status_code == 404
+
+
+class TestCancel:
+    def test_cancel_queued_succeeds(self, client: TestClient) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        resp = client.post(f"/jobs/{create['job_id']}/cancel")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["state"] == "cancelled"
+
+    def test_cancel_complete_returns_409(self, client: TestClient, tmp_path: Path) -> None:
+        create = client.post(
+            "/jobs/from-spec", json={"spec": _spec().model_dump(mode="json")}
+        ).json()
+        job_id = create["job_id"]
+        storage = JobStorage(tmp_path)
+        job = storage.get(job_id)
+        job.state = JobState.COMPLETE
+        storage.save(job)
+        resp = client.post(f"/jobs/{job_id}/cancel")
+        assert resp.status_code == 409
+        assert resp.json()["error_code"] == "cancel_not_allowed"
+
+    def test_cancel_rendering_returns_409(self, client: TestClient, tmp_path: Path) -> None:
+        create = client.post(
+            "/jobs/from-spec", json={"spec": _spec().model_dump(mode="json")}
+        ).json()
+        job_id = create["job_id"]
+        storage = JobStorage(tmp_path)
+        job = storage.get(job_id)
+        job.state = JobState.RENDERING_AUDIO
+        storage.save(job)
+        resp = client.post(f"/jobs/{job_id}/cancel")
+        assert resp.status_code == 409
+
+    def test_cancel_unknown_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/jobs/does-not-exist/cancel")
+        assert resp.status_code == 404
