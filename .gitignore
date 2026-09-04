@@ -70,6 +70,7 @@ var/rq/
 assets/salamander/
 assets/bravura/
 assets/*.sf2
+assets/soundfonts/*.sf2
 var/tmp/
 
 # Downloaded models (Ollama + others)

@@ -37,6 +37,21 @@ LGPL posture described here at every render.
   each completed job's `manifest.json` records the soundfont's
   version, sha256, and this notice path.
 
+## FluidR3 General MIDI (soundfont)
+
+- License: MIT — commercial use permitted, no attribution required
+  (the author requests credit if used to derive new public soundfont
+  banks).
+- Author: Frank Wen, version 3.1. Covers every instrument in
+  `INSTRUMENT_PROGRAMS` that Salamander does not render, including the
+  non-western voices GM provides (sitar, koto, shanai, taiko,
+  kalimba).
+- Downloaded with a pinned sha256 by `scripts/download_soundfonts.py`
+  from the Debian `fluid-soundfont` package (upstream orig tarball).
+- The license text ships alongside the font
+  (`assets/soundfonts/FluidR3_COPYING.txt`) and each completed job's
+  `manifest.json` records the soundfont's sha256.
+
 ## OpenSheetMusicDisplay (render-service)
 
 - License: BSD-3-Clause, version 2.1.2, pinned in

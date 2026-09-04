@@ -415,23 +415,100 @@ class TestHashFile:
 
 
 class TestSoundfontResolution:
-    def test_default_is_the_salamander_asset(self) -> None:
+    """Hermetic: run in an empty cwd and build the chain with real files."""
+
+    @pytest.fixture(autouse=True)
+    def _empty_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("SAIMC_SOUNDFONT_PIANO", raising=False)
+
+    def _touch(self, rel: str) -> None:
+        path = Path(rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"SF2")
+
+    def test_bare_repo_falls_back_to_salamander_path(self) -> None:
         from saimc.render.instruments import soundfont_for_instrument
 
-        with patch.dict("os.environ", {}, clear=True):
-            assert soundfont_for_instrument("piano") == Path("./assets/Salamander.sf2")
+        assert soundfont_for_instrument("piano") == Path("./assets/Salamander.sf2")
+
+    def test_general_font_covers_non_piano_instruments(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        self._touch("assets/soundfonts/FluidR3_GM.sf2")
+        assert soundfont_for_instrument("sitar") == Path("./assets/soundfonts/FluidR3_GM.sf2")
+        assert soundfont_for_instrument("violin") == Path("./assets/soundfonts/FluidR3_GM.sf2")
+
+    def test_piano_prefers_salamander_when_both_exist(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        self._touch("assets/soundfonts/FluidR3_GM.sf2")
+        self._touch("assets/Salamander.sf2")
+        assert soundfont_for_instrument("piano") == Path("./assets/Salamander.sf2")
+        assert soundfont_for_instrument("sitar") == Path("./assets/soundfonts/FluidR3_GM.sf2")
+
+    def test_per_instrument_font_wins_over_the_general_font(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        self._touch("assets/soundfonts/FluidR3_GM.sf2")
+        self._touch("assets/soundfonts/sitar.sf2")
+        assert soundfont_for_instrument("sitar") == Path("./assets/soundfonts/sitar.sf2")
 
     def test_env_override_wins(self) -> None:
         from saimc.render.instruments import soundfont_for_instrument
 
-        with patch.dict("os.environ", {"SAIMC_SOUNDFONT_PIANO": "/tmp/grand.sf2"}, clear=True):
+        with patch.dict("os.environ", {"SAIMC_SOUNDFONT_PIANO": "/tmp/grand.sf2"}):
             assert soundfont_for_instrument("piano") == Path("/tmp/grand.sf2")
 
     def test_env_key_normalizes_instrument_name(self) -> None:
         from saimc.render.instruments import soundfont_for_instrument
 
-        with patch.dict(
-            "os.environ", {"SAIMC_SOUNDFONT_VIOLIN_II": "/tmp/violins.sf2"}, clear=True
-        ):
+        with patch.dict("os.environ", {"SAIMC_SOUNDFONT_VIOLIN_II": "/tmp/violins.sf2"}):
             assert soundfont_for_instrument("violin-ii") == Path("/tmp/violins.sf2")
             assert soundfont_for_instrument("violin ii") == Path("/tmp/violins.sf2")
+
+
+class TestInstrumentRegistry:
+    def test_all_programs_are_valid_gm_numbers(self) -> None:
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        assert INSTRUMENT_PROGRAMS["piano"] == 0
+        for program in INSTRUMENT_PROGRAMS.values():
+            assert 0 <= program <= 127
+
+    def test_every_instrument_has_a_family(self) -> None:
+        from saimc.render.instruments import INSTRUMENT_FAMILIES, INSTRUMENT_PROGRAMS
+
+        assert set(INSTRUMENT_FAMILIES) == set(INSTRUMENT_PROGRAMS)
+        assert set(INSTRUMENT_FAMILIES.values()) <= {"western", "world"}
+
+    def test_western_orchestra_palette(self) -> None:
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        for name in (
+            "violin",
+            "viola",
+            "cello",
+            "contrabass",
+            "harp",
+            "flute",
+            "oboe",
+            "clarinet",
+            "bassoon",
+            "french_horn",
+            "trumpet",
+            "trombone",
+            "tuba",
+            "timpani",
+        ):
+            assert name in INSTRUMENT_PROGRAMS, name
+
+    def test_world_palette(self) -> None:
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        # Non-western voices GM provides; dedicated fonts upgrade these.
+        assert INSTRUMENT_PROGRAMS["sitar"] == 104
+        assert INSTRUMENT_PROGRAMS["koto"] == 107
+        assert INSTRUMENT_PROGRAMS["shanai"] == 111
+        assert INSTRUMENT_PROGRAMS["taiko"] == 116
+        assert INSTRUMENT_PROGRAMS["kalimba"] == 108

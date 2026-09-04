@@ -239,7 +239,7 @@ class TestMeta:
         meta = client.get("/meta").json()
         assert set(meta["moods"]) == {"calming", "electrifying", "sleep"}
         assert "4/4" in meta["time_signatures"]
-        assert meta["instruments"] == ["piano"]
+        assert "piano" in meta["instruments"]
         assert meta["duration_seconds"] == {"min": 30, "max": 600, "default": 180}
 
     def test_meta_instruments_come_from_the_registry(self, client: TestClient) -> None:
