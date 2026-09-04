@@ -1,10 +1,9 @@
 """Phase 1 composition engine.
 
 Takes a CompositionSpec and returns (NotationScore, PerformancePlan).
-The engine is rule-based, deterministic, and piano-only. It uses
-music21 only at generation time (chord-tone lookup, key transposition,
-voice-range checks); the output is our canonical format, not a
-music21 stream.
+The engine is rule-based, deterministic, and piano-only; chord tones
+and key handling come from pure interval tables in this module and
+`saimc.compose.forms` — no music21 dependency at generation time.
 
 Stages (per `docs/roadmap.md` §2 step 3):
 
@@ -14,8 +13,16 @@ Stages (per `docs/roadmap.md` §2 step 3):
    count, and tempo that fit the spec's `duration_seconds` within
    ±2% tolerance.
 4. Generate one melody voice + one bass voice over the chord
-   progression, applying per-section seed-derived variation when
-   the arrangement has repeats.
+   progression:
+   - the left hand plays a root-fifth broken pattern instead of a
+     held drone,
+   - the melody sits an octave above the bass to keep the registers
+     separate,
+   - rhythm, arpeggio direction, and starting tone vary per bar
+     (seeded),
+   - velocity follows an arch across the section with beat accents.
+   Repeated sections rotate through the mood's chord-template
+   variants (A/B form) and the coda closes on the tonic.
 5. Theory-lint the resulting NotationScore.
 6. Build the PerformancePlan with integer-microsecond timestamps.
 
@@ -26,6 +33,7 @@ a `lint_failed` error before the engine returns.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from enum import StrEnum
@@ -40,6 +48,7 @@ from saimc.compose.duration import (
 )
 from saimc.compose.forms import (
     ChordTemplate,
+    get_template_for_form,
     key_root_midi,
     key_signature_from_spec,
 )
@@ -163,6 +172,7 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             mood=spec.mood.value,
             target_duration_seconds=float(spec.duration_seconds),
             time_signature=time_signature,
+            tempo_bpm=float(spec.tempo_bpm) if spec.tempo_bpm is not None else None,
         )
     except DurationUnfulfillableError as exc:
         raise CompositionEngineError(
@@ -218,10 +228,22 @@ def _build_score(
     for section_idx in range(arrangement.repetition_count):
         section_rng = random.Random(section_seed(spec.seed, section_idx))
         section_starts.append(cursor_tick)
+        # Rotate the chord-template variants across repetitions: the
+        # first section carries the arrangement's template, later ones
+        # cycle the mood's remaining variants (an A/B form) so repeats
+        # differ harmonically, not just in surface rhythm.
+        if section_idx == 0:
+            section_template = arrangement.template
+        else:
+            section_template = get_template_for_form(
+                spec.mood.value,
+                arrangement.form_bars,
+                variant_index=section_idx,
+            )
         section_notes = _generate_section(
             key=key,
             time_signature=time_signature,
-            template=arrangement.template,
+            template=section_template,
             section_start_tick=cursor_tick,
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
@@ -282,58 +304,97 @@ def _generate_section(
 ) -> list[NoteEvent]:
     """Generate the bass + melody notes for one section.
 
-    The bass voice plays the chord root on beat 1 of every bar (one
-    whole-note-per-bar voice that the listener can hear as a drone).
-    The melody voice arpegiates through the chord tones, with rhythm
-    variation seeded by `seed_for_variation` so repeated sections
-    sound different without changing the harmonic content.
+    The left hand plays a root-fifth broken pattern (root on the
+    downbeat, fifth at the bar's midpoint) instead of a held drone.
+    The melody is an octave above the bass and arpeggiates the chord
+    tones with per-bar rhythm and direction variation. Velocity
+    follows an arch across the section with a slight accent on
+    downbeats. Everything is derived from `seed_for_variation`, so
+    repeated sections sound different but stay deterministic.
     """
     notes: list[NoteEvent] = []
     tonic_midi = key_root_midi(key)
-    bar_ticks_count = bar_ticks(time_signature)
+    ticks_per_bar = bar_ticks(time_signature)
+    section_ticks = template.bars * ticks_per_bar
 
     cursor = 0
+    bar_index = 0
     for degree, dur in template.chords:
         chord_root = tonic_midi + _scale_degree_to_semitones(degree, key.mode)
         chord_tones = _chord_tones_midi(degree, key)
         chord_root_tick = section_start_tick + cursor
-        bar_length_ticks = dur * bar_ticks_count
 
-        # Bass voice: chord root on beat 1, held for the whole chord.
-        notes.append(
-            NoteEvent(
-                voice_id=0,
-                pitch_midi=_octave_down(chord_root, octaves=1),
-                tick=chord_root_tick,
-                duration_ticks=bar_length_ticks,
-                velocity=_velocity_for_section(seed_for_variation, base=58, jitter=8),
+        for _bar in range(dur):
+            bar_tick = chord_root_tick + _bar * ticks_per_bar
+            bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
+            bass_root = _octave_down(chord_root, octaves=1)
+            bass_fifth = min(107, bass_root + 7)
+
+            # Left hand: root on the downbeat, fifth at the midpoint.
+            half = ticks_per_bar // 2
+            notes.append(
+                NoteEvent(
+                    voice_id=0,
+                    pitch_midi=bass_root,
+                    tick=bar_tick,
+                    duration_ticks=half,
+                    velocity=_shaped_velocity(
+                        base=56,
+                        position=bar_pos,
+                        tick=bar_tick,
+                        ticks_per_bar=ticks_per_bar,
+                        rng_seed=seed_for_variation,
+                    ),
+                )
             )
-        )
+            notes.append(
+                NoteEvent(
+                    voice_id=0,
+                    pitch_midi=bass_fifth,
+                    tick=bar_tick + half,
+                    duration_ticks=ticks_per_bar - half,
+                    velocity=_shaped_velocity(
+                        base=50,
+                        position=bar_pos,
+                        tick=bar_tick + half,
+                        ticks_per_bar=ticks_per_bar,
+                        rng_seed=seed_for_variation,
+                    ),
+                )
+            )
 
-        # Melody voice: arpeggiate the chord tones across the chord
-        # duration, with seed-derived rhythm variation.
-        melody_notes = _arpeggiate_chord(
-            chord_root=chord_root,
-            chord_tones=chord_tones,
-            start_tick=chord_root_tick,
-            duration_ticks=bar_length_ticks,
-            rng=rng,
-            key_mode=key.mode,
-            seed_for_variation=seed_for_variation,
-        )
-        notes.extend(melody_notes)
-        cursor += bar_length_ticks
+            # Melody voice: one bar of arpeggio, rhythm and starting
+            # tone re-chosen each bar.
+            notes.extend(
+                _arpeggiate_bar(
+                    chord_root=chord_root + 12,
+                    chord_tones=chord_tones,
+                    start_tick=bar_tick,
+                    bar_ticks=ticks_per_bar,
+                    rng=rng,
+                    position=bar_pos,
+                    ticks_per_bar=ticks_per_bar,
+                    seed_for_variation=seed_for_variation + bar_index * 101,
+                )
+            )
+            bar_index += 1
 
-    return notes
+        cursor += dur * ticks_per_bar
+
+    # Canonical order: the bass and melody interleave within a bar, so
+    # sort by (tick, voice, pitch) rather than relying on append order.
+    return sorted(notes, key=lambda n: (n.tick, n.voice_id, n.pitch_midi))
 
 
 def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> ChordTemplate:
-    """Return a coda-sized prefix of `template`.
+    """Return a coda-sized prefix of `template`, closing on the tonic.
 
     The coda is a sub-form: a coda_bars-bar prefix of the form's
-    template, using the first chord cycles that fit. Coda length is
-    always strictly less than the form's full length. Zero-duration
-    chord entries are dropped.
+    template, using the first chord cycles that fit. Its final chord
+    is forced to the tonic (degree 0) so the piece ends with a
+    cadence home rather than on whatever chord the truncation lands
+    on. Coda length is always strictly less than the form's full
+    length. Zero-duration chord entries are dropped.
     """
     kept: list[tuple[int, int]] = []
     consumed = 0
@@ -347,6 +408,9 @@ def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> Chor
         else:
             kept.append((degree, dur))
             consumed += dur
+    if kept:
+        last_degree, last_dur = kept[-1]
+        kept[-1] = (0, last_dur) if last_degree != 0 else (last_degree, last_dur)
     return ChordTemplate(
         name=f"{template.name}_coda{coda_bars}",
         bars=coda_bars,
@@ -403,32 +467,58 @@ def _velocity_for_section(seed: int, *, base: int, jitter: int) -> int:
     return max(1, min(127, base + rng.randint(-jitter, jitter)))
 
 
-def _arpeggiate_chord(
+def _velocity_arc(position: float) -> float:
+    """A gentle dynamic arch: quiet entrances and exits, fuller middle.
+
+    `position` is 0..1 across the section. The arc spans roughly 0.8x
+    to 1.2x so phrases breathe without any note becoming extreme.
+    """
+    pos = min(1.0, max(0.0, position))
+    return 0.8 + 0.4 * math.sin(math.pi * pos)
+
+
+def _shaped_velocity(
+    *, base: int, position: float, tick: int, ticks_per_bar: int, rng_seed: int
+) -> int:
+    """Base velocity shaped by the section arch + downbeat accent + jitter.
+
+    Deterministic: the jitter draws from a per-tick-seeded RNG so the
+    same seed reproduces the exact same performance.
+    """
+    accent = 6 if tick % ticks_per_bar == 0 else 0
+    jitter = random.Random(rng_seed * 31 + tick).randint(-4, 4)
+    shaped = base * _velocity_arc(position) + accent + jitter
+    return max(1, min(127, round(shaped)))
+
+
+def _arpeggiate_bar(
     *,
     chord_root: int,
     chord_tones: tuple[int, ...],
     start_tick: int,
-    duration_ticks: int,
+    bar_ticks: int,
     rng: random.Random,
-    key_mode: str,
+    position: float,
+    ticks_per_bar: int,
     seed_for_variation: int,
 ) -> list[NoteEvent]:
-    """Generate an arpeggio over one chord.
+    """Generate one bar of melody arpeggio.
 
-    Phase 1 keeps it simple: 4 quarter notes per bar at 4/4 (or the
-    equivalent subdivision), cycling through the chord tones starting
-    on a seed-derived index. The exact rhythm is a seed-driven
-    choice between quarter and eighth notes for variety.
+    Rhythm (quarter vs. eighth subdivision), direction, and starting
+    tone are all re-chosen per bar from the section RNG, so a long
+    chord keeps moving instead of cycling a fixed figure. The melody
+    sits an octave above the chord root handed in by the caller.
     """
     notes: list[NoteEvent] = []
     rhythm_choices = (PPQ, PPQ // 2)  # quarter or eighth notes
     note_length = rng.choice(rhythm_choices)
-    beat_count = duration_ticks // note_length
-    if beat_count < 1:
-        beat_count = 1
-    starting_tone_index = seed_for_variation % len(chord_tones)
-    for i in range(beat_count):
-        tone_index = (starting_tone_index + i) % len(chord_tones)
+    step = 1 if rng.random() < 0.7 else -1  # mostly rising figures
+    count = bar_ticks // note_length
+    if count < 1:
+        count = 1
+    starting_tone_index = rng.randrange(len(chord_tones))
+    for i in range(count):
+        tone_index = (starting_tone_index + step * i) % len(chord_tones)
         pitch = chord_root + chord_tones[tone_index]
         # Cap melody at piano range.
         if pitch > 107:
@@ -441,8 +531,12 @@ def _arpeggiate_chord(
                 pitch_midi=pitch,
                 tick=start_tick + i * note_length,
                 duration_ticks=note_length,
-                velocity=_velocity_for_section(
-                    seed_for_variation + i, base=DEFAULT_VELOCITY, jitter=12
+                velocity=_shaped_velocity(
+                    base=DEFAULT_VELOCITY + 8,
+                    position=position,
+                    tick=start_tick + i * note_length,
+                    ticks_per_bar=ticks_per_bar,
+                    rng_seed=seed_for_variation + i,
                 ),
             )
         )

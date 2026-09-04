@@ -9,6 +9,7 @@ from saimc.compose.engine import (
     EngineErrorCode,
     compose,
 )
+from saimc.compose.forms import key_root_midi
 from saimc.compose.linter import lint
 from saimc.compose.score import NotationScore, PerformancePlan, realized_duration_seconds
 from saimc.spec import CompositionSpec, Mood
@@ -132,3 +133,66 @@ class TestComposeIntegrationWithWorker:
         result = compose_stage(job, storage)
         assert result.next_state == JobState.VALIDATING
         assert result.error is None
+
+
+class TestMusicalShape:
+    """The §10 quality upgrades: real left hand, register split, A/B form."""
+
+    def test_bass_plays_root_fifth_per_bar(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        bass = [n for n in out.notation_score.notes if n.voice_id == 0]
+        bar_ticks_count = out.notation_score.ppq * 4
+        first_bar = [n for n in bass if n.tick < bar_ticks_count]
+        assert len(first_bar) == 2  # root + fifth, not a held drone
+        pitches = {n.pitch_midi for n in first_bar}
+        assert len(pitches) == 2
+        root, fifth = sorted(pitches)
+        assert fifth - root == 7  # perfect fifth above the root
+
+    def test_melody_sits_above_bass(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        bass_avg = sum(n.pitch_midi for n in out.notation_score.notes if n.voice_id == 0) / len(
+            [n for n in out.notation_score.notes if n.voice_id == 0]
+        )
+        melody_min = min(n.pitch_midi for n in out.notation_score.notes if n.voice_id == 1)
+        assert melody_min > bass_avg
+
+    def test_repeated_sections_rotate_template_variants(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=3))
+        arrangement = out.arrangement
+        assert arrangement.repetition_count > 1
+        # Section harmony differs between rep 0 and rep 1.
+        bar_ticks_count = out.notation_score.ppq * 4
+        section_ticks = arrangement.form_bars * bar_ticks_count
+        # Variant rotation reorders the progression, so the chord
+        # sounding at each section's downbeat differs (e.g. I vs vi).
+        first_downbeat = next(
+            n.pitch_midi for n in out.notation_score.notes if n.voice_id == 0
+        )
+        second_downbeat = next(
+            n.pitch_midi
+            for n in out.notation_score.notes
+            if n.voice_id == 0 and n.tick >= section_ticks
+        )
+        assert first_downbeat != second_downbeat
+
+    def test_coda_ends_on_tonic(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=45))
+        arrangement = out.arrangement
+        assert arrangement.coda_bars > 0
+        bar_ticks_count = out.notation_score.ppq * 4
+        coda_start = arrangement.total_bars * bar_ticks_count
+        coda_bass = [n for n in out.notation_score.notes if n.voice_id == 0 and n.tick >= coda_start]
+        last_chord_root = coda_bass[-2].pitch_midi  # the bar's downbeat root
+        tonic = key_root_midi(out.key) % 12  # key root pitch class
+        assert last_chord_root % 12 == tonic % 12
+
+    def test_tempo_bpm_constraint_is_honoured(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=180, tempo_bpm=63))
+        assert out.notation_score.tempo.bpm == 63
+
+    def test_velocity_follows_an_arch(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        melody = [n for n in out.notation_score.notes if n.voice_id == 1]
+        velocities = [n.velocity for n in melody]
+        assert max(velocities) - min(velocities) >= 6  # the piece breathes

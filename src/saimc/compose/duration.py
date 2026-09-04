@@ -107,6 +107,7 @@ def arrange_for_duration(
     time_signature: str,
     base_form_bars: int | None = None,
     variant_index: int = 0,
+    tempo_bpm: float | None = None,
 ) -> DurationArrangement:
     """Find (form, repetition_count, tempo) that fits `target_duration_seconds`.
 
@@ -115,12 +116,19 @@ def arrange_for_duration(
     2. For each valid repetition_count in 1..MAX_REPEATS, scan every
        bpm in the mood's range at 0.5-BPM increments. Return the
        first combination whose realised duration is within
-       ±DURATION_TOLERANCE.
+       ±DURATION_TOLERANCE. The first fitting repetition is the one
+       with the fewest bars, which lands on the slowest tempo that
+       reaches the target — a deliberate bias toward the calmer end
+       of the mood's range.
     3. If no clean arrangement fits, try adding a coda (a smaller
        tail of complete measures) per §10 #1. The coda is itself
        a sub-form: a positive multiple of the form's bar count
        smaller than the form itself (typically form_bars // 2).
     4. If even a coda doesn't work, raise DurationUnfulfillableError.
+
+    A `tempo_bpm` constraint (from the spec) pins the tempo: only
+    (form, repetition) combinations whose realised duration at that
+    exact bpm lands within tolerance are eligible.
     """
     if base_form_bars is None:
         base_form_bars = _pick_base_form(mood, target_duration_seconds, time_signature)
@@ -132,6 +140,11 @@ def arrange_for_duration(
 
     low_bpm, high_bpm = TEMPO_RANGE_BPM[mood]
     tolerance = DURATION_TOLERANCE
+    if tempo_bpm is not None and not low_bpm <= tempo_bpm <= high_bpm:
+        raise DurationUnfulfillableError(
+            f"requested tempo {tempo_bpm}bpm is outside the {mood!r} range "
+            f"{low_bpm}-{high_bpm}bpm"
+        )
 
     best_no_coda: tuple[float, int, float, float] | None = None
 
@@ -139,10 +152,17 @@ def arrange_for_duration(
         total_bars = base_form_bars * repetition_count
         total_ticks = total_bars * ticks_per_bar
         bpm_candidates: list[float] = []
-        target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
-        if low_bpm <= target_bpm <= high_bpm:
-            bpm_candidates.append(target_bpm)
-        bpm_candidates.extend(low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1))
+        if tempo_bpm is not None:
+            # Spec-pinned tempo: that exact bpm is the only candidate.
+            bpm_candidates.append(tempo_bpm)
+        else:
+            target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
+            if low_bpm <= target_bpm <= high_bpm:
+                bpm_candidates.append(target_bpm)
+        if tempo_bpm is None:
+            bpm_candidates.extend(
+                low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
+            )
         for bpm in bpm_candidates:
             realised = _realised_seconds(total_ticks, bpm)
             delta = abs(realised - target_duration_seconds) / target_duration_seconds
@@ -175,11 +195,14 @@ def arrange_for_duration(
             total_ticks = total_ticks_no_coda + coda_ticks
             target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
             coda_bpm_candidates: list[float] = []
-            if low_bpm <= target_bpm <= high_bpm:
-                coda_bpm_candidates.append(target_bpm)
-            coda_bpm_candidates.extend(
-                low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
-            )
+            if tempo_bpm is not None:
+                coda_bpm_candidates.append(tempo_bpm)
+            else:
+                if low_bpm <= target_bpm <= high_bpm:
+                    coda_bpm_candidates.append(target_bpm)
+                coda_bpm_candidates.extend(
+                    low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
+                )
             for bpm in coda_bpm_candidates:
                 realised = _realised_seconds(total_ticks, bpm)
                 delta = abs(realised - target_duration_seconds) / target_duration_seconds
