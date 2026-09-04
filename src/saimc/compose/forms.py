@@ -29,17 +29,6 @@ from dataclasses import dataclass
 from saimc.compose.score import KeySignature
 from saimc.spec import WesternKey
 
-# Tempo ranges per mood. Phase 1 fine-tunes within these bounds to hit
-# the duration target per §10 #1.
-TEMPO_RANGE_BPM: Mapping[str, tuple[int, int]] = {
-    "calming": (50, 80),
-    "electrifying": (100, 160),
-    "sleep": (40, 64),
-}
-
-# Phrase sizes. Phase 1 offers three fixed forms (8, 16, 32 bars).
-PHRASE_SIZES: tuple[int, ...] = (8, 16, 32)
-
 
 @dataclass(frozen=True)
 class ChordTemplate:
@@ -57,95 +46,126 @@ class ChordTemplate:
     chords: tuple[tuple[int, int], ...]
 
 
-# ---------------------------------------------------------------------------
-# Calming (50-80 BPM, 4/4 default, I-V-vi-IV-ish idioms)
-# ---------------------------------------------------------------------------
-_CALMING_TEMPLATES: tuple[ChordTemplate, ...] = (
-    ChordTemplate(
-        name="calming_50s_progression",
-        bars=8,
-        chords=((0, 2), (5, 2), (3, 2), (4, 2)),
-    ),
-    ChordTemplate(
-        name="calming_iii_substitute",
-        bars=8,
-        chords=((0, 2), (2, 2), (3, 2), (4, 2)),
-    ),
-    ChordTemplate(
-        name="calming_extended_16",
-        bars=16,
-        chords=((0, 2), (5, 2), (3, 2), (4, 2), (0, 2), (5, 2), (3, 2), (1, 4)),
-    ),
-)
+@dataclass(frozen=True)
+class MoodProfile:
+    """Everything the composer needs to know about one mood.
+
+    `MOOD_PROFILES` below is the single source of truth: adding a mood
+    for Phase 2 means adding one `MoodProfile` entry (plus templates),
+    not editing the lookups scattered across duration.py and engine.py.
+    """
+
+    name: str
+    tempo_range_bpm: tuple[int, int]
+    templates: tuple[ChordTemplate, ...]
 
 
 # ---------------------------------------------------------------------------
-# Electrifying (100-160 BPM, 4/4 default, driving rhythm changes)
+# The mood registry (calming 50-80 BPM I-V-vi-IV-ish idioms, electrifying
+# 100-160 BPM driving changes, sleep 40-64 BPM sparse/drone-ish)
 # ---------------------------------------------------------------------------
-_ELECTRIFYING_TEMPLATES: tuple[ChordTemplate, ...] = (
-    ChordTemplate(
-        name="electrifying_anthemic",
-        bars=8,
-        chords=((0, 2), (4, 2), (5, 2), (3, 2)),
-    ),
-    ChordTemplate(
-        name="electrifying_vi_first",
-        bars=8,
-        chords=((5, 2), (3, 2), (0, 2), (4, 2)),
-    ),
-    ChordTemplate(
-        name="electrifying_extended_16",
-        bars=16,
-        chords=(
-            (0, 2),
-            (4, 2),
-            (5, 2),
-            (3, 2),
-            (6, 2),
-            (3, 2),
-            (0, 2),
-            (4, 2),
+MOOD_PROFILES: Mapping[str, MoodProfile] = {
+    "calming": MoodProfile(
+        name="calming",
+        tempo_range_bpm=(50, 80),
+        templates=(
+            ChordTemplate(
+                name="calming_50s_progression",
+                bars=8,
+                chords=((0, 2), (5, 2), (3, 2), (4, 2)),
+            ),
+            ChordTemplate(
+                name="calming_iii_substitute",
+                bars=8,
+                chords=((0, 2), (2, 2), (3, 2), (4, 2)),
+            ),
+            ChordTemplate(
+                name="calming_extended_16",
+                bars=16,
+                chords=((0, 2), (5, 2), (3, 2), (4, 2), (0, 2), (5, 2), (3, 2), (1, 4)),
+            ),
         ),
     ),
-)
-
-
-# ---------------------------------------------------------------------------
-# Sleep (40-60 BPM, 4/4 default, sparse, drone-ish)
-# ---------------------------------------------------------------------------
-_SLEEP_TEMPLATES: tuple[ChordTemplate, ...] = (
-    ChordTemplate(
-        name="sleep_lullaby",
-        bars=8,
-        chords=((0, 2), (5, 2), (2, 2), (3, 2)),
-    ),
-    ChordTemplate(
-        name="sleep_drone",
-        bars=8,
-        chords=((0, 4), (3, 4)),
-    ),
-    ChordTemplate(
-        name="sleep_extended_16",
-        bars=16,
-        chords=(
-            (0, 2),
-            (5, 2),
-            (2, 2),
-            (3, 2),
-            (0, 2),
-            (5, 2),
-            (2, 2),
-            (3, 2),
+    "electrifying": MoodProfile(
+        name="electrifying",
+        tempo_range_bpm=(100, 160),
+        templates=(
+            ChordTemplate(
+                name="electrifying_anthemic",
+                bars=8,
+                chords=((0, 2), (4, 2), (5, 2), (3, 2)),
+            ),
+            ChordTemplate(
+                name="electrifying_vi_first",
+                bars=8,
+                chords=((5, 2), (3, 2), (0, 2), (4, 2)),
+            ),
+            ChordTemplate(
+                name="electrifying_extended_16",
+                bars=16,
+                chords=(
+                    (0, 2),
+                    (4, 2),
+                    (5, 2),
+                    (3, 2),
+                    (6, 2),
+                    (3, 2),
+                    (0, 2),
+                    (4, 2),
+                ),
+            ),
         ),
     ),
-)
-
-
-_TEMPLATES_BY_MOOD: Mapping[str, tuple[ChordTemplate, ...]] = {
-    "calming": _CALMING_TEMPLATES,
-    "electrifying": _ELECTRIFYING_TEMPLATES,
-    "sleep": _SLEEP_TEMPLATES,
+    "sleep": MoodProfile(
+        name="sleep",
+        tempo_range_bpm=(40, 64),
+        templates=(
+            ChordTemplate(
+                name="sleep_lullaby",
+                bars=8,
+                chords=((0, 2), (5, 2), (2, 2), (3, 2)),
+            ),
+            ChordTemplate(
+                name="sleep_drone",
+                bars=8,
+                chords=((0, 4), (3, 4)),
+            ),
+            ChordTemplate(
+                name="sleep_extended_16",
+                bars=16,
+                chords=(
+                    (0, 2),
+                    (5, 2),
+                    (2, 2),
+                    (3, 2),
+                    (0, 2),
+                    (5, 2),
+                    (2, 2),
+                    (3, 2),
+                ),
+            ),
+        ),
+    ),
 }
+
+
+def get_mood_profile(mood: str) -> MoodProfile:
+    """Return the mood's profile, or a KeyError that names the known moods."""
+    try:
+        return MOOD_PROFILES[mood]
+    except KeyError:
+        known = ", ".join(sorted(MOOD_PROFILES))
+        raise KeyError(f"unknown mood {mood!r}; known moods: {known}") from None
+
+
+# Tempo ranges per mood, derived from the registry. Phase 1 fine-tunes
+# within these bounds to hit the duration target per §10 #1.
+TEMPO_RANGE_BPM: Mapping[str, tuple[int, int]] = {
+    name: profile.tempo_range_bpm for name, profile in MOOD_PROFILES.items()
+}
+
+# Phrase sizes. Phase 1 offers three fixed forms (8, 16, 32 bars).
+PHRASE_SIZES: tuple[int, ...] = (8, 16, 32)
 
 
 def get_template_for_form(
@@ -161,7 +181,7 @@ def get_template_for_form(
     selects among the templates available for the mood (modulo
     available count).
     """
-    templates = _TEMPLATES_BY_MOOD[mood]
+    templates = get_mood_profile(mood).templates
     template = templates[variant_index % len(templates)]
     if template.bars == form_bars:
         return template
@@ -257,9 +277,12 @@ def key_root_midi(key: KeySignature) -> int:
 
 
 __all__ = [
+    "MOOD_PROFILES",
     "PHRASE_SIZES",
     "TEMPO_RANGE_BPM",
     "ChordTemplate",
+    "MoodProfile",
+    "get_mood_profile",
     "get_template_for_form",
     "key_root_midi",
     "key_signature_from_spec",

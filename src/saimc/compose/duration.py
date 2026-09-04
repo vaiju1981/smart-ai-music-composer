@@ -28,7 +28,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from saimc.compose.forms import PHRASE_SIZES, TEMPO_RANGE_BPM, ChordTemplate, get_template_for_form
+from saimc.compose.forms import (
+    PHRASE_SIZES,
+    ChordTemplate,
+    get_mood_profile,
+    get_template_for_form,
+)
 from saimc.compose.score import PPQ
 
 DURATION_TOLERANCE: float = 0.02
@@ -138,12 +143,11 @@ def arrange_for_duration(
     template = get_template_for_form(mood, base_form_bars, variant_index=variant_index)
     ticks_per_bar = bar_ticks(time_signature)
 
-    low_bpm, high_bpm = TEMPO_RANGE_BPM[mood]
+    low_bpm, high_bpm = get_mood_profile(mood).tempo_range_bpm
     tolerance = DURATION_TOLERANCE
     if tempo_bpm is not None and not low_bpm <= tempo_bpm <= high_bpm:
         raise DurationUnfulfillableError(
-            f"requested tempo {tempo_bpm}bpm is outside the {mood!r} range "
-            f"{low_bpm}-{high_bpm}bpm"
+            f"requested tempo {tempo_bpm}bpm is outside the {mood!r} range {low_bpm}-{high_bpm}bpm"
         )
 
     best_no_coda: tuple[float, int, float, float] | None = None
@@ -247,7 +251,7 @@ def _pick_base_form(mood: str, target_duration_seconds: float, time_signature: s
     repetition count in the downstream arrange_for_duration tends to
     be the cleanest output).
     """
-    low_bpm, _high_bpm = TEMPO_RANGE_BPM[mood]
+    low_bpm, _high_bpm = get_mood_profile(mood).tempo_range_bpm
     beats_per_bar = bar_ticks(time_signature) / PPQ
     for form in PHRASE_SIZES:
         # Max achievable seconds for this form: MAX_REPEATS at lowest tempo.

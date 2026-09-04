@@ -110,6 +110,53 @@ class TestSmfChannelMapping:
             assert channels == {expected_channel}
 
 
+class TestSmfProgramChange:
+    @staticmethod
+    def _plan(*voice_ids: int) -> PerformancePlan:
+        return PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=voice_id,
+                    pitch_midi=60,
+                    start_us=0,
+                    duration_us=500_000,
+                    velocity=64,
+                )
+                for voice_id in voice_ids
+            ],
+        )
+
+    def test_default_program_is_piano(self) -> None:
+        smf = build_smf(self._plan(0), bpm=120.0)
+        changes = [m for m in smf.tracks[0] if m.type == "program_change"]
+        assert len(changes) == 1
+        assert changes[0].program == 0  # GM acoustic grand piano
+        assert changes[0].channel == 0
+
+    def test_voice_instruments_select_the_program(self) -> None:
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        smf = build_smf(
+            self._plan(0, 1),
+            bpm=120.0,
+            voice_instruments={0: "piano", 1: "piano"},
+        )
+        changes = [m for m in smf.tracks[0] if m.type == "program_change"]
+        assert {c.channel for c in changes} == {0, 1}
+        assert all(c.program == INSTRUMENT_PROGRAMS["piano"] for c in changes)
+
+    def test_unknown_instrument_raises(self) -> None:
+        with pytest.raises(AudioRenderError) as exc_info:
+            build_smf(self._plan(0), bpm=120.0, voice_instruments={0: "theremin"})
+        assert exc_info.value.code == AudioRenderErrorCode.MIDI_BUILD_FAILED
+
+    def test_program_changes_precede_notes(self) -> None:
+        smf = build_smf(self._plan(0), bpm=120.0)
+        types = [m.type for m in smf.tracks[0]]
+        assert types.index("program_change") < types.index("note_on")
+
+
 class TestFindFluidsynth:
     def test_finds_in_path(self, tmp_path: Path) -> None:
         # Create a fake fluidsynth in a temp dir, prepend to PATH.
@@ -365,3 +412,26 @@ class TestHashFile:
         p.write_bytes(b"hello world")
         expected = hashlib.sha256(b"hello world").hexdigest()
         assert _hash_file(p) == expected
+
+
+class TestSoundfontResolution:
+    def test_default_is_the_salamander_asset(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert soundfont_for_instrument("piano") == Path("./assets/Salamander.sf2")
+
+    def test_env_override_wins(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        with patch.dict("os.environ", {"SAIMC_SOUNDFONT_PIANO": "/tmp/grand.sf2"}, clear=True):
+            assert soundfont_for_instrument("piano") == Path("/tmp/grand.sf2")
+
+    def test_env_key_normalizes_instrument_name(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        with patch.dict(
+            "os.environ", {"SAIMC_SOUNDFONT_VIOLIN_II": "/tmp/violins.sf2"}, clear=True
+        ):
+            assert soundfont_for_instrument("violin-ii") == Path("/tmp/violins.sf2")
+            assert soundfont_for_instrument("violin ii") == Path("/tmp/violins.sf2")

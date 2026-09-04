@@ -217,3 +217,15 @@ class TestComposeStage:
         result = compose_stage(job, store)
         assert result.next_state == JobState.VALIDATING
         assert result.error is None
+
+    def test_unknown_instrumentation_fails_cleanly(self, store: JobStorage) -> None:
+        """An unregistered instrumentation names what IS supported."""
+        job = store.create("p")
+        spec = CompositionSpec(mood=Mood.CALMING)
+        object.__setattr__(spec, "instrumentation", "string_orchestra")
+        job.input_spec = spec
+        result = compose_stage(job, store)
+        assert result.next_state == JobState.FAILED
+        assert result.error is not None
+        assert result.error.error_code == "instrumentation_unsupported"
+        assert "piano" in (result.error.message or "")

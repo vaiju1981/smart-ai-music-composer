@@ -22,8 +22,8 @@ fields the worker needs.
 from __future__ import annotations
 
 import json
+import logging
 import os
-import secrets
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -34,7 +34,9 @@ from typing import Any
 
 from saimc.canonical import canonical_dumps
 from saimc.jobs.state import JobState
-from saimc.spec import CompositionSpec
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_JOBS_DIR = Path("./var/jobs")
 """Default location for job state files. Override via `SAIMC_JOBS_DIR`."""
@@ -160,13 +162,25 @@ class JobStorage:
         self._write(job)
 
     def list_all(self) -> Iterator[Job]:
-        """Iterate over every persisted job, oldest first."""
+        """Iterate over every persisted job, oldest first.
+
+        Jobs that fail to deserialize (e.g. a future spec schema
+        version) are skipped rather than breaking the whole listing.
+        """
         paths = sorted(self._root.glob("*/job.json"))
         for path in paths:
-            yield self._read(path)
+            try:
+                yield self._read(path)
+            except Exception:
+                logger.warning("skipping unreadable job file: %s", path, exc_info=True)
 
     def prune(self, now: datetime | None = None) -> int:
-        """Delete jobs past their retention horizon. Returns count deleted."""
+        """Delete jobs past their retention horizon. Returns count deleted.
+
+        Jobs that cannot be deserialized (e.g. written by a newer spec
+        schema version) are left alone — pruning never deletes what it
+        cannot read.
+        """
         now = now or datetime.now(UTC)
         deleted = 0
         for job in list(self.list_all()):
@@ -193,21 +207,6 @@ class JobStorage:
 
     def job_dir(self, job_id: str) -> Path:
         return self._root / job_id
-
-    def attach_spec(
-        self, job: Job, spec: CompositionSpec, parser_source: str, attempts: int
-    ) -> Job:
-        """Attach a parsed spec to the job (called after the `parsing` stage)."""
-        job.input_spec = spec
-        job.parser_source = parser_source
-        job.attempts = attempts
-        if spec.seed is not None:
-            job.seed = spec.seed
-        return job
-
-    def attach_error(self, job: Job, error: JobError) -> Job:
-        job.error = error
-        return job
 
     def attach_artifact(self, job: Job, artifact: ArtifactRecord) -> Job:
         job.artifacts[artifact.kind] = artifact
@@ -287,11 +286,16 @@ class JobStorage:
 
     @staticmethod
     def _deserialize(payload: dict[str, Any]) -> Job:
-        spec = (
-            CompositionSpec.model_validate(payload["input_spec"])
-            if payload.get("input_spec") is not None
-            else None
-        )
+        spec_payload = payload.get("input_spec")
+        if spec_payload is not None and spec_payload.get("schema_version") is not None:
+            written = int(spec_payload["schema_version"])
+            if written > SPEC_SCHEMA_VERSION:
+                raise UnsupportedSpecVersionError(
+                    f"job {payload.get('job_id', '?')} was written with spec schema "
+                    f"version {written}, but this build understands up to version "
+                    f"{SPEC_SCHEMA_VERSION}; upgrade saimc or delete the job directory."
+                )
+        spec = CompositionSpec.model_validate(spec_payload) if spec_payload is not None else None
         error = (
             JobError(
                 error_code=payload["error"]["error_code"],
@@ -331,13 +335,8 @@ class JobStorage:
         )
 
 
-def make_opaque_token(nbytes: int = 16) -> str:
-    """Return a URL-safe random token for artifact URLs.
-
-    Currently just the hex job_id, but exposed as its own function so we
-    can rotate the generation scheme without rewriting call sites.
-    """
-    return secrets.token_urlsafe(nbytes)
+class UnsupportedSpecVersionError(Exception):
+    """Raised when a persisted job's spec schema is newer than this build."""
 
 
 __all__ = [
@@ -348,5 +347,5 @@ __all__ = [
     "Job",
     "JobError",
     "JobStorage",
-    "make_opaque_token",
+    "UnsupportedSpecVersionError",
 ]

@@ -166,9 +166,7 @@ class TestMusicalShape:
         section_ticks = arrangement.form_bars * bar_ticks_count
         # Variant rotation reorders the progression, so the chord
         # sounding at each section's downbeat differs (e.g. I vs vi).
-        first_downbeat = next(
-            n.pitch_midi for n in out.notation_score.notes if n.voice_id == 0
-        )
+        first_downbeat = next(n.pitch_midi for n in out.notation_score.notes if n.voice_id == 0)
         second_downbeat = next(
             n.pitch_midi
             for n in out.notation_score.notes
@@ -182,7 +180,9 @@ class TestMusicalShape:
         assert arrangement.coda_bars > 0
         bar_ticks_count = out.notation_score.ppq * 4
         coda_start = arrangement.total_bars * bar_ticks_count
-        coda_bass = [n for n in out.notation_score.notes if n.voice_id == 0 and n.tick >= coda_start]
+        coda_bass = [
+            n for n in out.notation_score.notes if n.voice_id == 0 and n.tick >= coda_start
+        ]
         last_chord_root = coda_bass[-2].pitch_midi  # the bar's downbeat root
         tonic = key_root_midi(out.key) % 12  # key root pitch class
         assert last_chord_root % 12 == tonic % 12

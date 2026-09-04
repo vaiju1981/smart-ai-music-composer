@@ -56,6 +56,8 @@ from saimc.compose.linter import LintIssue, lint
 from saimc.compose.score import (
     DEFAULT_VELOCITY,
     PPQ,
+    VOICE_BASS,
+    VOICE_MELODY,
     KeySignature,
     Measure,
     NotationScore,
@@ -334,7 +336,7 @@ def _generate_section(
             half = ticks_per_bar // 2
             notes.append(
                 NoteEvent(
-                    voice_id=0,
+                    voice_id=VOICE_BASS,
                     pitch_midi=bass_root,
                     tick=bar_tick,
                     duration_ticks=half,
@@ -349,7 +351,7 @@ def _generate_section(
             )
             notes.append(
                 NoteEvent(
-                    voice_id=0,
+                    voice_id=VOICE_BASS,
                     pitch_midi=bass_fifth,
                     tick=bar_tick + half,
                     duration_ticks=ticks_per_bar - half,
@@ -527,7 +529,7 @@ def _arpeggiate_bar(
             pitch += 12
         notes.append(
             NoteEvent(
-                voice_id=1,
+                voice_id=VOICE_MELODY,
                 pitch_midi=pitch,
                 tick=start_tick + i * note_length,
                 duration_ticks=note_length,

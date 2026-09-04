@@ -25,7 +25,6 @@ launched through `safe_run()` which enforces a timeout.
 from __future__ import annotations
 
 import logging
-import os
 import shlex
 import subprocess
 import time
@@ -166,6 +165,28 @@ def parse_stage(
     )
 
 
+def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
+    """Resolve the composer for a spec's instrumentation.
+
+    The registry is the Phase 2 seam: an orchestral instrumentation
+    plugs in its own engine here instead of editing compose_stage.
+    Unknown instrumentations surface as a clean structured error
+    naming what *is* supported.
+    """
+    from saimc.compose.engine import compose as _phase1_compose
+
+    registry: dict[str, Callable[[Any], Any]] = {
+        "piano": _phase1_compose,
+    }
+    try:
+        return registry[instrumentation]
+    except KeyError:
+        raise LookupError(
+            f"no composer registered for instrumentation {instrumentation!r}; "
+            f"known instrumentations: {', '.join(sorted(registry))}"
+        ) from None
+
+
 def compose_stage(
     job: Job,
     storage: JobStorage,
@@ -174,7 +195,8 @@ def compose_stage(
     """Run the `composing` stage.
 
     `engine` is a callable `(spec) -> EngineOutput`. When `None`, the
-    default Phase 1 engine from `saimc.compose.engine.compose` is used.
+    composer registered for the spec's instrumentation is used
+    (Phase 1: piano -> `saimc.compose.engine.compose`).
     """
     if job.input_spec is None:
         return StageResult(
@@ -188,9 +210,18 @@ def compose_stage(
         )
 
     if engine is None:
-        from saimc.compose.engine import compose as _default_compose
-
-        engine = _default_compose
+        try:
+            engine = _composer_for_instrumentation(job.input_spec.instrumentation)
+        except LookupError as exc:
+            return StageResult(
+                job=job,
+                next_state=JobState.FAILED,
+                error=JobError(
+                    error_code="instrumentation_unsupported",
+                    message=str(exc),
+                    stage="composing",
+                ),
+            )
 
     try:
         output = engine(job.input_spec)
@@ -263,16 +294,20 @@ def render_audio_stage(
     attaches one or two `ArtifactRecord` entries to the job (WAV
     primary, OGG Opus secondary when encoding succeeded).
 
-    `soundfont_path` defaults to `$SAIMC_RENDER_SOUNDFONT` or
-    `./assets/Salamander.sf2`. `fluidsynth_bin` and `ffmpeg_bin`
+    `soundfont_path` overrides the per-instrument resolution (handy in
+    tests); otherwise `soundfont_for_instrument()` resolves the SF2 —
+    `$SAIMC_SOUNDFONT_<INSTRUMENT>` or the Phase 1 Salamander default.
+    `fluidsynth_bin` and `ffmpeg_bin`
     default to the env vars `$SAIMC_FLUIDSYNTH_BIN` /
     `$SAIMC_FFMPEG_BIN`, falling back to PATH lookup inside
     `render_audio`.
 
     Module-level so tests can monkeypatch it.
     """
+    from saimc.compose.score import VOICE_BASS, VOICE_MELODY
     from saimc.compose.serialization import read_engine_output
     from saimc.render.audio import AudioRenderError, render_audio
+    from saimc.render.instruments import soundfont_for_instrument
 
     if job.input_spec is None:
         return StageResult(
@@ -299,7 +334,12 @@ def render_audio_stage(
 
     output = read_engine_output(sidecar_path)
 
-    sf = soundfont_path or Path(os.environ.get("SAIMC_RENDER_SOUNDFONT", "./assets/Salamander.sf2"))
+    # Phase 1's spec carries one instrumentation for the whole piece;
+    # both voices play it. Phase 2's per-voice instrument map replaces
+    # this fan-out.
+    instrumentation = job.input_spec.instrumentation
+    voice_instruments = {VOICE_BASS: instrumentation, VOICE_MELODY: instrumentation}
+    sf = soundfont_path or soundfont_for_instrument(instrumentation)
     artifacts_dir = storage.ensure_artifact_dir(job.job_id)
 
     try:
@@ -309,6 +349,7 @@ def render_audio_stage(
             soundfont_path=sf,
             out_dir=artifacts_dir,
             job_id=job.job_id,
+            voice_instruments=voice_instruments,
             fluidsynth_bin=fluidsynth_bin,
             ffmpeg_bin=ffmpeg_bin,
         )

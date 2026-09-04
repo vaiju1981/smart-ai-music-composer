@@ -5,9 +5,11 @@ from __future__ import annotations
 import pytest
 
 from saimc.compose.forms import (
+    MOOD_PROFILES,
     PHRASE_SIZES,
     TEMPO_RANGE_BPM,
     ChordTemplate,
+    get_mood_profile,
     get_template_for_form,
     key_root_midi,
     key_signature_from_spec_key,
@@ -87,3 +89,19 @@ class TestKeyRootMidi:
     def test_unknown_root_rejected(self) -> None:
         with pytest.raises(ValueError):
             key_root_midi(KeySignature(root="X", mode="major"))
+
+
+class TestMoodRegistry:
+    def test_profiles_are_the_single_source_of_truth(self) -> None:
+        for name, profile in MOOD_PROFILES.items():
+            assert profile.name == name
+            assert TEMPO_RANGE_BPM[name] == profile.tempo_range_bpm
+            assert profile.templates
+
+    def test_unknown_mood_names_the_known_moods(self) -> None:
+        with pytest.raises(KeyError) as exc_info:
+            get_mood_profile("angsty")
+        message = str(exc_info.value)
+        assert "angsty" in message
+        assert "calming" in message
+        assert "sleep" in message

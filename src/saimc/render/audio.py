@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +34,7 @@ from saimc.compose.score import (
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
 from saimc.render.ffmpeg_audit import audit_ffmpeg
+from saimc.render.instruments import INSTRUMENT_PROGRAMS
 from saimc.render.util import sha256_file
 
 if TYPE_CHECKING:
@@ -96,7 +98,12 @@ class AudioArtifact:
     ffmpeg_configuration: str = ""
 
 
-def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
+def build_smf(
+    plan: PerformancePlan,
+    *,
+    bpm: float,
+    voice_instruments: Mapping[int, str] | None = None,
+) -> MidiFile:
     """Convert a PerformancePlan into a SMF Type-0 MIDI file.
 
     `bpm` is the realised tempo of the plan (taken from the
@@ -104,6 +111,11 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
     matching the NotationScore's PPQ. The set_tempo meta event carries
     the integer microseconds-per-quarter so that downstream tools
     (FluidSynth included) get an exact tempo.
+
+    `voice_instruments` maps voice_id -> instrument name; each mapped
+    voice gets a General MIDI program_change on its channel so
+    FluidSynth picks the right patch (the Phase 2 orchestra needs
+    this; Phase 1 defaults every voice to piano anyway).
 
     Returns the populated `mido.MidiFile` (caller persists to disk).
     """
@@ -117,6 +129,30 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
     # Tempo: microseconds per quarter note. bpm = 60_000_000 / us_per_quarter.
     us_per_quarter = round(60_000_000 / bpm)
     track.append(mido.MetaMessage("set_tempo", tempo=us_per_quarter, time=0))
+
+    # Program changes up front, one per (voice, channel) that appears in
+    # the plan or in voice_instruments. Channels are assigned the same
+    # way as the note events below.
+    instruments = dict(voice_instruments or {})
+    voice_channels: dict[int, int] = {}
+    for note in plan.notes:
+        if note.voice_id not in voice_channels:
+            voice_channels[note.voice_id] = _channel_for_voice(note.voice_id)
+    for voice_id in instruments:
+        voice_channels.setdefault(voice_id, _channel_for_voice(voice_id))
+    for voice_id in sorted(voice_channels):
+        instrument = instruments.get(voice_id, "piano")
+        program = INSTRUMENT_PROGRAMS.get(instrument)
+        if program is None:
+            raise AudioRenderError(
+                AudioRenderErrorCode.MIDI_BUILD_FAILED,
+                f"unknown instrument {instrument!r} for voice {voice_id}; "
+                f"known instruments: {', '.join(sorted(INSTRUMENT_PROGRAMS))}",
+            )
+        track.append(
+            mido.Message("program_change", channel=voice_channels[voice_id], program=program)
+        )
+
     track.append(mido.MetaMessage("end_of_track", time=0))
 
     # Convert each PerformanceNoteEvent to a note_on / note_off pair.
@@ -134,11 +170,7 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
             # trip; the engine shouldn't produce these but we don't
             # want a malformed MIDI file to crash the renderer.
             off_tick = on_tick + 1
-        # Channel 10 (index 9) is the GM percussion kit — a voice
-        # mapped there would play drums instead of its instrument.
-        channel = note.voice_id % 16
-        if channel >= 9:
-            channel += 1
+        channel = _channel_for_voice(note.voice_id)
         events.append(
             (
                 on_tick,
@@ -175,6 +207,18 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
 def _us_to_ticks(microseconds: int, bpm: float) -> int:
     """Convert microseconds to integer ticks at PPQ=480 and the given bpm."""
     return round(microseconds * bpm * PPQ / 60_000_000)
+
+
+def _channel_for_voice(voice_id: int) -> int:
+    """Map a voice ID to a MIDI channel, skipping GM channel 10.
+
+    Channel 10 (index 9) is the GM percussion kit — a voice mapped
+    there would play drums instead of its instrument.
+    """
+    channel = voice_id % 16
+    if channel >= 9:
+        channel += 1
+    return channel
 
 
 def _hash_file(path: Path, *, cached: bool = False) -> str:
@@ -407,6 +451,7 @@ def render_audio(
     soundfont_path: Path,
     out_dir: Path,
     job_id: str,
+    voice_instruments: Mapping[int, str] | None = None,
     fluidsynth_bin: str | None = None,
     ffmpeg_bin: str | None = None,
     fluidsynth_timeout_s: float = DEFAULT_FLUIDSYNTH_TIMEOUT_S,
@@ -425,7 +470,7 @@ def render_audio(
 
     # 1. PerformancePlan -> SMF.
     try:
-        smf = build_smf(plan, bpm=bpm)
+        smf = build_smf(plan, bpm=bpm, voice_instruments=voice_instruments)
         smf.save(str(smf_path))
     except Exception as exc:
         raise AudioRenderError(

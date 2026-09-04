@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -9,8 +10,8 @@ import pytest
 from saimc.jobs.state import JobState
 from saimc.jobs.storage import (
     ArtifactRecord,
-    JobError,
     JobStorage,
+    UnsupportedSpecVersionError,
 )
 from saimc.spec import CompositionSpec, Mood
 
@@ -40,27 +41,6 @@ class TestCreateAndGet:
     def test_get_unknown_raises_keyerror(self, store: JobStorage) -> None:
         with pytest.raises(KeyError):
             store.get("does-not-exist")
-
-
-class TestAttachSpec:
-    def test_attach_spec_sets_fields_and_seed(self, store: JobStorage) -> None:
-        job = store.create("p")
-        spec = CompositionSpec(mood=Mood.CALMING, seed=42)
-        store.attach_spec(job, spec, parser_source="llm", attempts=1)
-        store.save(job)
-        reloaded = store.get(job.job_id)
-        assert reloaded.input_spec == spec
-        assert reloaded.parser_source == "llm"
-        assert reloaded.attempts == 1
-        assert reloaded.seed == 42
-
-    def test_attach_spec_no_seed_keeps_none(self, store: JobStorage) -> None:
-        job = store.create("p")
-        spec = CompositionSpec(mood=Mood.CALMING)
-        store.attach_spec(job, spec, parser_source="fallback", attempts=3)
-        store.save(job)
-        reloaded = store.get(job.job_id)
-        assert reloaded.seed is None
 
 
 class TestAttachArtifact:
@@ -113,15 +93,6 @@ class TestAttachArtifact:
         }
 
 
-class TestAttachError:
-    def test_attach_error(self, store: JobStorage) -> None:
-        job = store.create("p")
-        store.attach_error(job, JobError(error_code="x", message="y", stage="parsing"))
-        store.save(job)
-        reloaded = store.get(job.job_id)
-        assert reloaded.error == JobError(error_code="x", message="y", stage="parsing")
-
-
 class TestListAndPrune:
     def test_list_all_includes_every_job(self, store: JobStorage) -> None:
         for _ in range(3):
@@ -166,9 +137,33 @@ class TestAtomicWrite:
         """The tmp+rename pattern means a reader never sees a torn JSON."""
         job = store.create("p")
         for i in range(10):
-            spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30 + i)
-            store.attach_spec(job, spec, parser_source="llm", attempts=1)
+            job.input_spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30 + i)
             store.save(job)
             reloaded = store.get(job.job_id)
             assert reloaded.input_spec is not None
             assert reloaded.input_spec.duration_seconds == 30 + i
+
+
+class TestSchemaVersionGuard:
+    def test_future_spec_version_raises_a_readable_error(self, store, tmp_path) -> None:
+        """A job written by a newer build fails with guidance, not a pydantic dump."""
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        store.save(job)
+        job_file = tmp_path / job.job_id / "job.json"
+        payload = json.loads(job_file.read_text())
+        payload["input_spec"]["schema_version"] = 999
+        job_file.write_text(json.dumps(payload))
+
+        with pytest.raises(UnsupportedSpecVersionError) as exc_info:
+            store.get(job.job_id)
+        assert "999" in str(exc_info.value)
+        assert "1" in str(exc_info.value)
+
+    def test_current_spec_version_loads_normally(self, store) -> None:
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        store.save(job)
+        reloaded = store.get(job.job_id)
+        assert reloaded.input_spec is not None
+        assert reloaded.input_spec.mood == Mood.CALMING
