@@ -142,11 +142,18 @@ def render_frames(
             end_s = (note.start_us + note.duration_us) / 1_000_000
             x0 = playhead_x + (start_s - t) * pixels_per_second
             x1 = playhead_x + (end_s - t) * pixels_per_second
-            if x1 < 0 or x0 > width or start_s > t + window_s:
+            if x1 < 0 or start_s > t + window_s:
+                continue
+            # Clamp before culling: a note just past the right edge (x0 in
+            # (width-1, width]) would otherwise collapse to a box whose
+            # left edge exceeds its right one, which Pillow rejects.
+            left = max(0, int(x0))
+            right = min(width - 1, int(x1))
+            if right <= left:
                 continue
             lane = height - 20 - (note.pitch_midi - pitch_lo) * lane_height
             draw.rectangle(
-                (max(0, int(x0)), lane, min(width - 1, int(x1)), lane + lane_height - 2),
+                (left, lane, right, lane + lane_height - 2),
                 fill=NOTE_RGB,
             )
         draw.line((playhead_x, 0, playhead_x, height), fill=PLAYHEAD_RGB, width=2)
