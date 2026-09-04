@@ -160,6 +160,115 @@ def write_manifest(job: Job, inputs: ManifestInputs, jobs_root: Path) -> Path:
     return out_path
 
 
+def emit_manifest(job: Job, jobs_root: Path) -> Path:
+    """Emit a completed job's manifest from its persisted records alone.
+
+    The worker calls this the moment a job reaches `complete`. Every
+    input is derived from data already on disk: the canonical hashes
+    come from the engine-output sidecar, the toolchain block from the
+    artifacts' `toolchain` dicts (written by the render stages), the
+    soundfont asset from the attribution module, and the dependency
+    versions from the installed distributions.
+
+    Raises the same `ValueError`s as `build_manifest` if the job is
+    not a completed job with artifacts.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as dist_version
+
+    from saimc.compose.serialization import read_engine_output
+    from saimc.render.attribution import (
+        SOUNDFONT_LICENSE,
+        SOUNDFONT_NAME,
+        SOUNDFONT_NOTICE_PATH,
+        SOUNDFONT_SOURCE_URL,
+        SOUNDFONT_VERSION,
+        license_obligations,
+    )
+
+    notation_score_sha = ""
+    performance_plan_sha = ""
+    if job.input_spec is not None:
+        sidecar = jobs_root / job.job_id / "engine_output.json"
+        if sidecar.exists():
+            output = read_engine_output(sidecar)
+            notation_score_sha = output.notation_score.compute_hash()
+            performance_plan_sha = output.performance_plan.compute_hash()
+
+    toolchain_by_kind: dict[str, ToolchainRecord] = {}
+    for kind, art in job.artifacts.items():
+        tc = dict(art.toolchain)
+        if not tc:
+            continue
+        if kind == "audio":
+            toolchain_by_kind[kind] = ToolchainRecord(
+                engine=tc.get("engine", "fluidsynth"),
+                version=tc.get("version", "unknown"),
+                build_sha=tc.get("build_sha", ""),
+                config={
+                    "soundfont": tc.get("soundfont", ""),
+                    "soundfont_sha256": tc.get("soundfont_sha256", ""),
+                    "ffmpeg_version": tc.get("ffmpeg_version", ""),
+                    "ffmpeg_build_sha": tc.get("ffmpeg_build_sha", ""),
+                    "ffmpeg_configuration": tc.get("ffmpeg_configuration", ""),
+                },
+            )
+        elif kind == "sheet":
+            toolchain_by_kind[kind] = ToolchainRecord(
+                engine=tc.get("engine", "opensheetmusicdisplay"),
+                version=tc.get("version", "unknown"),
+                build_sha="",
+                config={"renderer": tc.get("renderer", "")},
+            )
+        elif kind == "animation":
+            toolchain_by_kind[kind] = ToolchainRecord(
+                engine=tc.get("engine", "ffmpeg"),
+                version=tc.get("version", "unknown"),
+                build_sha=tc.get("build_sha", ""),
+                config={
+                    "configuration": tc.get("configuration", ""),
+                    "video_codec": tc.get("video_codec", ""),
+                    "audio_codec": tc.get("audio_codec", ""),
+                    "dimensions": tc.get("dimensions", ""),
+                    "fps": tc.get("fps", ""),
+                },
+            )
+
+    assets: dict[str, AssetRecord] = {}
+    audio_record = job.artifacts.get("audio")
+    audio_tc = dict(audio_record.toolchain) if audio_record is not None else {}
+    if audio_tc:
+        assets["soundfont"] = AssetRecord(
+            name=SOUNDFONT_NAME,
+            version=SOUNDFONT_VERSION,
+            sha256=audio_tc.get("soundfont_sha256", ""),
+            license=SOUNDFONT_LICENSE,
+            source_url=SOUNDFONT_SOURCE_URL,
+            notice_path=SOUNDFONT_NOTICE_PATH,
+        )
+
+    dependencies: dict[str, str] = {}
+    for dist in ("music21", "mido", "Pillow"):
+        try:
+            dependencies[dist] = dist_version(dist)
+        except PackageNotFoundError:  # pragma: no cover - render extra absent
+            dependencies[dist] = "unknown"
+
+    return write_manifest(
+        job,
+        ManifestInputs(
+            notation_score_sha256=notation_score_sha,
+            performance_plan_sha256=performance_plan_sha,
+            completed_at=job.updated_at,
+            toolchain_by_kind=toolchain_by_kind,
+            assets=assets,
+            dependencies=dependencies,
+            license_obligations=license_obligations(),
+        ),
+        jobs_root,
+    )
+
+
 def _sha256_str(payload: Any) -> str:
     """Stable SHA-256 over the canonical serialization of `payload`."""
     from saimc.canonical import canonical_sha256
@@ -173,5 +282,6 @@ __all__ = [
     "ManifestInputs",
     "ToolchainRecord",
     "build_manifest",
+    "emit_manifest",
     "write_manifest",
 ]

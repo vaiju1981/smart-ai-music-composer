@@ -88,6 +88,7 @@ class AnimationArtifact:
     fps: int
     ffmpeg_version: str = ""
     ffmpeg_build_sha: str = ""
+    ffmpeg_configuration: str = ""
 
 
 def total_frames(duration_s: float, fps: int) -> int:
@@ -161,10 +162,11 @@ def encode_webm(
     fps: int = DEFAULT_ANIM_FPS,
     ffmpeg_bin: str | None = None,
     timeout_s: float = DEFAULT_ANIM_TIMEOUT_S,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Encode frames + audio -> WebM (VP9 + Opus) via the audited ffmpeg.
 
-    Returns (version, build_sha) for the manifest toolchain block.
+    Returns (version, build_sha, configuration_line) for the manifest
+    toolchain block.
     """
     try:
         bin_path = find_ffmpeg(ffmpeg_bin)
@@ -232,7 +234,7 @@ def encode_webm(
         out_webm_path,
         elapsed,
     )
-    return audit.version, audit.binary_sha256
+    return audit.version, audit.binary_sha256, audit.configuration_line
 
 
 def render_animation(
@@ -264,7 +266,7 @@ def render_animation(
             f"frame rendering failed: {exc}",
         ) from exc
 
-    ffmpeg_version, ffmpeg_sha = encode_webm(
+    ffmpeg_version, ffmpeg_sha, ffmpeg_config = encode_webm(
         frames_dir,
         audio_wav_path,
         webm_path,
@@ -287,6 +289,7 @@ def render_animation(
         fps=fps,
         ffmpeg_version=ffmpeg_version,
         ffmpeg_build_sha=ffmpeg_sha,
+        ffmpeg_configuration=ffmpeg_config,
     )
 
 

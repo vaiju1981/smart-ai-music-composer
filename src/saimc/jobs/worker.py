@@ -118,6 +118,9 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
         A small status dict for the broker log.
     """
     storage = JobStorage(jobs_root or os.environ.get("SAIMC_JOBS_DIR"))
+    # Retention (roadmap §7): pruned once per job run — completed jobs
+    # after 7 days, failed ones after 24h; active jobs are never touched.
+    storage.prune()
     sm = JobStateMachine()
     job = storage.get(job_id)
 
@@ -135,7 +138,29 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
         )
         return {"job_id": job_id, "state": job.state.value, "error": "illegal_transition"}
 
+    if job.state == JobState.COMPLETE:
+        _emit_job_manifest(job, storage)
+
     return {"job_id": job_id, "state": job.state.value}
+
+
+def _emit_job_manifest(job: Job, storage: JobStorage) -> None:
+    """Write `manifest.json` for a completed job (roadmap §9).
+
+    A manifest failure is logged, never raised: the artifacts are
+    already complete and persisted, and failing the job over a
+    provenance-write problem would misrepresent the render itself.
+    """
+    import logging
+
+    from saimc.jobs.manifest import emit_manifest
+
+    logger = logging.getLogger(__name__)
+    try:
+        emit_manifest(job, storage.root)
+        logger.info("manifest written for job %s", job.job_id)
+    except Exception:
+        logger.exception("manifest emission failed for job %s", job.job_id)
 
 
 def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:

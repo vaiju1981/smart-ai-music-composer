@@ -9,6 +9,7 @@ suite verifies the contract between slices 1-3 only.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -205,6 +206,13 @@ class TestEndToEndJobWalk:
             json={"spec": spec.model_dump(mode="json")},
         ).json()
         job_id = create["job_id"]
+
+        # Plant a long-expired completed job so this run also proves
+        # the retention prune fires on every job run.
+        expired = storage.create("expired")
+        expired.state = JobState.COMPLETE
+        storage.save(expired, at=datetime.now(UTC).replace(year=2020, month=1, day=1))
+
         result = run_job(job_id, jobs_root=str(storage.root))
         assert result["state"] == "complete"
         job = storage.get(job_id)
@@ -218,6 +226,20 @@ class TestEndToEndJobWalk:
         assert "audio" in job.artifacts
         audio = job.artifacts["audio"]
         assert audio.sha256 == hashlib.sha256(b"RIFF").hexdigest()
+
+        # The worker emits manifest.json the moment the job completes
+        # (roadmap §9); with the toolchain-free stubs it still records
+        # the spec hash, artifacts, and license obligations.
+        manifest_path = storage.root / job_id / "manifest.json"
+        assert manifest_path.is_file()
+        emitted = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert emitted["job_id"] == job_id
+        assert emitted["notation_score_sha256"]
+        assert emitted["license_obligations"]["salamander-grand-piano"]
+
+        # A job run also applies retention (roadmap §7): the expired
+        # completed job planted above is pruned before the walk starts.
+        assert "expired" not in [j.job_id for j in storage.list_all()]
 
         manifest_inputs = ManifestInputs(
             notation_score_sha256="0" * 64,

@@ -165,7 +165,7 @@ class TestEncodeWebm:
             mock_audit.return_value.ok = True
             mock_audit.return_value.version = "7.0-stub"
             mock_audit.return_value.binary_sha256 = "b" * 64
-            version, _sha = encode_webm(frames_dir, audio, out)
+            version, _sha, _config = encode_webm(frames_dir, audio, out)
 
         assert version == "7.0-stub"
         assert out.is_file()
@@ -186,6 +186,7 @@ class TestRenderAnimation:
             ok = True
             version = "7.0-stub"
             binary_sha256 = "b" * 64
+            configuration_line = "--enable-libvpx --enable-libopus"
             reasons: tuple[str, ...] = ()
 
         monkeypatch.setattr("saimc.render.animation.audit_ffmpeg", lambda *_a, **_k: _Audit())
@@ -224,6 +225,7 @@ class TestRenderAnimation:
             ok = True
             version = "7.0-stub"
             binary_sha256 = "b" * 64
+            configuration_line = "--enable-libvpx --enable-libopus"
             reasons: tuple[str, ...] = ()
 
         monkeypatch.setattr("saimc.render.animation.audit_ffmpeg", lambda *_a, **_k: _Audit())

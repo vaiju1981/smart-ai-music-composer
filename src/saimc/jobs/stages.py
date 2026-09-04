@@ -322,6 +322,16 @@ def render_audio_stage(
             ),
         )
 
+    audio_toolchain = {
+        "engine": "fluidsynth",
+        "version": artifact.fluidsynth_version,
+        "build_sha": artifact.fluidsynth_build_sha,
+        "soundfont": artifact.soundfont_name,
+        "soundfont_sha256": artifact.soundfont_sha256,
+        "ffmpeg_version": artifact.ffmpeg_version,
+        "ffmpeg_build_sha": artifact.ffmpeg_build_sha,
+        "ffmpeg_configuration": artifact.ffmpeg_configuration,
+    }
     storage.attach_artifact(
         job,
         ArtifactRecord(
@@ -331,6 +341,7 @@ def render_audio_stage(
             path=artifact.primary_path.name,
             sha256=artifact.primary_sha256,
             size_bytes=artifact.primary_size_bytes,
+            toolchain=audio_toolchain,
         ),
     )
     if artifact.ogg_path is not None and artifact.ogg_path.exists():
@@ -347,6 +358,7 @@ def render_audio_stage(
                 path=artifact.ogg_path.name,
                 sha256=artifact.ogg_sha256 or "",
                 size_bytes=artifact.ogg_size_bytes or 0,
+                toolchain=audio_toolchain,
             ),
         )
     return StageResult(job=job, next_state=JobState.RENDERING_SHEET)
@@ -415,6 +427,11 @@ def render_sheet_stage(job: Job, storage: JobStorage) -> StageResult:
             path=artifact.sheet_path.name,
             sha256=artifact.sha256,
             size_bytes=artifact.size_bytes,
+            toolchain={
+                "engine": "opensheetmusicdisplay",
+                "version": artifact.osmd_version,
+                "renderer": "render-service (headless Chromium)",
+            },
         ),
     )
     return StageResult(job=job, next_state=JobState.RENDERING_ANIMATION)
@@ -501,6 +518,16 @@ def render_animation_stage(
             path=artifact.webm_path.name,
             sha256=artifact.sha256,
             size_bytes=artifact.size_bytes,
+            toolchain={
+                "engine": "ffmpeg",
+                "version": artifact.ffmpeg_version,
+                "build_sha": artifact.ffmpeg_build_sha,
+                "configuration": artifact.ffmpeg_configuration,
+                "video_codec": artifact.codec,
+                "audio_codec": artifact.audio_codec,
+                "dimensions": f"{artifact.width}x{artifact.height}",
+                "fps": str(artifact.fps),
+            },
         ),
     )
     return StageResult(job=job, next_state=JobState.COMPLETE)

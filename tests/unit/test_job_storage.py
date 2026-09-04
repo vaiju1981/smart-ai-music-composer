@@ -90,6 +90,28 @@ class TestAttachArtifact:
         p = store.artifact_path(job.job_id, "audio")
         assert p == store.root / job.job_id / "artifacts" / "audio"
 
+    def test_toolchain_provenance_round_trips(self, store: JobStorage) -> None:
+        """The manifest derives its toolchain block from the persisted job."""
+        job = store.create("p")
+        store.attach_artifact(
+            job,
+            ArtifactRecord(
+                kind="audio",
+                container="wav",
+                codec="pcm_s24le",
+                path="audio.wav",
+                sha256="a" * 64,
+                size_bytes=4,
+                toolchain={"engine": "fluidsynth", "version": "2.3.4"},
+            ),
+        )
+        store.save(job)
+        reloaded = store.get(job.job_id)
+        assert reloaded.artifacts["audio"].toolchain == {
+            "engine": "fluidsynth",
+            "version": "2.3.4",
+        }
+
 
 class TestAttachError:
     def test_attach_error(self, store: JobStorage) -> None:

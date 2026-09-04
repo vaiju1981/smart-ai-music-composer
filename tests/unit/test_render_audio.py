@@ -220,7 +220,10 @@ class TestRenderAudioPipeline:
         fake_ff.chmod(0o755)
 
         # Mock safe_run to write a fake WAV / OGG on call.
+        seen_cmds = []
+
         def _fake_safe_run(cmd, *, timeout_s, **kw):
+            seen_cmds.append(cmd)
 
             # Find the output path (the second-to-last positional that's a real path).
             for arg in cmd:
@@ -242,6 +245,7 @@ class TestRenderAudioPipeline:
                 ok=True,
                 version="8.1.2",
                 binary_sha256="a" * 64,
+                configuration_line="--enable-libvpx --enable-libopus",
             )
             artifact = render_audio(
                 _plan_with_notes(),
@@ -257,6 +261,15 @@ class TestRenderAudioPipeline:
         assert artifact.primary_path.suffix == ".wav"
         assert artifact.ogg_path is not None
         assert artifact.ogg_path.exists()
+        assert artifact.ffmpeg_configuration == "--enable-libvpx --enable-libopus"
+
+        # The OGG carries the Salamander attribution as Vorbis comments
+        # (roadmap §10 #12).
+        ogg_cmd = next(c for c in seen_cmds if c[-1].endswith(".ogg"))
+        metadata_args = ogg_cmd[ogg_cmd.index("-metadata") :]
+        assert "AUTHOR=Alexander Holm" in metadata_args
+        assert "LIBRARY=Salamander Grand Piano" in metadata_args
+        assert "LICENSE_URL=https://creativecommons.org/licenses/by/3.0/" in metadata_args
         assert (
             artifact.primary_sha256
             == hashlib.sha256(artifact.primary_path.read_bytes()).hexdigest()

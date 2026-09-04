@@ -93,6 +93,8 @@ class AudioArtifact:
     soundfont_name: str = ""
     soundfont_sha256: str = ""
 
+    ffmpeg_configuration: str = ""
+
 
 def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
     """Convert a PerformancePlan into a SMF Type-0 MIDI file.
@@ -326,10 +328,12 @@ def encode_opus(
     ffmpeg_bin: str | None = None,
     bitrate_kbps: int = 128,
     timeout_s: float = DEFAULT_FFMPEG_TIMEOUT_S,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Encode WAV -> OGG Opus via the audited ffmpeg binary.
 
-    Returns (version, build_sha) for the manifest toolchain block.
+    Returns (version, build_sha, configuration_line) for the manifest
+    toolchain block. The OGG carries the Salamander attribution as
+    Vorbis comments (§10 #12).
     """
     bin_path = find_ffmpeg(ffmpeg_bin)
     audit = audit_ffmpeg(bin_path)
@@ -339,6 +343,8 @@ def encode_opus(
             f"ffmpeg at {bin_path} failed audit: {audit.reasons}",
         )
     out_ogg_path.parent.mkdir(parents=True, exist_ok=True)
+    from saimc.render.attribution import audio_metadata_tags
+
     cmd = [
         bin_path,
         "-y",  # overwrite output if it exists
@@ -350,8 +356,10 @@ def encode_opus(
         f"{bitrate_kbps}k",
         "-vbr",
         "on",
-        str(out_ogg_path),
     ]
+    for tag, value in audio_metadata_tags().items():
+        cmd += ["-metadata", f"{tag}={value}"]
+    cmd.append(str(out_ogg_path))
     t0 = time.perf_counter()
     try:
         proc = safe_run(cmd, timeout_s=timeout_s)
@@ -372,7 +380,7 @@ def encode_opus(
             "ffmpeg returned 0 but no OGG file was written",
         )
     logger.info("ffmpeg encoded %s -> %s in %.1fs", wav_path, out_ogg_path, elapsed)
-    return audit.version, audit.binary_sha256
+    return audit.version, audit.binary_sha256, audit.configuration_line
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +431,7 @@ def render_audio(
     )
 
     # 3. WAV -> OGG Opus via audited FFmpeg.
-    ffmpeg_version, ffmpeg_sha = encode_opus(
+    ffmpeg_version, ffmpeg_sha, ffmpeg_config = encode_opus(
         wav_path,
         ogg_path,
         ffmpeg_bin=ffmpeg_bin,
@@ -452,6 +460,7 @@ def render_audio(
         ffmpeg_build_sha=ffmpeg_sha,
         soundfont_name=soundfont_path.name,
         soundfont_sha256=soundfont_sha,
+        ffmpeg_configuration=ffmpeg_config,
     )
 
 

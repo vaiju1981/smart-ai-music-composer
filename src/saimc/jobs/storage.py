@@ -50,6 +50,10 @@ class ArtifactRecord:
     `path` is relative to the jobs root (i.e. `{job_id}/audio.wav`), so
     the artifact can be moved with the directory and the token still
     resolves.
+
+    `toolchain` carries the producing toolchain's provenance (engine
+    names/versions/build hashes and asset identifiers) so the §9
+    manifest can be emitted from the persisted job alone.
     """
 
     kind: str  # "audio" | "audio_ogg" | "sheet" | "animation"
@@ -58,6 +62,7 @@ class ArtifactRecord:
     path: str
     sha256: str
     size_bytes: int
+    toolchain: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -261,6 +266,7 @@ class JobStorage:
                     "path": a.path,
                     "sha256": a.sha256,
                     "size_bytes": a.size_bytes,
+                    "toolchain": dict(a.toolchain),
                 }
                 for kind, a in job.artifacts.items()
             },
@@ -303,6 +309,7 @@ class JobStorage:
                 path=a["path"],
                 sha256=a["sha256"],
                 size_bytes=a["size_bytes"],
+                toolchain=dict(a.get("toolchain", {})),
             )
             for kind, a in payload.get("artifacts", {}).items()
         }
