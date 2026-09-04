@@ -2,7 +2,9 @@ Salamander Grand Piano (Salamander Piano Samples)
 ==================================================
 
 Author:      Alexander Holm
-Source:      https://salamanderan.com/
+Version:     V3+20200602 (Yamaha C5 grand, 16 velocity layers, SF2)
+Source:      https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html
+             (original recordings: https://archive.org/details/SalamanderGrandPianoV3)
 License:     Creative Commons Attribution 3.0 (CC BY 3.0)
 License URL: https://creativecommons.org/licenses/by/3.0/
 Modification status: unmodified — the sample pack is shipped as-is,

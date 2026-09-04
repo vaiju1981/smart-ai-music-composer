@@ -29,7 +29,9 @@ LGPL posture described here at every render.
 ## Salamander Grand Piano (soundfont)
 
 - License: CC BY 3.0 — attribution required.
-- Author: Alexander Holm; source: https://salamanderan.com/
+- Author: Alexander Holm; source:
+  https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html
+  (original recordings: https://archive.org/details/SalamanderGrandPianoV3)
 - Canonical notice: [`LICENSES/Salamander-Grand-Piano.txt`](LICENSES/Salamander-Grand-Piano.txt)
 - Rendered audio carries the attribution in embedded metadata, and
   each completed job's `manifest.json` records the soundfont's

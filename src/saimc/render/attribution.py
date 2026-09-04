@@ -15,10 +15,10 @@ from __future__ import annotations
 
 SOUNDFONT_NAME = "Salamander Grand Piano"
 SOUNDFONT_AUTHOR = "Alexander Holm"
-SOUNDFONT_VERSION = "2023"
+SOUNDFONT_VERSION = "V3+20200602"
 SOUNDFONT_LICENSE = "CC BY 3.0"
 SOUNDFONT_LICENSE_URL = "https://creativecommons.org/licenses/by/3.0/"
-SOUNDFONT_SOURCE_URL = "https://salamanderan.com/"
+SOUNDFONT_SOURCE_URL = "https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html"
 SOUNDFONT_MODIFICATION_STATUS = "unmodified"
 
 # Repo-relative path of the canonical notice, referenced by
