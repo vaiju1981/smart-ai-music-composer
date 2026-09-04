@@ -62,13 +62,20 @@ def bar_ticks(time_signature: str) -> int:
 
 @dataclass(frozen=True)
 class DurationArrangement:
-    """The chosen form + repetition count + tempo for a piece."""
+    """The chosen form + repetition count + tempo for a piece.
+
+    `coda_bars` is the optional shorter tail added when no clean
+    (repetition_count, tempo) hits the target. Per §10 #1, a coda is
+    "a shorter coda made only of complete measures" — appended after
+    the final full-form repetition. `coda_bars=0` means no coda.
+    """
 
     form_bars: int
     template: ChordTemplate
     repetition_count: int
     total_bars: int
     tempo_bpm: float
+    coda_bars: int = 0
 
     def __post_init__(self) -> None:
         if self.repetition_count < 1:
@@ -77,6 +84,16 @@ class DurationArrangement:
             raise ValueError(
                 f"repetition_count exceeds MAX_REPEATS ({MAX_REPEATS}); got {self.repetition_count}"
             )
+        if self.coda_bars < 0:
+            raise ValueError(f"coda_bars must be >= 0; got {self.coda_bars}")
+        # Coda must be smaller than the form itself; if it were the same
+        # size, the caller should bump repetition_count instead.
+        if self.coda_bars > 0 and self.coda_bars >= self.form_bars:
+            raise ValueError(f"coda_bars ({self.coda_bars}) must be < form_bars ({self.form_bars})")
+
+    @property
+    def total_bars_with_coda(self) -> int:
+        return self.total_bars + self.coda_bars
 
 
 class DurationUnfulfillableError(Exception):
@@ -94,12 +111,16 @@ def arrange_for_duration(
     """Find (form, repetition_count, tempo) that fits `target_duration_seconds`.
 
     Strategy:
-    1. Pick a base form (8/16/32 bars) — caller-supplied or auto.
+    1. Pick a base form (8/16/32 bars) - caller-supplied or auto.
     2. For each valid repetition_count in 1..MAX_REPEATS, scan every
-       bpm in the mood's range at 1-BPM increments for the smallest
-       |realised - target| / target. Return the first combination
-       whose realised duration is within ±DURATION_TOLERANCE.
-    3. If no combination works, raise `DurationUnfulfillableError`.
+       bpm in the mood's range at 0.5-BPM increments. Return the
+       first combination whose realised duration is within
+       ±DURATION_TOLERANCE.
+    3. If no clean arrangement fits, try adding a coda (a smaller
+       tail of complete measures) per §10 #1. The coda is itself
+       a sub-form: a positive multiple of the form's bar count
+       smaller than the form itself (typically form_bars // 2).
+    4. If even a coda doesn't work, raise DurationUnfulfillableError.
     """
     if base_form_bars is None:
         base_form_bars = _pick_base_form(mood, target_duration_seconds)
@@ -112,29 +133,20 @@ def arrange_for_duration(
     low_bpm, high_bpm = TEMPO_RANGE_BPM[mood]
     tolerance = DURATION_TOLERANCE
 
-    best: tuple[float, int, float, float] | None = None  # (delta, rep, bpm, total_ticks)
+    best_no_coda: tuple[float, int, float, float] | None = None
 
     for repetition_count in range(1, MAX_REPEATS + 1):
         total_bars = base_form_bars * repetition_count
         total_ticks = total_bars * ticks_per_bar
-        # The exact bpm that hits the target:
-        target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
-        # Try the exact bpm if it's in range; else step by 0.5 bpm
-        # within the mood range for fine-grained search (the spec
-        # stores integer bpm but the engine may realise at fractional
-        # tempo so the duration tolerance is actually achievable).
         bpm_candidates: list[float] = []
+        target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
         if low_bpm <= target_bpm <= high_bpm:
             bpm_candidates.append(target_bpm)
-        # 0.5-bpm steps within range.
         bpm_candidates.extend(low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1))
         for bpm in bpm_candidates:
             realised = _realised_seconds(total_ticks, bpm)
             delta = abs(realised - target_duration_seconds) / target_duration_seconds
             if delta <= tolerance:
-                # Round to nearest 0.5 bpm for stability; the spec's
-                # integer bpm field is honoured by the upstream parser,
-                # but the engine's realised tempo is a finer value.
                 chosen = round(bpm * 2) / 2
                 return DurationArrangement(
                     form_bars=base_form_bars,
@@ -143,20 +155,72 @@ def arrange_for_duration(
                     total_bars=total_bars,
                     tempo_bpm=chosen,
                 )
-            if best is None or (delta, repetition_count) < (best[0], best[1]):
-                best = (delta, repetition_count, bpm, float(total_ticks))
+            if best_no_coda is None or (delta, repetition_count) < (
+                best_no_coda[0],
+                best_no_coda[1],
+            ):
+                best_no_coda = (delta, repetition_count, bpm, float(total_ticks))
 
-    # If we got here, no in-tolerance arrangement exists. Surface
-    # the closest one as part of the error for diagnostics.
-    if best is None:
+    # Try with a coda. The coda is the smallest legal half of the form
+    # (must be < form_bars, in whole-bar units). For 8-bar forms the
+    # coda is 4 bars; for 16 it's 8; for 32 it's 16.
+    coda_bars = base_form_bars // 2
+    if coda_bars >= base_form_bars:
+        coda_bars = base_form_bars - 4 if base_form_bars >= 4 else 0
+    if coda_bars >= 1:
+        best_with_coda: tuple[float, int, float, int] | None = None
+        for repetition_count in range(1, MAX_REPEATS + 1):
+            total_bars_no_coda = base_form_bars * repetition_count
+            total_ticks_no_coda = total_bars_no_coda * ticks_per_bar
+            coda_ticks = coda_bars * ticks_per_bar
+            total_ticks = total_ticks_no_coda + coda_ticks
+            target_bpm = (total_ticks / PPQ) * 60.0 / target_duration_seconds
+            coda_bpm_candidates: list[float] = []
+            if low_bpm <= target_bpm <= high_bpm:
+                coda_bpm_candidates.append(target_bpm)
+            coda_bpm_candidates.extend(
+                low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
+            )
+            for bpm in coda_bpm_candidates:
+                realised = _realised_seconds(total_ticks, bpm)
+                delta = abs(realised - target_duration_seconds) / target_duration_seconds
+                if delta <= tolerance:
+                    chosen = round(bpm * 2) / 2
+                    return DurationArrangement(
+                        form_bars=base_form_bars,
+                        template=template,
+                        repetition_count=repetition_count,
+                        total_bars=total_bars_no_coda,
+                        tempo_bpm=chosen,
+                        coda_bars=coda_bars,
+                    )
+                if best_with_coda is None or (delta, repetition_count) < (
+                    best_with_coda[0],
+                    best_with_coda[1],
+                ):
+                    best_with_coda = (delta, repetition_count, bpm, total_ticks)
+
+        if best_with_coda is not None:
+            chosen = round(best_with_coda[2] * 2) / 2
+            return DurationArrangement(
+                form_bars=base_form_bars,
+                template=template,
+                repetition_count=best_with_coda[1],
+                total_bars=base_form_bars * best_with_coda[1],
+                tempo_bpm=chosen,
+                coda_bars=coda_bars,
+            )
+
+    # Surface the closest no-coda arrangement as part of the error.
+    if best_no_coda is None:
         raise DurationUnfulfillableError(
             f"no (form, repetition, tempo) combination fits {target_duration_seconds}s "
             f"for mood={mood!r} within ±{tolerance:.0%}; tried forms {PHRASE_SIZES}, "
             f"repetitions 1..{MAX_REPEATS}, bpm {low_bpm}..{high_bpm}"
         )
-    closest_delta, closest_rep, closest_bpm, closest_ticks = best
+    closest_delta, closest_rep, closest_bpm, closest_ticks = best_no_coda
     raise DurationUnfulfillableError(
-        f"no (form, repetition, tempo) combination fits {target_duration_seconds}s "
+        f"no (form, repetition, tempo, coda) combination fits {target_duration_seconds}s "
         f"for mood={mood!r} within ±{tolerance:.0%}; closest was form={base_form_bars} "
         f"rep={closest_rep} bpm={closest_bpm} (realised "
         f"{_realised_seconds(int(closest_ticks), float(closest_bpm)):.1f}s, "

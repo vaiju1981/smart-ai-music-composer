@@ -139,7 +139,9 @@ def _build_score(
 
     Generates one melody voice + one bass voice per section, with
     per-section seed-derived variation when the arrangement has
-    multiple repetitions.
+    multiple repetitions. If the arrangement has a coda, an extra
+    coda-length tail is appended using a coda-flavored seed so the
+    variation rules from §10 #10 still apply.
     """
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
@@ -162,8 +164,28 @@ def _build_score(
         notes.extend(section_notes)
         cursor_tick += arrangement.form_bars * bar_ticks(time_signature)
 
-    # Build measures with strict 1-based bar indexing.
-    for bar_idx in range(arrangement.total_bars):
+    # Optional coda: append a coda-length tail using the same chord
+    # template (truncated to coda_bars). The coda gets its own RNG
+    # seed (a stable offset from the spec seed) so it sounds distinct
+    # from the body, per §10 #10.
+    if arrangement.coda_bars > 0:
+        coda_template = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
+        coda_rng = random.Random(section_seed(spec.seed, arrangement.repetition_count))
+        coda_notes = _generate_section(
+            key=key,
+            time_signature=time_signature,
+            template=coda_template,
+            section_start_tick=cursor_tick,
+            rng=coda_rng,
+            seed_for_variation=rng_base_seed + arrangement.repetition_count,
+        )
+        notes.extend(coda_notes)
+        cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
+
+    # Build measures with strict 1-based bar indexing, including any
+    # coda bars after the full repetitions.
+    total_bars = arrangement.total_bars_with_coda
+    for bar_idx in range(total_bars):
         start = bar_idx * bar_ticks(time_signature)
         measures.append(
             Measure(
@@ -238,6 +260,33 @@ def _generate_section(
         cursor += bar_length_ticks
 
     return notes
+
+
+def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> ChordTemplate:
+    """Return a coda-sized prefix of `template`.
+
+    The coda is a sub-form: a coda_bars-bar prefix of the form's
+    template, using the first chord cycles that fit. Coda length is
+    always strictly less than the form's full length. Zero-duration
+    chord entries are dropped.
+    """
+    kept: list[tuple[int, int]] = []
+    consumed = 0
+    for degree, dur in template.chords:
+        remaining = coda_bars - consumed
+        if remaining <= 0:
+            break
+        if dur > remaining:
+            kept.append((degree, remaining))
+            consumed += remaining
+        else:
+            kept.append((degree, dur))
+            consumed += dur
+    return ChordTemplate(
+        name=f"{template.name}_coda{coda_bars}",
+        bars=coda_bars,
+        chords=tuple(kept),
+    )
 
 
 def _scale_degree_to_semitones(degree: int, mode: str) -> int:

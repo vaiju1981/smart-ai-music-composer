@@ -7,7 +7,7 @@ import pytest
 from saimc.compose.duration import (
     DURATION_TOLERANCE,
     MAX_REPEATS,
-    DurationUnfulfillableError,
+    DurationArrangement,
     arrange_for_duration,
     bar_ticks,
     section_seed,
@@ -75,14 +75,39 @@ class TestArrangeForDuration:
         )
         assert arr.form_bars == 8
 
-    def test_short_target_unfulfillable(self) -> None:
-        # Calming tempo range (50-80) means 8 bars at rep=1 caps at 24s
-        # and rep=2 caps at 48s — so 45s is in the gap and unfulfillable.
-        with pytest.raises(DurationUnfulfillableError):
-            arrange_for_duration(
-                mood="calming",
-                target_duration_seconds=45.0,
-                time_signature="4/4",
+    def test_short_target_uses_coda(self) -> None:
+        """Targets that don't fit a clean (form, repetition) now use a coda."""
+        # Calming tempo range 50-80, 8-bar rep 1 caps at 24s,
+        # rep 2 caps at 48s — so 45s is in the gap. With a 4-bar coda
+        # the policy should hit exactly.
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=45.0,
+            time_signature="4/4",
+        )
+        assert arr.coda_bars == 4
+        assert arr.total_bars_with_coda == arr.total_bars + arr.coda_bars
+
+    def test_coda_invalid_when_larger_than_form(self) -> None:
+        with pytest.raises(ValueError):
+            DurationArrangement(
+                form_bars=8,
+                template=type("T", (), {})(),
+                repetition_count=1,
+                total_bars=8,
+                tempo_bpm=60.0,
+                coda_bars=8,
+            )
+
+    def test_coda_invalid_when_negative(self) -> None:
+        with pytest.raises(ValueError):
+            DurationArrangement(
+                form_bars=8,
+                template=type("T", (), {})(),
+                repetition_count=1,
+                total_bars=8,
+                tempo_bpm=60.0,
+                coda_bars=-1,
             )
 
     def test_long_calming_picks_16_or_32_bar(self) -> None:

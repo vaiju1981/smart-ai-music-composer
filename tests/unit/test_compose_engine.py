@@ -97,6 +97,15 @@ class TestComposeFailurePaths:
         exc = CompositionEngineError(code=EngineErrorCode.DURATION_UNFULFILLABLE, message="test")
         assert exc.code == EngineErrorCode.DURATION_UNFULFILLABLE
 
+    def test_coda_path_lints_clean(self) -> None:
+        """45s calming uses a 4-bar coda; the engine still lints clean."""
+        out = compose(_spec(Mood.CALMING, duration=45, seed=42))
+        assert out.arrangement.coda_bars == 4
+        report = lint(out.notation_score)
+        assert report.passed, f"lint issues: {report.issues}"
+        # The score includes coda measures on top of the body.
+        assert out.notation_score.total_ticks() == (out.arrangement.total_bars_with_coda * 4 * 480)
+
 
 class TestComposeIntegrationWithWorker:
     """Spot-check the wiring through `compose_stage`'s default-engine path."""
