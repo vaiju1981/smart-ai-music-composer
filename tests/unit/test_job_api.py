@@ -190,3 +190,54 @@ class TestIndexPage:
     def test_index_does_not_shadow_api_docs(self, client: TestClient) -> None:
         assert client.get("/docs").status_code == 200
         assert client.get("/openapi.json").status_code == 200
+
+
+class TestListJobs:
+    def test_lists_jobs_newest_first(self, client: TestClient) -> None:
+        first = client.post("/jobs", json={"prompt": "calming piano"}).json()
+        second = client.post("/jobs", json={"prompt": "electrifying piano"}).json()
+        listed = client.get("/jobs").json()
+        ids = [j["job_id"] for j in listed]
+        assert ids.count(first["job_id"]) == 1
+        assert ids.index(second["job_id"]) < ids.index(first["job_id"])
+
+    def test_limit_caps_the_listing(self, client: TestClient) -> None:
+        for _ in range(3):
+            client.post("/jobs", json={"prompt": "calming piano"})
+        listed = client.get("/jobs", params={"limit": 2}).json()
+        assert len(listed) == 2
+
+    def test_list_includes_spec_and_seed_once_parsed(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        create = client.post("/jobs", json={"prompt": "calming piano"}).json()
+        storage = JobStorage(tmp_path)
+        job = storage.get(create["job_id"])
+        job.input_spec = _spec(seed=7)
+        job.seed = 7  # parse_stage mirrors spec.seed onto the job
+        storage.save(job)
+        listed = client.get("/jobs").json()
+        mine = next(j for j in listed if j["job_id"] == create["job_id"])
+        assert mine["input_spec"]["mood"] == "calming"
+        assert mine["seed"] == 7
+
+
+class TestCreateJobSeed:
+    def test_explicit_seed_is_persisted(self, client: TestClient, tmp_path: Path) -> None:
+        body = client.post("/jobs", json={"prompt": "calming", "seed": 123}).json()
+        assert body["seed"] == 123
+        job = JobStorage(tmp_path).get(body["job_id"])
+        assert job.seed == 123
+
+    def test_negative_seed_rejected(self, client: TestClient) -> None:
+        resp = client.post("/jobs", json={"prompt": "calming", "seed": -1})
+        assert resp.status_code == 422
+
+
+class TestMeta:
+    def test_meta_lists_vocabulary(self, client: TestClient) -> None:
+        meta = client.get("/meta").json()
+        assert set(meta["moods"]) == {"calming", "electrifying", "sleep"}
+        assert "4/4" in meta["time_signatures"]
+        assert meta["instruments"] == ["piano"]
+        assert meta["duration_seconds"] == {"min": 30, "max": 600, "default": 180}

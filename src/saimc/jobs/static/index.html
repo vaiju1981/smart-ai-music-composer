@@ -143,6 +143,40 @@
   }
   .job-meta { color: var(--faint); font-size: 0.78rem; word-break: break-all; margin: 14px 0 0; }
   .cancel-row { margin-top: 12px; }
+  .job-actions { display: flex; gap: 10px; margin-top: 12px; }
+  button.secondary {
+    background: transparent; color: var(--accent); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 14px; font-size: 0.85rem; cursor: pointer;
+  }
+  button.secondary:hover { border-color: var(--accent-strong); }
+
+  /* ---- error detail ---- */
+  .error-raw { color: var(--faint); font-size: 0.78rem; margin-top: 8px; }
+  .error-raw summary { cursor: pointer; color: var(--muted); }
+  .error-raw code { white-space: pre-wrap; word-break: break-all; }
+
+  /* ---- history ---- */
+  #history-list { list-style: none; margin: 0; padding: 0; }
+  .history-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 4px; border-top: 1px solid var(--border);
+  }
+  .history-item:first-child { border-top: 0; }
+  .history-item .h-prompt {
+    flex: 1; color: var(--text); font-size: 0.9rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .history-item .h-time { color: var(--faint); font-size: 0.75rem; white-space: nowrap; }
+  .badge {
+    font-size: 0.7rem; font-weight: 600; border-radius: 999px;
+    padding: 3px 9px; border: 1px solid var(--border); color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge.complete { color: var(--ok); border-color: rgba(70, 201, 143, 0.5); }
+  .badge.failed { color: var(--err); border-color: rgba(239, 106, 98, 0.5); }
+  .badge.running { color: var(--accent); border-color: rgba(79, 131, 247, 0.5); }
+  a.h-link { all: unset; cursor: pointer; display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+  a.h-link:hover .h-prompt { color: var(--accent); }
 
   /* ---- results ---- */
   #previews { display: none; }
@@ -220,8 +254,21 @@
     </div>
     <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
     <p class="alert" id="job-error"></p>
+    <details class="error-raw" id="error-detail" hidden>
+      <summary>Technical details</summary>
+      <code id="error-raw"></code>
+    </details>
     <div class="cancel-row"><button id="cancel2" class="ghost" type="button" hidden>Cancel this job</button></div>
+    <div class="job-actions">
+      <button id="remix" class="secondary" type="button" hidden>✎ Remix this prompt</button>
+      <button id="reproduce" class="secondary" type="button" hidden>⟳ Reproduce (same seed)</button>
+    </div>
     <p class="job-meta" id="job-id"></p>
+  </section>
+
+  <section class="card" id="history-panel" hidden>
+    <label class="field-label">Recent pieces</label>
+    <ul id="history-list"></ul>
   </section>
 
   <section id="previews">
@@ -281,20 +328,61 @@
   };
   var CANCELLABLE_STATES = ["queued", "parsing", "composing"];
 
+  // What each failure code means for the person holding the prompt.
+  // Anything unmapped falls back to the server's message.
+  var ERROR_HINTS = {
+    out_of_vocabulary:
+      "Phase 1 understands three moods — calming, electrifying, and sleep — plus a duration (e.g. “a 5 minute electrifying piece”). Try rephrasing with one of those.",
+    empty_prompt: "The prompt was empty — type what you’d like to hear.",
+    famous_piece: "Named pieces are out of scope for Phase 1; describe the mood and length instead.",
+    llm_unreachable: "The language model could not be reached. Check that Ollama is running, then try again.",
+    llm_invalid_json: "The language model returned something we couldn’t read. Trying again usually fixes it.",
+    llm_invalid_response: "The language model returned something we couldn’t read. Trying again usually fixes it.",
+    schema_invalid: "The language model produced an invalid request. It gets up to two automatic fixes; if this persists, try rephrasing.",
+    duration_unfulfillable: "That combination of mood and length can’t be composed within tolerance. Try a duration between 30 and 600 seconds.",
+    soundfont_missing: "The piano soundfont is not installed on the server (assets/Salamander.sf2).",
+    fluidsynth_missing: "FluidSynth is not installed on the server.",
+    ffmpeg_missing: "The FFmpeg binary is not configured on the server.",
+    worker_interrupted: "The server restarted mid-job and the job made no progress. Submit it again.",
+    cancel_not_allowed: "This job has already started rendering and can no longer be cancelled."
+  };
+
+  // Progress ceilings per pipeline step — the interpolator creeps the
+  // bar toward these between real server updates so a long render
+  // never looks frozen.
+  var STAGE_CEILINGS = {
+    queued: 3, parsing: 15, composing: 30,
+    rendering_audio: 50, rendering_sheet: 62, rendering_animation: 95
+  };
+
   var el = function (id) { return document.getElementById(id); };
   var stepperEl = el("stepper"), stageNoteEl = el("stage-note"), percentEl = el("percent");
   var barEl = el("progress-bar"), jobErrEl = el("job-error");
   var statusPanel = el("status-panel"), previews = el("previews");
   var composeBtn = el("compose"), formErrEl = el("form-error");
   var cancelBtns = [el("cancel"), el("cancel2")];
+  var remixBtn = el("remix"), reproduceBtn = el("reproduce");
+  var historyPanel = el("history-panel"), historyList = el("history-list");
 
   var jobId = null;
+  var lastJob = null;
   var pollTimer = null;
   var pollFailures = 0;
+  var displayedPct = 0;
+  var lastProgressAt = 0;
 
   function setJob(id) {
     jobId = id;
+    // The hash is the permalink: reload/share lands on the same job.
+    if (window.location.hash !== "#/job/" + id) {
+      window.history.replaceState(null, "", "#/job/" + id);
+    }
     try { localStorage.setItem("saimc.job_id", id); } catch (e) { /* private mode */ }
+  }
+
+  function jobFromHash() {
+    var m = window.location.hash.match(/^#\/job\/([a-zA-Z0-9-]+)$/);
+    return m ? m[1] : null;
   }
 
   function startPolling() {
@@ -344,26 +432,65 @@
 
   function renderJob(job) {
     statusPanel.hidden = false;
+    lastJob = job;
     renderStepper(job.state);
     stageNoteEl.textContent = STAGE_NOTES[job.state] || job.current_stage || job.state;
-    var pct = Math.round((job.progress || 0) * 100);
-    percentEl.textContent = pct + "%";
-    barEl.style.width = pct + "%";
+    renderProgress(job);
     el("job-id").textContent = "job " + job.job_id;
-    jobErrEl.textContent = job.error
-      ? job.error.error_code + " — " + job.error.message
-      : "";
+    renderError(job);
 
     var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
-    composeBtn.disabled = running;
+    // A rendering job must not block composing the next one.
+    composeBtn.disabled = false;
+    remixBtn.hidden = !job.input_prompt || job.input_prompt === "(from-spec)";
+    reproduceBtn.hidden = job.seed === null || job.seed === undefined;
     setCancelVisible(CANCELLABLE_STATES.indexOf(job.state) !== -1);
 
     if (job.state === "complete") {
       stopPolling();
       renderArtifacts(job);
+      refreshHistory();
     } else if (!running) {
       stopPolling();
     }
+  }
+
+  function renderProgress(job) {
+    var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
+    var serverPct = Math.round((job.progress || 0) * 100);
+    if (running) {
+      // Interpolate between real updates: while the stage is still the
+      // same and the server hasn't moved the bar, creep toward the
+      // stage's ceiling so a long render doesn't look frozen. A real
+      // server update always wins.
+      var ceiling = STAGE_CEILINGS[job.state] !== undefined ? STAGE_CEILINGS[job.state] : 99;
+      var now = Date.now();
+      if (serverPct > displayedPct) {
+        displayedPct = serverPct;
+        lastProgressAt = now;
+      }
+      var crept = Math.min(ceiling, displayedPct + (now - lastProgressAt) / 1000 * 0.4);
+      var pct = Math.round(Math.max(serverPct, crept));
+      percentEl.textContent = pct + "%";
+      barEl.style.width = pct + "%";
+    } else {
+      displayedPct = serverPct;
+      percentEl.textContent = serverPct + "%";
+      barEl.style.width = serverPct + "%";
+    }
+  }
+
+  function renderError(job) {
+    if (!job.error) {
+      jobErrEl.textContent = "";
+      el("error-detail").hidden = true;
+      return;
+    }
+    var hint = ERROR_HINTS[job.error.error_code];
+    jobErrEl.textContent = hint || job.error.message;
+    el("error-detail").hidden = false;
+    el("error-raw").textContent =
+      job.error.error_code + " (stage: " + job.error.stage + ")\n" + job.error.message;
   }
 
   function renderArtifacts(job) {
@@ -416,16 +543,21 @@
       });
   }
 
+  var pendingSeed = null;
+
   el("compose-form").addEventListener("submit", function (ev) {
     ev.preventDefault();
     formErrEl.textContent = "";
     var prompt = el("prompt").value.trim();
     if (!prompt) { return; }
     composeBtn.disabled = true;
+    var body = { prompt: prompt };
+    if (pendingSeed !== null) { body.seed = pendingSeed; }
+    pendingSeed = null;
     window.fetch("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: prompt })
+      body: JSON.stringify(body)
     })
       .then(function (res) {
         if (res.status === 503) { throw new Error("job queue unavailable — try again shortly"); }
@@ -441,6 +573,7 @@
         setJob(job.job_id);
         renderJob(job);
         startPolling();
+        refreshHistory();
       })
       .catch(function (err) {
         composeBtn.disabled = false;
@@ -459,6 +592,7 @@
 
   cancelBtns.forEach(function (btn) {
     btn.addEventListener("click", function () {
+      if (!window.confirm("Cancel this job? The partial render is discarded.")) { return; }
       window.fetch("/jobs/" + encodeURIComponent(jobId) + "/cancel", { method: "POST" })
         .then(function (res) { return res.json(); })
         .then(renderJob)
@@ -466,15 +600,75 @@
     });
   });
 
-  // Resume tracking the last job across reloads, and catch up
-  // immediately whenever the tab regains focus.
-  try {
-    var saved = localStorage.getItem("saimc.job_id");
-    if (saved) {
-      setJob(saved);
+  // Remix: take this job's prompt back into the box and go again.
+  // Reproduce: same prompt AND same seed, for a deterministic re-render.
+  remixBtn.addEventListener("click", function () {
+    if (!lastJob) { return; }
+    el("prompt").value = lastJob.input_prompt;
+    el("prompt").focus();
+    el("compose-form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+  });
+  reproduceBtn.addEventListener("click", function () {
+    if (!lastJob) { return; }
+    el("prompt").value = lastJob.input_prompt;
+    pendingSeed = lastJob.seed;
+    el("compose-form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+  });
+
+  // ---- history panel ----
+  function refreshHistory() {
+    window.fetch("/jobs?limit=15")
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (jobs) {
+        if (!jobs.length) { return; }
+        historyPanel.hidden = false;
+        historyList.innerHTML = "";
+        jobs.forEach(function (job) {
+          var li = document.createElement("li");
+          li.className = "history-item";
+          var a = document.createElement("a");
+          a.className = "h-link";
+          a.href = "#/job/" + job.job_id;
+          var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
+          var badgeCls = job.state === "complete" ? "complete"
+            : job.state === "failed" || job.state === "cancelled" ? "failed" : "running";
+          a.innerHTML =
+            '<span class="h-prompt"></span>' +
+            '<span class="h-time"></span>' +
+            '<span class="badge ' + badgeCls + '">' + job.state.replace(/^rendering_/, "") + "</span>";
+          a.querySelector(".h-prompt").textContent = job.input_prompt;
+          a.querySelector(".h-time").textContent = new Date(job.created_at).toLocaleString();
+          a.addEventListener("click", function (ev) {
+            // Intercept so the hash change drives the switch cleanly.
+            ev.preventDefault();
+            window.location.hash = "#/job/" + job.job_id;
+          });
+          li.appendChild(a);
+          historyList.appendChild(li);
+        });
+      })
+      .catch(function () { /* history is a nice-to-have */ });
+  }
+
+  window.addEventListener("hashchange", function () {
+    var id = jobFromHash();
+    if (id && id !== jobId) {
+      previews.style.display = "none";
+      setJob(id);
       startPolling();
     }
-  } catch (e) { /* private mode */ }
+  });
+
+  // Boot: the permalink wins over the last-tracked job.
+  var bootId = jobFromHash();
+  if (!bootId) {
+    try { bootId = localStorage.getItem("saimc.job_id"); } catch (e) { /* private mode */ }
+  }
+  if (bootId) {
+    setJob(bootId);
+    startPolling();
+  }
+  refreshHistory();
 
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && jobId !== null) { poll(); }

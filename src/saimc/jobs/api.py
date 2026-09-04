@@ -52,6 +52,8 @@ class CreateJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=4096)
+    seed: int | None = Field(default=None, ge=0)
+    """Optional reproducibility seed; the parsed spec can still override it."""
 
 
 class CreateJobFromSpecRequest(BaseModel):
@@ -75,6 +77,8 @@ class JobResponse(BaseModel):
     parser_source: str | None
     attempts: int
     seed: int | None
+    input_spec: dict[str, Any] | None = None
+    """The parsed CompositionSpec, once available (None until parsing succeeds)."""
     artifacts: dict[str, dict[str, Any]]
     error: dict[str, str] | None
 
@@ -104,6 +108,7 @@ def _serialize_job(job: Job) -> JobResponse:
         parser_source=job.parser_source,
         attempts=job.attempts,
         seed=job.seed,
+        input_spec=(job.input_spec.model_dump(mode="json") if job.input_spec is not None else None),
         artifacts={
             kind: {
                 "kind": a.kind,
@@ -154,10 +159,14 @@ def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
     """Create a queued job from a user prompt.
 
     Parsing happens later, in the worker's `parsing` stage — the API
-    only persists the prompt and returns the job_id.
+    only persists the prompt and returns the job_id. An explicit seed
+    is honoured until/unless the parsed spec supplies its own.
     """
     storage = _storage(request)
     job = storage.create(body.prompt)
+    if body.seed is not None:
+        job.seed = body.seed
+        storage.save(job)
     _enqueue(job)
     return _serialize_job(job)
 
@@ -178,6 +187,45 @@ def create_job_from_spec(body: CreateJobFromSpecRequest, request: Request) -> Jo
     storage.save(job)
     _enqueue(job)
     return _serialize_job(job)
+
+
+@router.get("/jobs")
+def list_jobs(request: Request, limit: int = 50) -> list[JobResponse]:
+    """List jobs, newest first — the UI's history panel.
+
+    `limit` caps the number returned (default 50); jobs beyond the cap
+    remain accessible by their `/jobs/{id}` permalink.
+    """
+    storage = _storage(request)
+    jobs = sorted(storage.list_all(), key=lambda j: j.created_at, reverse=True)
+    return [_serialize_job(job) for job in jobs[: max(0, limit)]]
+
+
+@router.get("/meta")
+def get_meta() -> dict[str, Any]:
+    """Authoring vocabulary for the UI — what Phase 1 accepts.
+
+    One source of truth: the values come straight from the spec module,
+    so schema and UI can never drift.
+    """
+    from saimc.spec import (
+        DURATION_SECONDS_DEFAULT,
+        DURATION_SECONDS_MAX,
+        DURATION_SECONDS_MIN,
+        Mood,
+        TimeSignature,
+    )
+
+    return {
+        "moods": [m.value for m in Mood],
+        "time_signatures": [t.value for t in TimeSignature],
+        "instruments": ["piano"],
+        "duration_seconds": {
+            "min": DURATION_SECONDS_MIN,
+            "max": DURATION_SECONDS_MAX,
+            "default": DURATION_SECONDS_DEFAULT,
+        },
+    }
 
 
 @router.get("/jobs/{job_id}")
