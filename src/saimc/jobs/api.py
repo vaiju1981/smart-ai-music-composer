@@ -40,6 +40,11 @@ from saimc.spec import CompositionSpec
 router = APIRouter()
 _state_machine = JobStateMachine()
 
+# The web UI is a single static page (roadmap §2 "prompt box, job status,
+# preview, downloads") that talks to the JSON routes below; no templating
+# or asset pipeline for Phase 1.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
 
 class CreateJobRequest(BaseModel):
     """Body for `POST /jobs`."""
@@ -136,6 +141,12 @@ def _enqueue(job: Job) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"job queue unavailable, retry: {job.job_id}",
         ) from exc
+
+
+@router.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    """Serve the single-page web UI."""
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
 
 @router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)

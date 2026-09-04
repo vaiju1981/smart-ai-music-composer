@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart AI Music Composer</title>
+<style>
+  :root {
+    --bg: #101418;
+    --panel: #1a2028;
+    --border: #2c3542;
+    --text: #e6ebf1;
+    --muted: #8a97a5;
+    --accent: #4f9cf9;
+    --ok: #4fc98a;
+    --err: #e5645f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 0.9rem; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .prompt-row { display: flex; gap: 8px; }
+  #prompt {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 1rem;
+  }
+  #prompt:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    background: var(--accent);
+    color: #0b0e12;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #cancel { background: transparent; color: var(--err); border: 1px solid var(--err); }
+  .status-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .state { font-weight: 600; }
+  .state.running { color: var(--accent); }
+  .state.complete { color: var(--ok); }
+  .state.failed, .state.cancelled { color: var(--err); }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .job-id { color: var(--muted); font-size: 0.8rem; word-break: break-all; }
+  .progress {
+    height: 6px; background: var(--border); border-radius: 3px;
+    margin-top: 12px; overflow: hidden;
+  }
+  .progress > div {
+    height: 100%; width: 0; background: var(--accent);
+    transition: width 0.4s ease;
+  }
+  .error-box {
+    border: 1px solid var(--err); border-radius: 8px;
+    padding: 10px 12px; margin-top: 12px; color: var(--err);
+    font-size: 0.9rem; white-space: pre-wrap;
+  }
+  .error-box:empty { display: none; }
+  #previews { display: none; }
+  #previews h2 { font-size: 1.05rem; margin: 20px 0 8px; }
+  audio, video { width: 100%; border-radius: 8px; }
+  .sheet-wrap {
+    background: #f5f2ec; border-radius: 8px; padding: 8px;
+    max-height: 420px; overflow: auto;
+  }
+  .sheet-wrap img { width: 100%; display: block; }
+  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .downloads a {
+    color: var(--accent); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Smart AI Music Composer</h1>
+  <p class="sub">Phase 1 — mood-based piano pieces. Describe the mood and length; rendering runs as a background job.</p>
+
+  <section class="panel">
+    <form id="compose-form" class="prompt-row">
+      <input id="prompt" type="text" maxlength="4096" required
+             placeholder="e.g. build me a 30 second calming piano piece"
+             aria-label="Composition prompt">
+      <button id="compose" type="submit">Compose</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+    </form>
+    <p class="error-box" id="form-error" role="alert"></p>
+  </section>
+
+  <section class="panel" id="status-panel" hidden>
+    <div class="status-line">
+      <span class="state" id="state">queued</span>
+      <span class="muted" id="stage"></span>
+    </div>
+    <p class="job-id" id="job-id"></p>
+    <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
+    <p class="error-box" id="job-error"></p>
+  </section>
+
+  <section id="previews">
+    <h2>Audio</h2>
+    <audio id="audio-player" controls preload="none"></audio>
+    <h2>Animation</h2>
+    <video id="animation-player" controls preload="none"></video>
+    <h2>Sheet music</h2>
+    <div class="sheet-wrap"><img id="sheet-image" alt="Rendered sheet music"></div>
+    <div class="downloads" id="downloads"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var POLL_MS = 1500;
+  var STATE_CLASSES = ["running", "complete", "failed", "cancelled"];
+  var RUNNING_STATES = ["queued", "parsing", "composing", "rendering_audio",
+                        "rendering_sheet", "rendering_animation"];
+  var CANCELLABLE_STATES = ["queued", "parsing", "composing"];
+
+  var el = function (id) { return document.getElementById(id); };
+  var stateEl = el("state"), stageEl = el("stage"), jobEl = el("job-id");
+  var barEl = el("progress-bar"), jobErrEl = el("job-error");
+  var statusPanel = el("status-panel"), previews = el("previews");
+  var cancelBtn = el("cancel"), formErrEl = el("form-error");
+  var composeBtn = el("compose");
+
+  var jobId = null;
+  var pollTimer = null;
+
+  function setJob(id) {
+    jobId = id;
+    try { localStorage.setItem("saimc.job_id", id); } catch (e) { /* private mode */ }
+  }
+
+  function startPolling() {
+    if (pollTimer !== null) { return; }
+    pollTimer = window.setInterval(poll, POLL_MS);
+    poll();
+  }
+
+  function stopPolling() {
+    if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function artifactUrl(kind) {
+    return "/jobs/" + encodeURIComponent(jobId) + "/artifact/" + kind;
+  }
+
+  function renderJob(job) {
+    statusPanel.hidden = false;
+    stateEl.textContent = job.state;
+    stateEl.className = "state " + (
+      job.state === "complete" ? "complete"
+      : job.state === "failed" ? "failed"
+      : job.state === "cancelled" ? "cancelled"
+      : "running"
+    );
+    stageEl.textContent = job.current_stage || "";
+    barEl.style.width = Math.round((job.progress || 0) * 100) + "%";
+    jobEl.textContent = "job " + job.job_id;
+    jobErrEl.textContent = job.error
+      ? (job.error.error_code + " (" + job.error.stage + "): " + job.error.message)
+      : "";
+
+    var running = RUNNING_STATES.indexOf(job.state) !== -1;
+    composeBtn.disabled = running;
+    cancelBtn.hidden = CANCELLABLE_STATES.indexOf(job.state) === -1;
+
+    if (job.state === "complete") {
+      stopPolling();
+      renderArtifacts(job);
+    } else if (!running) {
+      stopPolling();
+    }
+  }
+
+  function renderArtifacts(job) {
+    previews.style.display = "block";
+    var kinds = Object.keys(job.artifacts || {});
+    if (kinds.indexOf("audio_ogg") !== -1) {
+      el("audio-player").src = artifactUrl("audio_ogg");
+    } else if (kinds.indexOf("audio") !== -1) {
+      el("audio-player").src = artifactUrl("audio");
+    }
+    if (kinds.indexOf("animation") !== -1) {
+      el("animation-player").src = artifactUrl("animation");
+    }
+    if (kinds.indexOf("sheet") !== -1) {
+      el("sheet-image").src = artifactUrl("sheet");
+    }
+    var downloads = el("downloads");
+    downloads.innerHTML = "";
+    var labels = { audio: "audio.wav", audio_ogg: "audio.ogg",
+                   sheet: "sheet.svg", animation: "animation.webm" };
+    kinds.forEach(function (kind) {
+      var a = document.createElement("a");
+      a.href = artifactUrl(kind);
+      a.download = labels[kind] || kind;
+      a.textContent = "download " + (labels[kind] || kind);
+      downloads.appendChild(a);
+    });
+  }
+
+  function poll() {
+    fetch("/jobs/" + encodeURIComponent(jobId))
+      .then(function (res) {
+        if (res.status === 404) { throw new Error("job not found"); }
+        if (!res.ok) { throw new Error("status " + res.status); }
+        return res.json();
+      })
+      .then(renderJob)
+      .catch(function (err) {
+        stopPolling();
+        jobErrEl.textContent = "Could not load job: " + err.message;
+      });
+  }
+
+  el("compose-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    formErrEl.textContent = "";
+    var prompt = el("prompt").value.trim();
+    if (!prompt) { return; }
+    composeBtn.disabled = true;
+    fetch("/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: prompt })
+    })
+      .then(function (res) {
+        if (res.status === 503) { throw new Error("job queue unavailable — try again"); }
+        if (!res.ok) {
+          return res.json().then(function (body) {
+            throw new Error(body.detail || ("status " + res.status));
+          });
+        }
+        return res.json();
+      })
+      .then(function (job) {
+        setJob(job.job_id);
+        renderJob(job);
+        startPolling();
+      })
+      .catch(function (err) {
+        composeBtn.disabled = false;
+        formErrEl.textContent = err.message;
+      });
+  });
+
+  cancelBtn.addEventListener("click", function () {
+    fetch("/jobs/" + encodeURIComponent(jobId) + "/cancel", { method: "POST" })
+      .then(function (res) { return res.json(); })
+      .then(renderJob)
+      .catch(function (err) { formErrEl.textContent = "Cancel failed: " + err.message; });
+  });
+
+  // Resume tracking the last job across reloads.
+  try {
+    var saved = localStorage.getItem("saimc.job_id");
+    if (saved) {
+      setJob(saved);
+      startPolling();
+    }
+  } catch (e) { /* private mode */ }
+})();
+</script>
+</body>
+</html>

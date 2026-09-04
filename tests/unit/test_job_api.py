@@ -168,3 +168,25 @@ class TestCancel:
     def test_cancel_unknown_returns_404(self, client: TestClient) -> None:
         resp = client.post("/jobs/does-not-exist/cancel")
         assert resp.status_code == 404
+
+
+class TestIndexPage:
+    """The web UI route (roadmap §2: prompt box, job status, preview, downloads)."""
+
+    def test_index_serves_the_single_page_ui(self, client: TestClient) -> None:
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/html")
+        text = resp.text
+        # The page drives the same JSON routes the API exposes.
+        assert "/jobs" in text
+        assert "artifact/" in text
+        assert 'id="prompt"' in text  # prompt box
+        assert 'id="progress-bar"' in text  # job status
+        assert "audio_ogg" in text  # preview
+        assert "animation" in text  # preview
+        assert "download" in text  # downloads
+
+    def test_index_does_not_shadow_api_docs(self, client: TestClient) -> None:
+        assert client.get("/docs").status_code == 200
+        assert client.get("/openapi.json").status_code == 200
