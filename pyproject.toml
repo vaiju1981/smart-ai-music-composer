@@ -115,7 +115,15 @@ warn_no_return = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["music21.*", "moviepy.*", "pydub.*", "rq.*", "ollama.*", "valkey_glide.*", "mido.*"]
+module = ["moviepy.*", "pydub.*", "rq.*", "ollama.*", "valkey_glide.*", "mido.*"]
+ignore_missing_imports = true
+
+# music21 ships py.typed but with partial typing (untyped stream methods,
+# non-exported aliases); it is a gen-time-only dependency, so skip
+# analysis and treat it as Any rather than erroring on its gaps.
+[[tool.mypy.overrides]]
+module = ["music21.*"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

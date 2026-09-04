@@ -122,6 +122,33 @@ def _stub_audio_stage_advances(job, storage, **_kwargs):  # type: ignore[no-unty
     return StageResult(job=job, next_state=JobState.RENDERING_SHEET)
 
 
+def _stub_sheet_stage_advances(job, storage, **_kwargs):  # type: ignore[no-untyped-def]
+    """Stand-in for `render_sheet_stage` that writes a tiny stub SVG.
+
+    The test environment has no Node render-service build; this stub
+    lets the worker walk to COMPLETE while exercising the same
+    artifact-attach contract the real stage uses.
+    """
+    from saimc.jobs.stages import StageResult
+    from saimc.jobs.state import JobState
+    from saimc.jobs.storage import ArtifactRecord
+
+    sheet_path = storage.ensure_artifact_dir(job.job_id) / "sheet.svg"
+    sheet_path.write_bytes(b"<svg></svg>")
+    storage.attach_artifact(
+        job,
+        ArtifactRecord(
+            kind="sheet",
+            container="svg",
+            codec="svg",
+            path=sheet_path.name,
+            sha256=hashlib.sha256(b"<svg></svg>").hexdigest(),
+            size_bytes=11,
+        ),
+    )
+    return StageResult(job=job, next_state=JobState.RENDERING_ANIMATION)
+
+
 class TestEndToEndJobWalk:
     def test_default_engine_walks_to_complete_and_emits_manifest(
         self,
@@ -131,14 +158,17 @@ class TestEndToEndJobWalk:
     ) -> None:
         """Default engine (= the real Phase 1 composer) takes the job to COMPLETE.
 
-        The audio renderer is stubbed because the test env has no
-        FluidSynth; the worker still walks through every state.
+        The audio and sheet renderers are stubbed because the test env
+        has no FluidSynth/Node toolchain; the worker still walks
+        through every state.
         """
         from saimc.jobs import stages
         from saimc.jobs import worker as w
 
         monkeypatch.setattr(stages, "render_audio_stage", _stub_audio_stage_advances)
         monkeypatch.setattr(w, "render_audio_stage", _stub_audio_stage_advances)
+        monkeypatch.setattr(stages, "render_sheet_stage", _stub_sheet_stage_advances)
+        monkeypatch.setattr(w, "render_sheet_stage", _stub_sheet_stage_advances)
 
         spec = CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=180)
         create = client.post(
@@ -219,6 +249,8 @@ class TestEndToEndJobWalk:
         monkeypatch.setattr(w, "compose_stage", _always_succeed)
         monkeypatch.setattr(stages, "render_audio_stage", _stub_audio_stage_advances)
         monkeypatch.setattr(w, "render_audio_stage", _stub_audio_stage_advances)
+        monkeypatch.setattr(stages, "render_sheet_stage", _stub_sheet_stage_advances)
+        monkeypatch.setattr(w, "render_sheet_stage", _stub_sheet_stage_advances)
 
         spec = CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=180)
         create = client.post(

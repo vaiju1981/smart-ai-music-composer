@@ -352,6 +352,74 @@ def render_audio_stage(
     return StageResult(job=job, next_state=JobState.RENDERING_SHEET)
 
 
+def render_sheet_stage(job: Job, storage: JobStorage) -> StageResult:
+    """Run the `rendering_sheet` stage.
+
+    Loads the engine output sidecar, exports the NotationScore to
+    MusicXML, calls the render-service CLI for the SVG, and attaches
+    the artifact (kind="sheet") to the job.
+    """
+    from saimc.compose.serialization import read_engine_output
+    from saimc.render.sheet import SheetRenderError, notation_score_to_musicxml, render_sheet
+
+    if job.input_spec is None:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="no_spec",
+                message="Cannot render sheet without a parsed spec.",
+                stage="rendering_sheet",
+            ),
+        )
+
+    sidecar_path = storage.job_dir(job.job_id) / "engine_output.json"
+    if not sidecar_path.exists():
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="engine_output_missing",
+                message=f"Engine output sidecar not found at {sidecar_path}",
+                stage="rendering_sheet",
+            ),
+        )
+
+    output = read_engine_output(sidecar_path)
+    artifacts_dir = storage.ensure_artifact_dir(job.job_id)
+
+    musicxml_path = artifacts_dir / "score.musicxml"
+    try:
+        musicxml_path.write_text(
+            notation_score_to_musicxml(output.notation_score), encoding="utf-8"
+        )
+        artifact = render_sheet(musicxml_path, artifacts_dir / "sheet.svg")
+    except (SheetRenderError, ValueError, OSError) as exc:
+        code = exc.code if isinstance(exc, SheetRenderError) else "sheet_export_failed"
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code=code,
+                message=str(exc),
+                stage="rendering_sheet",
+            ),
+        )
+
+    storage.attach_artifact(
+        job,
+        ArtifactRecord(
+            kind="sheet",
+            container=artifact.container,
+            codec=artifact.codec,
+            path=artifact.sheet_path.name,
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+        ),
+    )
+    return StageResult(job=job, next_state=JobState.RENDERING_ANIMATION)
+
+
 def transition_to(job: Job, target: JobState, sm: JobStateMachine | None = None) -> Job:
     """Apply `target` via the state machine, raising `IllegalTransitionError` on bad moves."""
     sm = sm or JobStateMachine()
@@ -368,6 +436,7 @@ __all__ = [
     "compose_stage",
     "parse_stage",
     "render_audio_stage",
+    "render_sheet_stage",
     "safe_run",
     "transition_to",
 ]

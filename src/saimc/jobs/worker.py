@@ -32,6 +32,7 @@ from saimc.jobs.stages import (
     compose_stage,
     parse_stage,
     render_audio_stage,
+    render_sheet_stage,
     transition_to,
 )
 from saimc.jobs.state import IllegalTransitionError, JobState, JobStateMachine
@@ -103,11 +104,11 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
 
     This is the only function the worker invokes. It loads the
     canonical Job from storage, runs `parse_stage` then `compose_stage`,
-    and persists the job after each transition. The audio renderer is
-    real (slice 5.3); sheet and animation are stubs until slices 6.2
-    and 7.1 land — the worker transitions through
-    `rendering_sheet → rendering_animation → complete` as no-ops for
-    now so the state-machine wiring is exercised.
+    and persists the job after each transition. The audio and sheet
+    renderers are real (slices 5.3 and 6.2); animation is a stub until
+    slice 7.1 lands — the worker transitions through
+    `rendering_animation → complete` as a no-op for now so the
+    state-machine wiring is exercised.
 
     Args:
         job_id: the opaque job id. Only primitive arguments may be
@@ -192,10 +193,18 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
 
-    # Sheet + animation renderers land in slices 6.2 and 7.1.
+    # Sheet renderer is real (slice 6.2); animation is a stub until
+    # slice 7.1 lands.
     if job.state == JobState.RENDERING_SHEET:
-        transition_to(job, JobState.RENDERING_ANIMATION, sm)
+        result = render_sheet_stage(job, storage)
+        if result.error is not None:
+            job.error = result.error
+            _mark_failed(job, storage, result.error)
+            return
+        if result.next_state is not None:
+            transition_to(job, result.next_state, sm)
         storage.save(job)
+
     if job.state == JobState.RENDERING_ANIMATION:
         transition_to(job, JobState.COMPLETE, sm)
         storage.save(job)
