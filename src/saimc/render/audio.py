@@ -121,8 +121,12 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
 
     # Convert each PerformanceNoteEvent to a note_on / note_off pair.
     # PPQ=480 ticks per beat. The plan's start_us is in microseconds;
-    # we need integer ticks at PPQ=480.
-    for note in sorted(plan.notes, key=lambda n: (n.start_us, n.voice_id, n.pitch_midi)):
+    # we need integer ticks at PPQ=480. SMF event times are DELTAS from
+    # the previous event on the track, and the plan's voices overlap, so
+    # collect all events on an absolute-tick timeline and delta-encode
+    # in order (note_on before note_off at the same tick).
+    events: list[tuple[int, int, mido.Message]] = []
+    for note in plan.notes:
         on_tick = _us_to_ticks(note.start_us, bpm)
         off_tick = _us_to_ticks(note.start_us + note.duration_us, bpm)
         if off_tick <= on_tick:
@@ -130,24 +134,36 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
             # trip; the engine shouldn't produce these but we don't
             # want a malformed MIDI file to crash the renderer.
             off_tick = on_tick + 1
-        track.append(
-            mido.Message(
-                "note_on",
-                channel=note.voice_id % 16,
-                note=note.pitch_midi,
-                velocity=note.velocity,
-                time=on_tick,
+        events.append(
+            (
+                on_tick,
+                0,
+                mido.Message(
+                    "note_on",
+                    channel=note.voice_id % 16,
+                    note=note.pitch_midi,
+                    velocity=note.velocity,
+                ),
             )
         )
-        track.append(
-            mido.Message(
-                "note_off",
-                channel=note.voice_id % 16,
-                note=note.pitch_midi,
-                velocity=0,
-                time=off_tick - on_tick,
+        events.append(
+            (
+                off_tick,
+                1,
+                mido.Message(
+                    "note_off",
+                    channel=note.voice_id % 16,
+                    note=note.pitch_midi,
+                    velocity=0,
+                ),
             )
         )
+
+    prev_tick = 0
+    for tick, _order, message in sorted(events, key=lambda e: (e[0], e[1])):
+        message.time = tick - prev_tick
+        track.append(message)
+        prev_tick = tick
     return midi
 
 
