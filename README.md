@@ -18,6 +18,26 @@ ruff format --check src tests
 mypy src
 ```
 
+## FFmpeg
+
+Phase 1 requires an LGPL FFmpeg shared build with `--enable-libvpx` and `--enable-libopus` (WebM/VP9+Opus per §4). The release-gate path is `scripts/build_ffmpeg.sh`, which pins FFmpeg 8.1.2 with sha256 `464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c`, configures it with the §10 #7 flags, captures the full configure + build logs, and runs `saimc-audit-ffmpeg` against the resulting binary.
+
+A user-pointed-at binary is allowed **only if it passes the audit**. For example, Homebrew's stock `ffmpeg` formula is configured with `--enable-gpl` and so fails:
+
+```
+$ saimc-audit-ffmpeg
+{
+  "binary_path": "/opt/homebrew/bin/ffmpeg",
+  "version": "8.1.2",
+  "license": "gpl",
+  "ok": false,
+  "forbidden_flags_present": ["--enable-gpl"],
+  ...
+}
+```
+
+`scripts/audit_ffmpeg.py` is the same code as the `saimc-audit-ffmpeg` entry point.
+
 ## License
 
 MIT for our code. Third-party dependencies and assets are tracked in §4 of [`docs/roadmap.md`](docs/roadmap.md); every shippable artifact must satisfy the LGPL packaging checklist there before distribution. The bundled Salamander Grand Piano sample pack is CC BY 3.0 with attribution in `LICENSES/Salamander-Grand-Piano.txt` (added during the audio-render slice).
