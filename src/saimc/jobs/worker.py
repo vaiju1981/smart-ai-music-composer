@@ -37,7 +37,12 @@ from saimc.jobs.stages import (
     render_sheet_stage,
     transition_to,
 )
-from saimc.jobs.state import IllegalTransitionError, JobState, JobStateMachine
+from saimc.jobs.state import (
+    TERMINAL_STATES,
+    IllegalTransitionError,
+    JobState,
+    JobStateMachine,
+)
 from saimc.jobs.storage import Job, JobError, JobStorage
 
 DEFAULT_QUEUE = "default"
@@ -81,7 +86,44 @@ def worker_entry(
         connection=queue_obj.connection,
         serializer=JSONSerializer(),
     )
+    _sweep_interrupted_jobs(JobStorage(jobs_root or os.environ.get("SAIMC_JOBS_DIR")))
     worker.work()
+
+
+def _sweep_interrupted_jobs(storage: JobStorage) -> int:
+    """Fail jobs left non-terminal by a dead worker (startup sweep).
+
+    Phase 1 runs exactly one worker process, so when this starts, any
+    persisted job that is not in a terminal state was mid-stage when a
+    previous worker died — restart, crash, OOM, or an RQ timeout kill.
+    Without this sweep those jobs would be stuck forever: nothing would
+    ever transition them again, the UI would poll them indefinitely,
+    and the 24h prune skips active jobs. Marking them failed (with a
+    stable error code naming the last stage) is the honest outcome.
+    """
+    import logging
+    from contextlib import suppress
+
+    logger = logging.getLogger(__name__)
+    swept = 0
+    for stale in storage.list_all():
+        if stale.state in TERMINAL_STATES:
+            continue
+        stale.error = JobError(
+            error_code="worker_interrupted",
+            message=(
+                "The worker stopped while the job was in "
+                f"'{stale.current_stage}'; it made no progress after the restart."
+            ),
+            stage=stale.current_stage,
+        )
+        with suppress(IllegalTransitionError):
+            transition_to(stale, JobState.FAILED)
+        storage.save(stale)
+        swept += 1
+    if swept:
+        logger.info("startup sweep marked %d interrupted job(s) as failed", swept)
+    return swept
 
 
 def enqueue_job(
@@ -146,6 +188,21 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
             ),
         )
         return {"job_id": job_id, "state": job.state.value, "error": "illegal_transition"}
+    except Exception as exc:
+        # An unexpected crash inside a stage (corrupt sidecar, missing
+        # permissions, a renderer bug...) must still land the job in a
+        # terminal state — an uncaught raise would leave it polling
+        # forever in its last stage, exactly like a dead worker would.
+        _mark_failed(
+            job,
+            storage,
+            JobError(
+                error_code="stage_crash",
+                message=f"Unexpected error in '{job.current_stage}': {exc}",
+                stage=job.current_stage,
+            ),
+        )
+        return {"job_id": job_id, "state": job.state.value, "error": "stage_crash"}
 
     if job.state == JobState.COMPLETE:
         _emit_job_manifest(job, storage)
@@ -176,6 +233,19 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
     """Stage-by-stage state walk. Each transition is persisted before the next stage."""
     llm_client = _build_default_llm_client()
 
+    def cancelled_persisted() -> bool:
+        """True if the stored job was cancelled after this walk loaded it.
+
+        The API process flips the persisted state to CANCELLED directly;
+        this in-memory copy would happily transition onwards and clobber
+        it. Re-reading the persisted state before each transition keeps a
+        cancelled job cancelled instead of letting it race to failed.
+        """
+        try:
+            return storage.get(job.job_id).state in TERMINAL_STATES
+        except KeyError:
+            return False
+
     # queued -> parsing
     if job.state == JobState.QUEUED:
         transition_to(job, JobState.PARSING)
@@ -201,6 +271,9 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
                 transition_to(job, result.next_state, sm)
             storage.save(job)
 
+    if cancelled_persisted():
+        return
+
     # composing -> validating (or -> failed)
     if job.state == JobState.COMPOSING:
         result = compose_stage(job, storage)
@@ -209,6 +282,9 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
         if result.next_state is not None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
+
+    if cancelled_persisted():
+        return
 
     # validating -> rendering_audio -> rendering_sheet -> rendering_animation -> complete
     if job.state == JobState.VALIDATING:
@@ -225,6 +301,9 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
 
+    if cancelled_persisted():
+        return
+
     # Sheet renderer is real (slice 6.2).
     if job.state == JobState.RENDERING_SHEET:
         result = render_sheet_stage(job, storage)
@@ -235,6 +314,9 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
         if result.next_state is not None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
+
+    if cancelled_persisted():
+        return
 
     # Animation renderer is real (slice 7.1): piano-roll WebM muxed
     # with the audio stage's WAV.
