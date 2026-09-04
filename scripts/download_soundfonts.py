@@ -73,15 +73,17 @@ MANUAL_FONTS: dict[str, dict[str, str]] = {
         "license": "CC-BY 3.0",
         "covers": "bansuri, sarangi, rudra veena, sarasvati veena, koto, shamisen, ud, qanoon, kora",
     },
-    "105-sitar.sf2": {
+    "105-Sitar.sf2": {
         "page": "https://musical-artifacts.com/artifacts/3847",
         "license": "Public domain",
         "covers": "sitar (upgrades GM 104)",
+        "sha256": "5a7941e74d9a7f8c5bbc18a68b4f5d27cff540d591b1359b8245e8c561a9df93",
     },
-    "wetthasinghe_harmonium.sf2": {
+    "Wetthasinghe_Harmonium.sf2": {
         "page": "https://musical-artifacts.com/artifacts/1391",
         "license": "CC-BY 4.0",
-        "covers": "harmonium",
+        "covers": "harmonium (GM has no harmonium voice)",
+        "sha256": "ea2e31c26057dd9c39d08b2fd060e7b2f41e84a10aa1c61cec43d888a3ef0002",
     },
 }
 
@@ -138,10 +140,18 @@ def status() -> None:
     print("\nManual fonts (browser-download, then place under assets/soundfonts/):")
     for name, info in MANUAL_FONTS.items():
         path = SOUNDFONT_DIR / name
+        pinned = info.get("sha256")
         if path.exists():
+            actual = sha256_file(path)
+            if pinned is None:
+                mark = f"sha256 {actual} (pin this once verified)"
+            elif actual == pinned:
+                mark = f"sha256 ok ({actual[:12]}…)"
+            else:
+                mark = f"sha256 MISMATCH (expected {pinned}, got {actual})"
             print(
-                f"{path}: present ({path.stat().st_size / 1e6:.0f} MB, "
-                f"sha256 {sha256_file(path)}; {info['license']} — {info['page']})"
+                f"{path}: present ({path.stat().st_size / 1e6:.0f} MB, {mark}; "
+                f"{info['license']} — {info['page']})"
             )
         else:
             print(

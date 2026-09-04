@@ -534,6 +534,88 @@ class TestSoundfontResolution:
             assert soundfont_for_instrument("violin-ii") == Path("/tmp/violins.sf2")
             assert soundfont_for_instrument("violin ii") == Path("/tmp/violins.sf2")
 
+    def test_dedicated_font_wins_when_present(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        self._touch("assets/soundfonts/FluidR3_GM.sf2")
+        self._touch("assets/soundfonts/105-Sitar.sf2")
+        self._touch("assets/soundfonts/Wetthasinghe_Harmonium.sf2")
+        assert soundfont_for_instrument("sitar") == Path("./assets/soundfonts/105-Sitar.sf2")
+        assert soundfont_for_instrument("harmonium") == (
+            Path("./assets/soundfonts/Wetthasinghe_Harmonium.sf2")
+        )
+
+    def test_dedicated_font_missing_falls_back_to_general(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        self._touch("assets/soundfonts/FluidR3_GM.sf2")
+        # sitar falls back to the GM patch; harmonium has no GM voice.
+        assert soundfont_for_instrument("sitar") == Path("./assets/soundfonts/FluidR3_GM.sf2")
+        assert soundfont_for_instrument("harmonium") == Path("./assets/soundfonts/FluidR3_GM.sf2")
+
+
+class TestDedicatedFontPresets:
+    """FONT_PRESETS selection is valid only inside the font being loaded."""
+
+    @staticmethod
+    def _plan(voice_id: int = 0) -> PerformancePlan:
+        return PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=voice_id,
+                    pitch_midi=60,
+                    start_us=0,
+                    duration_us=500_000,
+                    velocity=64,
+                )
+            ],
+        )
+
+    def test_preset_selected_when_dedicated_font_is_loaded(self) -> None:
+        from saimc.render.instruments import preset_for_instrument
+
+        dedicated = Path("./assets/soundfonts/105-Sitar.sf2")
+        # The preset pair is tied to the exact font path being loaded.
+        assert preset_for_instrument("sitar", dedicated) == (0, 0)
+        assert preset_for_instrument("sitar", Path("./assets/FluidR3_GM.sf2")) is None
+
+        smf = build_smf(
+            self._plan(),
+            bpm=120.0,
+            voice_instruments={0: "sitar"},
+            soundfont_path=dedicated,
+        )
+        programs = [m.program for m in smf.tracks[0] if m.type == "program_change"]
+        assert programs == [0]  # bank 0, preset 0 of 105-Sitar
+
+    def test_gm_fallback_program_with_the_general_font(self, tmp_path: Path) -> None:
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        gm = tmp_path / "FluidR3_GM.sf2"
+        gm.write_bytes(b"SF2")
+        smf = build_smf(
+            self._plan(),
+            bpm=120.0,
+            voice_instruments={0: "sitar"},
+            soundfont_path=gm,
+        )
+        programs = [m.program for m in smf.tracks[0] if m.type == "program_change"]
+        assert programs == [INSTRUMENT_PROGRAMS["sitar"]]  # GM 104
+
+    def test_font_only_instrument_without_font_raises_cleanly(self, tmp_path: Path) -> None:
+        gm = tmp_path / "FluidR3_GM.sf2"
+        gm.write_bytes(b"SF2")
+        with pytest.raises(AudioRenderError) as exc_info:
+            build_smf(
+                self._plan(),
+                bpm=120.0,
+                voice_instruments={0: "harmonium"},
+                soundfont_path=gm,
+            )
+        assert exc_info.value.code == AudioRenderErrorCode.MIDI_BUILD_FAILED
+        assert "Wetthasinghe_Harmonium.sf2" in str(exc_info.value)
+
 
 class TestInstrumentRegistry:
     def test_all_programs_are_valid_gm_numbers(self) -> None:

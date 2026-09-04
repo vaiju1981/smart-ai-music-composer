@@ -130,6 +130,9 @@ class Instrument(StrEnum):
     # accompaniment under a mood-driven rhythm-pattern voice (see
     # `saimc.compose.percussion`).
     DRUM_SET = "drum_set"
+    # Dedicated-font instrument — GM has no harmonium voice; it renders
+    # from Wetthasinghe's Harmonium (CC-BY 4.0) via `FONT_PRESETS`.
+    HARMONIUM = "harmonium"
 
 
 class WesternKey(StrEnum):

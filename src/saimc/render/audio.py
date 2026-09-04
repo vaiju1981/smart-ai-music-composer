@@ -34,7 +34,14 @@ from saimc.compose.score import (
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
 from saimc.render.ffmpeg_audit import audit_ffmpeg
-from saimc.render.instruments import INSTRUMENT_PROGRAMS, PERCUSSION_INSTRUMENTS
+from saimc.render.instruments import (
+    FONT_PRESETS,
+    INSTRUMENT_PROGRAMS,
+    PERCUSSION_INSTRUMENTS,
+    SOUNDFONT_DIR,
+    SUPPORTED_INSTRUMENTS,
+    preset_for_instrument,
+)
 from saimc.render.util import sha256_file
 
 if TYPE_CHECKING:
@@ -103,6 +110,7 @@ def build_smf(
     *,
     bpm: float,
     voice_instruments: Mapping[int, str] | None = None,
+    soundfont_path: Path | None = None,
 ) -> MidiFile:
     """Convert a PerformancePlan into a SMF Type-0 MIDI file.
 
@@ -115,7 +123,11 @@ def build_smf(
     `voice_instruments` maps voice_id -> instrument name; each mapped
     voice gets a General MIDI program_change on its channel so
     FluidSynth picks the right patch (the Phase 2 orchestra needs
-    this; Phase 1 defaults every voice to piano anyway).
+    this; Phase 1 defaults every voice to piano anyway). Percussion
+    voices are pinned to channel 10 with no program change, and a
+    dedicated-font instrument (`FONT_PRESETS`) selects its own
+    bank:preset — but only when `soundfont_path` (the font the caller
+    will actually load) is that font.
 
     Returns the populated `mido.MidiFile` (caller persists to disk).
     """
@@ -154,13 +166,39 @@ def build_smf(
         instrument = instruments.get(voice_id, "piano")
         if voice_id in percussion_voices:
             continue
-        program = INSTRUMENT_PROGRAMS.get(instrument)
-        if program is None:
-            raise AudioRenderError(
-                AudioRenderErrorCode.MIDI_BUILD_FAILED,
-                f"unknown instrument {instrument!r} for voice {voice_id}; "
-                f"known instruments: {', '.join(sorted(INSTRUMENT_PROGRAMS))}",
-            )
+        # A dedicated-font instrument gets a bank-select + program pair
+        # valid inside the font that is actually being loaded; with any
+        # other font loaded the GM program is the only meaningful choice.
+        preset = (
+            preset_for_instrument(instrument, soundfont_path)
+            if soundfont_path is not None
+            else None
+        )
+        program: int
+        if preset is not None:
+            bank, program = preset
+            if bank:
+                track.append(
+                    mido.Message(
+                        "control_change", channel=voice_channels[voice_id], control=0, value=bank
+                    )
+                )
+        else:
+            gm_program = INSTRUMENT_PROGRAMS.get(instrument)
+            if gm_program is None:
+                font_note = ""
+                mapping = FONT_PRESETS.get(instrument)
+                if mapping is not None:
+                    font_note = (
+                        f"; {instrument!r} needs its dedicated soundfont "
+                        f"{mapping[0]!r} in {SOUNDFONT_DIR}, which was not found"
+                    )
+                raise AudioRenderError(
+                    AudioRenderErrorCode.MIDI_BUILD_FAILED,
+                    f"unknown instrument {instrument!r} for voice {voice_id}{font_note}; "
+                    f"known instruments: {', '.join(sorted(SUPPORTED_INSTRUMENTS))}",
+                )
+            program = gm_program
         track.append(
             mido.Message("program_change", channel=voice_channels[voice_id], program=program)
         )
@@ -485,7 +523,12 @@ def render_audio(
 
     # 1. PerformancePlan -> SMF.
     try:
-        smf = build_smf(plan, bpm=bpm, voice_instruments=voice_instruments)
+        smf = build_smf(
+            plan,
+            bpm=bpm,
+            voice_instruments=voice_instruments,
+            soundfont_path=soundfont_path,
+        )
         smf.save(str(smf_path))
     except Exception as exc:
         raise AudioRenderError(

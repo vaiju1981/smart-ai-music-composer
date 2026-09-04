@@ -24,11 +24,11 @@ Planned dedicated fonts (commercial-safe, verified licenses — see
   veena, sarasvati veena, plus koto/shamisen/ud/qanoon/kora quality
   upgrades. Requires per-font preset mapping, since its preset layout
   is its own (not GM).
-- 105-Sitar (public domain): better sitar than GM 104.
-- Wetthasinghe's Harmonium (CC-BY 4.0): harmonium beyond the free-reed
-  GM voice.
-Instruments with no GM voice (tabla, tanpura, mridangam, ghatam) wait
-for those fonts; /meta never advertises an instrument that cannot sound.
+Wired dedicated fonts live in `FONT_PRESETS` (105-Sitar — public
+domain — upgrades the GM sitar; Wetthasinghe's Harmonium — CC-BY 4.0 —
+adds harmonium, which GM has no voice for). Instruments with no GM
+voice and no wired font (tabla, tanpura, mridangam, ghatam) wait for
+their fonts; /meta never advertises an instrument that cannot sound.
 
 Voice IDs live with the score format (`saimc.compose.score`); this
 module maps a voice's instrument name to everything the audio stage
@@ -173,6 +173,8 @@ INSTRUMENT_FAMILIES: dict[str, str] = {
     "taiko": "world",
     # Percussion kit
     "drum_set": "western",
+    # Dedicated-font instruments (no GM voice)
+    "harmonium": "world",
 }
 
 # Instruments with no GM melodic program: they render through the
@@ -182,9 +184,24 @@ INSTRUMENT_FAMILIES: dict[str, str] = {
 PERCUSSION_INSTRUMENTS: frozenset[str] = frozenset({"drum_set"})
 
 # Everything a spec may request: melodic instruments (INSTRUMENT_PROGRAMS
-# keys) plus the percussion kit. This — not INSTRUMENT_PROGRAMS alone —
-# is what /meta advertises and the composer registry resolves against.
+# keys), the percussion kit, and the dedicated-font instruments below.
+# This — not INSTRUMENT_PROGRAMS alone — is what /meta advertises and
+# the composer registry resolves against.
 SUPPORTED_INSTRUMENTS: frozenset[str] = frozenset(INSTRUMENT_PROGRAMS) | PERCUSSION_INSTRUMENTS
+
+# Dedicated (non-GM) soundfonts, per instrument: name -> (font file in
+# SOUNDFONT_DIR, bank, preset). These fonts number their presets their
+# own way, so the (bank, preset) pair is what `build_smf` selects via a
+# bank-select CC0 + program_change — valid only while THAT font is the
+# one loaded. Instruments here have no GM program: sitar falls back to
+# GM 104 only while its dedicated font is absent; harmonium (GM has no
+# harmonium voice) simply needs its font present.
+FONT_PRESETS: dict[str, tuple[str, int, int]] = {
+    "sitar": ("105-Sitar.sf2", 0, 0),  # public domain, Musical Artifacts #3847
+    "harmonium": ("Wetthasinghe_Harmonium.sf2", 0, 0),  # CC-BY 4.0, Musical Artifacts #1391
+}
+
+SUPPORTED_INSTRUMENTS = SUPPORTED_INSTRUMENTS | frozenset(FONT_PRESETS)
 
 # Where downloaded fonts live. `scripts/download_soundfonts.py` fills
 # this directory with pinned-sha256 files (gitignored — re-downloadable
@@ -211,15 +228,23 @@ def soundfont_for_instrument(instrument: str) -> Path:
 
     Resolution order:
     1. `SAIMC_SOUNDFONT_<INSTRUMENT>` env var (e.g. `SAIMC_SOUNDFONT_PIANO`)
-    2. a per-instrument font dropped into `assets/soundfonts/<name>.sf2`
-    3. for piano: the Salamander grand (best-in-class), else the general font
-    4. the general font (FluidR3_GM) — every registered instrument sounds
-    5. the Salamander path anyway, so the missing-font error names the
+    2. a dedicated font from `FONT_PRESETS` when its file is present
+       (sitar prefers 105-Sitar over FluidR3's GM patch, harmonium has
+       no GM voice at all)
+    3. a per-instrument font dropped into `assets/soundfonts/<name>.sf2`
+    4. for piano: the Salamander grand (best-in-class), else the general font
+    5. the general font (FluidR3_GM) — every GM-registered instrument sounds
+    6. the Salamander path anyway, so the missing-font error names the
        documented default location
     """
     override = _env_override(instrument)
     if override is not None:
         return override
+    mapping = FONT_PRESETS.get(instrument)
+    if mapping is not None:
+        dedicated = SOUNDFONT_DIR / mapping[0]
+        if dedicated.exists():
+            return dedicated
     per_instrument = SOUNDFONT_DIR / f"{instrument}.sf2"
     if per_instrument.exists():
         return per_instrument
@@ -230,7 +255,25 @@ def soundfont_for_instrument(instrument: str) -> Path:
     return PIANO_SOUNDFONT
 
 
+def preset_for_instrument(instrument: str, soundfont_path: Path) -> tuple[int, int] | None:
+    """The (bank, preset) to select inside the loaded font, or None.
+
+    None means "use the General MIDI program as-is" (bank 0). A
+    dedicated-font pair is returned only when the path being loaded IS
+    that font — the (bank, preset) numbers mean nothing in any other
+    font, so tying them to the resolved path is what keeps a mixed
+    selection from playing the wrong patch.
+    """
+    mapping = FONT_PRESETS.get(instrument)
+    if mapping is None:
+        return None
+    if soundfont_path == SOUNDFONT_DIR / mapping[0]:
+        return mapping[1], mapping[2]
+    return None
+
+
 __all__ = [
+    "FONT_PRESETS",
     "GENERAL_SOUNDFONT",
     "INSTRUMENT_FAMILIES",
     "INSTRUMENT_PROGRAMS",
@@ -238,5 +281,6 @@ __all__ = [
     "PIANO_SOUNDFONT",
     "SOUNDFONT_DIR",
     "SUPPORTED_INSTRUMENTS",
+    "preset_for_instrument",
     "soundfont_for_instrument",
 ]

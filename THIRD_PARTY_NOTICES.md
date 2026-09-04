@@ -52,6 +52,34 @@ LGPL posture described here at every render.
   (`assets/soundfonts/FluidR3_COPYING.txt`) and each completed job's
   `manifest.json` records the soundfont's sha256.
 
+## 105-Sitar (soundfont)
+
+- License: Public domain (dedicated to the public domain by the
+  uploader) — unrestricted use including commercial.
+- Source: Musical Artifacts artifact #3847
+  (https://musical-artifacts.com/artifacts/3847), file
+  `assets/soundfonts/105-Sitar.sf2`, sha256
+  `5a7941e74d9a7f8c5bbc18a68b4f5d27cff540d591b1359b8245e8c561a9df93`
+  (pinned in `scripts/download_soundfonts.py`; the pin is verified by
+  `--status`).
+- Renders the `sitar` instrument when present (falling back to
+  FluidR3's GM sitar otherwise); single preset at bank 0, program 0,
+  selected via `FONT_PRESETS`.
+
+## Wetthasinghe's Harmonium (soundfont)
+
+- License: CC-BY 4.0 — commercial use permitted with attribution.
+- Author: Wetthasinghe. Source: Musical Artifacts artifact #1391
+  (https://musical-artifacts.com/artifacts/1391), file
+  `assets/soundfonts/Wetthasinghe_Harmonium.sf2`, sha256
+  `ea2e31c26057dd9c39d08b2fd060e7b2f41e84a10aa1c61cec43d888a3ef0002`
+  (pinned in `scripts/download_soundfonts.py`; the pin is verified by
+  `--status`).
+- Renders the `harmonium` instrument (General MIDI has no harmonium
+  voice); single preset at bank 0, program 0, selected via
+  `FONT_PRESETS`. CC-BY attribution is carried by this file and the
+  job manifest's soundfont record.
+
 ## OpenSheetMusicDisplay (render-service)
 
 - License: BSD-3-Clause, version 2.1.2, pinned in
