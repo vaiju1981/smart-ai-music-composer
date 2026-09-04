@@ -250,20 +250,18 @@ class TestMeta:
         assert meta["instruments"] == sorted(INSTRUMENT_PROGRAMS)
 
     def test_spec_instrumentations_are_all_registered(self) -> None:
-        """Drift guard: every instrumentation the spec accepts must have
-        a GM program and a soundfont resolution, or /meta advertises an
-        instrument that cannot render."""
-        import typing
+        """Drift guard: the spec vocabulary and the render registry must
+        agree in both directions. Spec-only names would fail at render
+        time; registry-only names would never be requestable."""
+        from saimc.render.instruments import (
+            INSTRUMENT_FAMILIES,
+            INSTRUMENT_PROGRAMS,
+            soundfont_for_instrument,
+        )
+        from saimc.spec import Instrument
 
-        from saimc.render.instruments import INSTRUMENT_PROGRAMS, soundfont_for_instrument
-        from saimc.spec import CompositionSpec
-
-        annotation = CompositionSpec.model_fields["instrumentation"].annotation
-        accepted: tuple[str, ...] = typing.get_args(annotation)  # type: ignore[arg-type]
-        assert accepted, "spec instrumentation must be a Literal of instrument names"
-        for instrument in accepted:
-            assert instrument in INSTRUMENT_PROGRAMS, (
-                f"instrumentation {instrument!r} is accepted by the spec but has "
-                f"no GM program in INSTRUMENT_PROGRAMS"
-            )
+        expected = {member.value for member in Instrument}
+        assert set(INSTRUMENT_PROGRAMS) == expected
+        assert set(INSTRUMENT_FAMILIES) == expected
+        for instrument in expected:
             soundfont_for_instrument(instrument)  # must resolve without error

@@ -168,23 +168,32 @@ def parse_stage(
 def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
     """Resolve the composer for a spec's instrumentation.
 
-    The registry is the Phase 2 seam: an orchestral instrumentation
-    plugs in its own engine here instead of editing compose_stage.
-    Unknown instrumentations surface as a clean structured error
-    naming what *is* supported.
+    The registry is the Phase 2 seam for dedicated engines (e.g. a
+    raga/tala engine for Indian classical instrumentations). Every
+    registered instrument without a dedicated engine composes with the
+    Phase 1 engine — composition is notation and the engine is
+    instrument-agnostic; rendering maps the voices onto the instrument's
+    soundfont patch. Non-western instruments sound western-styled until
+    their dedicated engines land.
+
+    Names outside the instrument registry surface as a clean structured
+    error naming what *is* supported.
     """
     from saimc.compose.engine import compose as _phase1_compose
+    from saimc.render.instruments import INSTRUMENT_PROGRAMS
 
     registry: dict[str, Callable[[Any], Any]] = {
-        "piano": _phase1_compose,
+        # e.g. "sitar": _raga_compose — dedicated engines go here.
     }
-    try:
-        return registry[instrumentation]
-    except KeyError:
-        raise LookupError(
-            f"no composer registered for instrumentation {instrumentation!r}; "
-            f"known instrumentations: {', '.join(sorted(registry))}"
-        ) from None
+    composer = registry.get(instrumentation)
+    if composer is not None:
+        return composer
+    if instrumentation in INSTRUMENT_PROGRAMS:
+        return _phase1_compose
+    raise LookupError(
+        f"no composer registered for instrumentation {instrumentation!r}; "
+        f"known instrumentations: {', '.join(sorted(INSTRUMENT_PROGRAMS))}"
+    ) from None
 
 
 def compose_stage(

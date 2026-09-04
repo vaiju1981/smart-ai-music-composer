@@ -29,7 +29,7 @@ def main() -> int:
         host=base_url, headers={"Authorization": f"Bearer {api_key}"} if api_key else {}
     )
     response = client.list()
-    models = [m.model for m in response.models]  # type: ignore[attr-defined]
+    models = [m.model for m in response.models if m.model is not None]
     if not models:
         print(f"No models reported by {base_url}.", file=sys.stderr)
         return 1

@@ -4,9 +4,12 @@ This is the canonical, versioned schema that the prompt parser (LLM +
 fallback) must produce. Every downstream component consumes and emits
 artifacts shaped against this schema. See `docs/roadmap.md` §6.
 
-The schema is intentionally narrow in Phase 1: piano only, three moods,
-no famous-piece catalog. Phase 2+ will widen `instrumentation`,
-`request_kind`, and `humanization` under a new `schema_version`.
+The schema is intentionally narrow in Phase 1: three moods, one
+instrument per piece, no famous-piece catalog. `instrumentation` was
+widened from piano-only to the `Instrument` enum for Phase 2 — that is
+an additive change (every previously-valid spec value is still valid),
+so `SPEC_SCHEMA_VERSION` is unchanged. `request_kind` and
+`humanization` widen under a new `schema_version`.
 """
 
 from __future__ import annotations
@@ -43,6 +46,85 @@ class Mood(StrEnum):
     CALMING = "calming"
     ELECTRIFYING = "electrifying"
     SLEEP = "sleep"
+
+
+class Instrument(StrEnum):
+    """Bounded instrument vocabulary.
+
+    Names match `INSTRUMENT_PROGRAMS` in `saimc.render.instruments` 1:1
+    (a drift-guard test asserts the two stay in sync). Widening here is
+    backward-compatible — old specs only ever contained values that
+    remain members — so this does not bump `SPEC_SCHEMA_VERSION`.
+    """
+
+    # Keys
+    PIANO = "piano"
+    HARPSICHORD = "harpsichord"
+    CELESTA = "celesta"
+    MUSIC_BOX = "music_box"
+    # Mallets and bells
+    GLOCKENSPIEL = "glockenspiel"
+    VIBRAPHONE = "vibraphone"
+    MARIMBA = "marimba"
+    XYLOPHONE = "xylophone"
+    TUBULAR_BELLS = "tubular_bells"
+    DULCIMER = "dulcimer"
+    # Organs and free reeds
+    PIPE_ORGAN = "pipe_organ"
+    ACCORDION = "accordion"
+    HARMONICA = "harmonica"
+    # Plucked strings
+    NYLON_GUITAR = "nylon_guitar"
+    STEEL_GUITAR = "steel_guitar"
+    BANJO = "banjo"
+    SHAMISEN = "shamisen"
+    KOTO = "koto"
+    SITAR = "sitar"
+    # Bowed strings and ensembles
+    VIOLIN = "violin"
+    VIOLA = "viola"
+    CELLO = "cello"
+    CONTRABASS = "contrabass"
+    TREMOLO_STRINGS = "tremolo_strings"
+    PIZZICATO_STRINGS = "pizzicato_strings"
+    STRINGS = "strings"
+    FIDDLE = "fiddle"
+    # Harp and timpani
+    HARP = "harp"
+    TIMPANI = "timpani"
+    # Choir
+    CHOIR = "choir"
+    # Brass
+    FRENCH_HORN = "french_horn"
+    BRASS_SECTION = "brass_section"
+    TRUMPET = "trumpet"
+    MUTED_TRUMPET = "muted_trumpet"
+    TROMBONE = "trombone"
+    TUBA = "tuba"
+    # Woodwinds
+    FLUTE = "flute"
+    PICCOLO = "piccolo"
+    RECORDER = "recorder"
+    PAN_FLUTE = "pan_flute"
+    OCARINA = "ocarina"
+    OBOE = "oboe"
+    ENGLISH_HORN = "english_horn"
+    BASSOON = "bassoon"
+    CLARINET = "clarinet"
+    # Saxophone family
+    SOPRANO_SAX = "soprano_sax"
+    ALTO_SAX = "alto_sax"
+    TENOR_SAX = "tenor_sax"
+    BARITONE_SAX = "baritone_sax"
+    # World
+    BAGPIPE = "bagpipe"
+    SHAKUHACHI = "shakuhachi"
+    SHANAI = "shanai"
+    KALIMBA = "kalimba"
+    STEEL_DRUMS = "steel_drums"
+    AGOGO = "agogo"
+    WOODBLOCK = "woodblock"
+    TAIKO = "taiko"
 
 
 class WesternKey(StrEnum):
@@ -134,9 +216,12 @@ class CompositionSpec(BaseModel):
     mood: Mood = Field(
         description="Phase 1 mood vocabulary: calming | electrifying | sleep.",
     )
-    instrumentation: Literal["piano"] = Field(
-        default="piano",
-        description="Phase 1: piano only. Phase 2+ will widen to list[enum].",
+    instrumentation: Instrument = Field(
+        default=Instrument.PIANO,
+        description=(
+            "The instrument the piece is written for. One instrument per "
+            "piece in Phase 2; per-voice orchestration arrives later."
+        ),
     )
     seed: int | None = Field(
         default=None,
@@ -171,6 +256,7 @@ __all__ = [
     "TEMPO_BPM_MAX",
     "TEMPO_BPM_MIN",
     "CompositionSpec",
+    "Instrument",
     "Mood",
     "RequestKind",
     "SpecError",
