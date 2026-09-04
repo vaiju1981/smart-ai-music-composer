@@ -11,6 +11,7 @@
  * checked, so argument/IO errors are cheap and unit-testable.
  */
 
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -37,6 +38,32 @@ declare global {
 const VIEWER_URL = pathToFileURL(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "viewer", "viewer.html"),
 ).href;
+
+/**
+ * OSMD ships a prebuilt UMD bundle. Resolve it by walking up from this
+ * module's directory to the repo's node_modules, so the same code works
+ * whether it runs from src/ or dist/ (tsc keeps the module layout).
+ */
+function findOsmdBundle(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    const candidate = path.join(
+      dir,
+      "node_modules",
+      "opensheetmusicdisplay",
+      "build",
+      "opensheetmusicdisplay.min.js",
+    );
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new RenderError(
+        "opensheetmusicdisplay not found (run `npm install` in render-service/)",
+      );
+    }
+    dir = parent;
+  }
+}
 
 /** Cheap structural check so a wrong-format input fails before launch. */
 function looksLikeMusicXml(xml: string): boolean {
@@ -74,6 +101,7 @@ export async function renderSheet(opts: RenderSheetOptions): Promise<void> {
     page.on("pageerror", (err) => pageErrors.push(String(err)));
 
     await page.goto(VIEWER_URL, { waitUntil: "load" });
+    await page.addScriptTag({ path: findOsmdBundle() });
 
     if (opts.format === "svg") {
       const svg = await page.evaluate(

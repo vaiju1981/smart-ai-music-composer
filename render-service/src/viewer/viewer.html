@@ -11,9 +11,8 @@
   </head>
   <body>
     <div id="osmd-container"></div>
-    <!-- OSMD ships a prebuilt UMD bundle; the path reaches the repo's
-         node_modules from this file's directory. -->
-    <script src="../../node_modules/opensheetmusicdisplay/build/opensheetmusicdisplay.min.js"></script>
+    <!-- OSMD's UMD bundle is injected by the renderer (render.ts), which
+         resolves the node_modules path at runtime. -->
     <script src="./viewer.js"></script>
   </body>
 </html>

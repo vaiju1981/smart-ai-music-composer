@@ -8,7 +8,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -R src/viewer dist/src/",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node --test dist/test/*.test.js",

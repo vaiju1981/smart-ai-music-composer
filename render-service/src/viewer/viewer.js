@@ -6,12 +6,12 @@
  * (element screenshot) from the container. Plain JS: this file runs in
  * the browser, where OSMD's UMD build exposes `OpenSheetMusicDisplay`.
  */
-/* global OpenSheetMusicDisplay */
+/* global opensheetmusicdisplay */
 
 window.renderMusicXml = async function renderMusicXml(xml) {
   const container = document.getElementById("osmd-container");
   container.innerHTML = "";
-  const osmd = new OpenSheetMusicDisplay(container, {
+  const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
     backend: "svg",
     disableCursor: true,
   });
