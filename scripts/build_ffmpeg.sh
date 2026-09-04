@@ -37,6 +37,12 @@ readonly SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.xz"
 readonly BUILD_ROOT="${SAIMC_BUILD_ROOT:-vendor/ffmpeg-build}"
 readonly SRC_DIR="${BUILD_ROOT}/ffmpeg-${VERSION}"
 readonly DIST_DIR="${SAIMC_DIST_DIR:-dist/ffmpeg/${VERSION}}"
+# The script cds into the source tree before configuring; every path it
+# touches afterwards must be absolute, not repo-relative.
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly BUILD_ROOT_ABS="$(mkdir -p "${BUILD_ROOT}" && cd "${BUILD_ROOT}" && pwd)"
+readonly DIST_DIR_ABS="$(mkdir -p "${DIST_DIR}" && cd "$(dirname "${DIST_DIR}")" && pwd)/$(basename "${DIST_DIR}")"
+readonly SRC_DIR_ABS="${BUILD_ROOT_ABS}/ffmpeg-${VERSION}"
 readonly JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 
 log() { printf '==> %s\n' "$*"; }
@@ -72,7 +78,7 @@ log "  dist: ${DIST_DIR}"
 mkdir -p "${BUILD_ROOT}"
 mkdir -p "${DIST_DIR}"
 
-ARCHIVE="${BUILD_ROOT}/ffmpeg-${VERSION}.tar.xz"
+ARCHIVE="${BUILD_ROOT_ABS}/ffmpeg-${VERSION}.tar.xz"
 
 if [[ -f "${ARCHIVE}" ]]; then
     log "archive already present; verifying sha256"
@@ -89,12 +95,12 @@ fi
 log "sha256 ok"
 cp "${ARCHIVE}" "${DIST_DIR}/source.sha256"
 
-if [[ ! -d "${SRC_DIR}" ]]; then
+if [[ ! -d "${SRC_DIR_ABS}" ]]; then
     log "extracting"
-    tar -xJf "${ARCHIVE}" -C "${BUILD_ROOT}"
+    tar -xJf "${ARCHIVE}" -C "${BUILD_ROOT_ABS}"
 fi
 
-cd "${SRC_DIR}"
+cd "${SRC_DIR_ABS}"
 
 log "configuring"
 CONFIGURE_FLAGS=(
@@ -105,33 +111,33 @@ CONFIGURE_FLAGS=(
     --enable-libvpx
     --enable-libopus
     --enable-pic
-    --prefix="${BUILD_ROOT}/install"
+    --prefix="${BUILD_ROOT_ABS}/install"
 )
 
 # shellcheck disable=SC2086
-./configure "${CONFIGURE_FLAGS[@]}" 2>&1 | tee "${DIST_DIR}/configure.log"
+./configure "${CONFIGURE_FLAGS[@]}" 2>&1 | tee "${DIST_DIR_ABS}/configure.log"
 
 log "building (${JOBS} parallel jobs)"
-make -j"${JOBS}" 2>&1 | tee "${DIST_DIR}/build.log"
+make -j"${JOBS}" 2>&1 | tee "${DIST_DIR_ABS}/build.log"
 
 log "installing into build root"
-make install 2>&1 | tee -a "${DIST_DIR}/build.log"
+make install 2>&1 | tee -a "${DIST_DIR_ABS}/build.log"
 
-FFMPEG_BIN="${BUILD_ROOT}/install/bin/ffmpeg"
+FFMPEG_BIN="${BUILD_ROOT_ABS}/install/bin/ffmpeg"
 if [[ ! -x "${FFMPEG_BIN}" ]]; then
     fail "ffmpeg binary missing at ${FFMPEG_BIN}"
 fi
 
 log "capturing binary and sha256"
-cp "${FFMPEG_BIN}" "${DIST_DIR}/ffmpeg"
-chmod +x "${DIST_DIR}/ffmpeg"
-BIN_SHA256="$(sha256_cmd < "${DIST_DIR}/ffmpeg" | awk '{print $1}')"
-echo "${BIN_SHA256}  ffmpeg" > "${DIST_DIR}/ffmpeg.sha256"
+cp "${FFMPEG_BIN}" "${DIST_DIR_ABS}/ffmpeg"
+chmod +x "${DIST_DIR_ABS}/ffmpeg"
+BIN_SHA256="$(sha256_cmd < "${DIST_DIR_ABS}/ffmpeg" | awk '{print $1}')"
+echo "${BIN_SHA256}  ffmpeg" > "${DIST_DIR_ABS}/ffmpeg.sha256"
 log "binary sha256: ${BIN_SHA256}"
 
 log "running release-gate audit"
 SAIMC_PYTHON="${SAIMC_PYTHON:-python3}"
-"${SAIMC_PYTHON}" scripts/audit_ffmpeg.py "${DIST_DIR}/ffmpeg" | tee "${DIST_DIR}/audit.json"
+"${SAIMC_PYTHON}" "${REPO_ROOT}/scripts/audit_ffmpeg.py" "${DIST_DIR_ABS}/ffmpeg" | tee "${DIST_DIR_ABS}/audit.json"
 
 log "done"
 log "release artifacts at: ${DIST_DIR}"

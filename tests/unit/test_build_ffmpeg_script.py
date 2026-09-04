@@ -65,8 +65,8 @@ class TestBuildScriptRunsAudit:
     def test_calls_audit_ffmpeg_at_end(self) -> None:
         text = _script_text()
         # Find the actual invocation, not any earlier comment text.
-        copy_idx = text.find('cp "${FFMPEG_BIN}" "${DIST_DIR}/ffmpeg"')
-        audit_idx = text.find('"${SAIMC_PYTHON}" scripts/audit_ffmpeg.py')
+        copy_idx = text.find('cp "${FFMPEG_BIN}" "${DIST_DIR_ABS}/ffmpeg"')
+        audit_idx = text.find('"${SAIMC_PYTHON}" "${REPO_ROOT}/scripts/audit_ffmpeg.py"')
         assert copy_idx > 0, "build script must copy the binary before auditing"
         assert audit_idx > 0, "build script must run the audit"
         assert audit_idx > copy_idx, "audit must come after the binary is built"
@@ -90,7 +90,7 @@ class TestBuildScriptReleaseArtifacts:
     def test_does_not_install_globally(self) -> None:
         text = _script_text()
         assert "make install" in text
-        assert "BUILD_ROOT}/install" in text
+        assert "BUILD_ROOT_ABS}/install" in text
         assert "sudo" not in text
 
 
