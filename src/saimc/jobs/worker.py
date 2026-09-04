@@ -57,7 +57,7 @@ def worker_entry(
     Requires `redis` (the `redis` Python client that RQ depends on)
     and `rq` to be importable; both are pinned in pyproject.toml.
     """
-    from rq import Queue, Worker
+    from rq import Queue, SimpleWorker
     from rq.serializers import JSONSerializer
 
     url = valkey_url or os.environ.get("SAIMC_VALKEY_URL") or "valkey://127.0.0.1:6379/0"
@@ -69,7 +69,14 @@ def worker_entry(
     # The worker reads from `queue_obj` and calls functions registered
     # with `@job` (or looked up by name). Phase 1 keeps things simple:
     # the worker always runs `run_job` for any message.
-    worker = Worker(
+    #
+    # SimpleWorker executes jobs in-process instead of forking a
+    # work-horse. RQ's default Worker forks per job, and on macOS that
+    # fork crashes with Objective-C's fork-safety check once a library
+    # (music21's toolkit) has touched the ObjC runtime — "work-horse
+    # terminated unexpectedly, signal 6". Phase 1 is single-user/local
+    # with one worker process, so in-process execution is the right trade.
+    worker = SimpleWorker(
         [queue_obj],
         connection=queue_obj.connection,
         serializer=JSONSerializer(),

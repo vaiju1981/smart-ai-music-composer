@@ -34,6 +34,7 @@ from saimc.jobs.storage import (
     Job,
     JobStorage,
 )
+from saimc.jobs.worker import enqueue_job
 from saimc.spec import CompositionSpec
 
 router = APIRouter()
@@ -121,6 +122,22 @@ def _serialize_job(job: Job) -> JobResponse:
     )
 
 
+def _enqueue(job: Job) -> None:
+    """Put the job on the RQ queue, surfacing broker outages as 503.
+
+    The job is already persisted in `queued` state, so a failed enqueue
+    is recoverable: the client can retry the POST and the worker will
+    pick the job up once the broker is back.
+    """
+    try:
+        enqueue_job(job.job_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"job queue unavailable, retry: {job.job_id}",
+        ) from exc
+
+
 @router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
     """Create a queued job from a user prompt.
@@ -130,6 +147,7 @@ def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
     """
     storage = _storage(request)
     job = storage.create(body.prompt)
+    _enqueue(job)
     return _serialize_job(job)
 
 
@@ -147,6 +165,7 @@ def create_job_from_spec(body: CreateJobFromSpecRequest, request: Request) -> Jo
         job.seed = body.spec.seed
     job.parser_source = "from-spec"
     storage.save(job)
+    _enqueue(job)
     return _serialize_job(job)
 
 

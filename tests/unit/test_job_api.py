@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import saimc.jobs.api
 from saimc.jobs.api import create_app
 from saimc.jobs.state import JobState
 from saimc.jobs.storage import ArtifactRecord, JobStorage
@@ -14,7 +15,10 @@ from saimc.spec import CompositionSpec, Mood
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> TestClient:
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    # Hermetic: never touch a live broker. The enqueue contract (JSON
+    # payload with primitive args) is the Valkey gate's job.
+    monkeypatch.setattr(saimc.jobs.api, "enqueue_job", lambda job_id: f"rq:{job_id}")
     app = create_app(jobs_root=tmp_path)
     return TestClient(app)
 
@@ -34,6 +38,26 @@ class TestCreateJob:
         assert body["input_prompt"] == "calming piano music"
         assert body["progress"] == 0.0
         assert "job_id" in body
+
+    def test_create_enqueues_the_job(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        enqueued: list[str] = []
+        monkeypatch.setattr(saimc.jobs.api, "enqueue_job", lambda job_id: enqueued.append(job_id))
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        assert enqueued == [create["job_id"]]
+
+    def test_broker_outage_returns_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(job_id: str) -> str:
+            raise ConnectionError("broker down")
+
+        monkeypatch.setattr(saimc.jobs.api, "enqueue_job", fail)
+        client = TestClient(create_app(jobs_root=tmp_path), raise_server_exceptions=False)
+        resp = client.post("/jobs", json={"prompt": "x"})
+        assert resp.status_code == 503
+        assert "retry" in resp.json()["detail"]
 
     def test_empty_prompt_rejected(self, client: TestClient) -> None:
         resp = client.post("/jobs", json={"prompt": ""})
