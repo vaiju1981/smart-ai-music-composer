@@ -167,7 +167,12 @@ def render_sheet(
         service_dir or os.environ.get("SAIMC_RENDER_SERVICE_DIR") or str(DEFAULT_RENDER_SERVICE_DIR)
     )
     service_dir = Path(resolved_dir)
-    cli_path = service_dir / "dist" / "cli.js"
+    # tsc keeps the project layout under outDir (src/ and test/ both
+    # compile), so the CLI lands at dist/src/cli.js; accept the flatter
+    # dist/cli.js too in case the build is restructured later.
+    cli_path = service_dir / "dist" / "src" / "cli.js"
+    if not cli_path.is_file():
+        cli_path = service_dir / "dist" / "cli.js"
     if not cli_path.is_file():
         raise SheetRenderError(
             SheetRenderErrorCode.SERVICE_MISSING,

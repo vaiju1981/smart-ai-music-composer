@@ -145,8 +145,8 @@ def _stub_node_script(tmp_path: Path, body: str) -> str:
 
 def _service_dir_with_cli(tmp_path: Path) -> Path:
     service_dir = tmp_path / "render-service"
-    (service_dir / "dist").mkdir(parents=True)
-    (service_dir / "dist" / "cli.js").write_text("// stub\n", encoding="utf-8")
+    (service_dir / "dist" / "src").mkdir(parents=True)
+    (service_dir / "dist" / "src" / "cli.js").write_text("// stub\n", encoding="utf-8")
     (service_dir / "package.json").write_text(
         '{"dependencies": {"opensheetmusicdisplay": "2.1.2"}}', encoding="utf-8"
     )
