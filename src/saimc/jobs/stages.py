@@ -28,11 +28,12 @@ import logging
 import shlex
 import subprocess
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from saimc.compose.engine import CompositionEngineError
 from saimc.jobs.state import JobState, JobStateMachine
 from saimc.jobs.storage import (
     Job,
@@ -163,24 +164,16 @@ def parse_stage(
     )
 
 
-def compose_stage(job: Job, storage: JobStorage, engine: Any | None = None) -> StageResult:
+def compose_stage(
+    job: Job,
+    storage: JobStorage,
+    engine: Callable[[Any], Any] | None = None,
+) -> StageResult:
     """Run the `composing` stage.
 
-    `engine` is a callable `(spec) -> (NotationScore, PerformancePlan)`.
-    It is `None` for the stub implementation, in which case this stage
-    fails with `engine_not_implemented` — Phase 1 acceptance tests will
-    surface this until slice 4 lands.
+    `engine` is a callable `(spec) -> EngineOutput`. When `None`, the
+    default Phase 1 engine from `saimc.compose.engine.compose` is used.
     """
-    if engine is None:
-        return StageResult(
-            job=job,
-            next_state=JobState.FAILED,
-            error=JobError(
-                error_code="engine_not_implemented",
-                message="Composition engine is not wired in this build.",
-                stage="composing",
-            ),
-        )
     if job.input_spec is None:
         return StageResult(
             job=job,
@@ -191,8 +184,24 @@ def compose_stage(job: Job, storage: JobStorage, engine: Any | None = None) -> S
                 stage="composing",
             ),
         )
+
+    if engine is None:
+        from saimc.compose.engine import compose as _default_compose
+
+        engine = _default_compose
+
     try:
-        notation_score, performance_plan = engine(job.input_spec)
+        output = engine(job.input_spec)
+    except CompositionEngineError as exc:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code=exc.code.value,
+                message=exc.message,
+                stage="composing",
+            ),
+        )
     except Exception as exc:
         return StageResult(
             job=job,
@@ -203,9 +212,30 @@ def compose_stage(job: Job, storage: JobStorage, engine: Any | None = None) -> S
                 stage="composing",
             ),
         )
-    # The real slice-3 + slice-4 work will compute hashes here and attach
-    # them; for now we leave the spec attached and move on.
-    del notation_score, performance_plan
+
+    # Successful compose: attach hashes for the manifest.
+    score_hash = output.notation_score.compute_hash()
+    plan_hash = output.performance_plan.compute_hash()
+    job.engine_version = (
+        f"{job.engine_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
+    )
+    # The next-state decision (continue to validating or fail with
+    # lint_unpassable) is made here. Lint is also re-checked inside the
+    # engine, but we re-run here defensively in case a future engine
+    # raises before lint.
+    from saimc.compose.linter import lint
+
+    lint_report = lint(output.notation_score)
+    if not lint_report.passed:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="lint_unpassable",
+                message=f"engine output failed lint: {[i.code.value for i in lint_report.issues]}",
+                stage="validating",
+            ),
+        )
     return StageResult(job=job, next_state=JobState.VALIDATING)
 
 

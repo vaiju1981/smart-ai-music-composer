@@ -43,20 +43,63 @@ def client(storage: JobStorage) -> TestClient:
 def _stub_engine_returns(spec: CompositionSpec) -> tuple[object, object]:
     """Stand-in for the slice-4 composition engine.
 
-    Returns two opaque objects representing (NotationScore, PerformancePlan).
-    The integration test does not inspect them — slice 4 is responsible
-    for making them meaningful.
+    Returns a real `EngineOutput` so downstream stages can read its
+    fields (`notation_score`, `performance_plan`). The integration test
+    does not inspect the musical content; it only needs the worker to
+    advance through every stage.
     """
-    return (object(), object())
+    from saimc.compose.engine import EngineOutput
+    from saimc.compose.score import (
+        KeySignature,
+        Measure,
+        NotationScore,
+        NoteEvent,
+        PerformanceNoteEvent,
+        PerformancePlan,
+    )
+
+    note = NoteEvent(voice_id=0, pitch_midi=60, tick=0, duration_ticks=480, velocity=64)
+    measure = Measure(index=0, start_tick=0, end_tick=1920, time_signature="4/4")
+    notation = NotationScore.make(
+        ppq=480,
+        key=KeySignature(root="C", mode="major"),
+        time_signature="4/4",
+        tempo_bpm=80.0,
+        measures=[measure],
+        notes=[note],
+    )
+    perf_note = PerformanceNoteEvent(
+        voice_id=0,
+        pitch_midi=60,
+        start_us=0,
+        duration_us=500_000,
+        velocity=64,
+    )
+    performance = PerformancePlan.make(sample_rate=44100, notes=[perf_note])
+    return EngineOutput(
+        notation_score=notation,
+        performance_plan=performance,
+        arrangement=type(
+            "Arrangement",
+            (),
+            {
+                "form_bars": 1,
+                "template": None,
+                "repetition_count": 1,
+                "total_bars": 1,
+                "tempo_bpm": 80.0,
+            },
+        )(),
+        key=KeySignature(root="C", mode="major"),
+        time_signature="4/4",
+    )
 
 
 class TestEndToEndJobWalk:
-    def test_without_engine_transitions_to_failed(
+    def test_default_engine_walks_to_complete_and_emits_manifest(
         self, client: TestClient, storage: JobStorage
     ) -> None:
-        """Until slice 4 lands the composition engine, the worker must
-        end in `failed` with a structured error rather than silently
-        claim success."""
+        """Default engine (= the real Phase 1 composer) takes the job to COMPLETE."""
         spec = CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=180)
         create = client.post(
             "/jobs/from-spec",
@@ -64,11 +107,61 @@ class TestEndToEndJobWalk:
         ).json()
         job_id = create["job_id"]
         result = run_job(job_id, jobs_root=str(storage.root))
-        assert result["state"] == "failed"
+        assert result["state"] == "complete"
         job = storage.get(job_id)
-        assert job.state == JobState.FAILED
-        assert job.error is not None
-        assert job.error.error_code == "engine_not_implemented"
+        assert job.state == JobState.COMPLETE
+        assert job.progress == 1.0
+        assert job.parser_source == "from-spec"
+        assert job.seed == 42
+        assert job.input_spec == spec
+
+        # Manifest requires at least one artifact; add a stub.
+        storage.ensure_artifact_dir(job_id).joinpath("audio.wav").write_bytes(b"RIFF")
+        storage.attach_artifact(
+            job,
+            ArtifactRecord(
+                kind="audio",
+                container="wav",
+                codec="pcm_s24le",
+                path="audio.wav",
+                sha256=hashlib.sha256(b"RIFF").hexdigest(),
+                size_bytes=4,
+            ),
+        )
+        storage.save(job)
+
+        manifest_inputs = ManifestInputs(
+            notation_score_sha256="0" * 64,
+            performance_plan_sha256="1" * 64,
+            completed_at=datetime.now(UTC),
+            toolchain_by_kind={
+                "audio": ToolchainRecord(
+                    engine="fluidsynth",
+                    version="2.3.4",
+                    build_sha="x" * 40,
+                    config={},
+                )
+            },
+            assets={
+                "soundfont": AssetRecord(
+                    name="Salamander Grand Piano",
+                    version="2023",
+                    sha256="0" * 64,
+                    license="CC BY 3.0",
+                    source_url="https://salamanderan.com/",
+                    notice_path="LICENSES/Salamander-Grand-Piano.txt",
+                )
+            },
+            dependencies={"music21": "9.5.0"},
+            license_obligations={"fluidsynth": "LICENSES/fluidsynth.txt"},
+        )
+        manifest = build_manifest(job, manifest_inputs)
+        assert manifest["job_id"] == job_id
+        assert manifest["artifacts"]["audio"]["sha256"] == hashlib.sha256(b"RIFF").hexdigest()
+
+        manifest_path = write_manifest(job, manifest_inputs, storage.root)
+        assert manifest_path == storage.root / job_id / "manifest.json"
+        assert manifest_path.exists()
 
     def test_with_engine_stub_walks_to_complete_and_emits_manifest(
         self, client: TestClient, storage: JobStorage, monkeypatch: pytest.MonkeyPatch
@@ -79,10 +172,6 @@ class TestEndToEndJobWalk:
         monkeypatch the engine argument via a wrapper so the worker
         receives a real returned NotationScore/PerformancePlan stand-in.
         """
-        # We monkeypatch `compose_stage` itself to return success regardless
-        # of the engine argument. This is the cleanest seam for an integration
-        # test; the unit-level test of `compose_stage` already covers the
-        # engine-not-None path.
         from saimc.jobs import stages
 
         original_compose_stage = stages.compose_stage

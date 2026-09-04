@@ -122,35 +122,72 @@ class TestParseStage:
 
 
 class TestComposeStage:
-    def test_without_engine_fails(self, store: JobStorage) -> None:
-        job = store.create("p")
-        job.input_spec = CompositionSpec(mood=Mood.CALMING)
-        transition_to(job, JobState.PARSING)
-        transition_to(job, JobState.COMPOSING)
-        result = compose_stage(job, store, engine=None)
-        assert result.next_state == JobState.FAILED
-        assert result.error is not None
-        assert result.error.error_code == "engine_not_implemented"
-
     def test_without_spec_fails(self, store: JobStorage) -> None:
         job = store.create("p")
-        transition_to(job, JobState.PARSING)
-        transition_to(job, JobState.COMPOSING)
         result = compose_stage(job, store, engine=lambda s: (None, None))
         assert result.next_state == JobState.FAILED
         assert result.error is not None
         assert result.error.error_code == "no_spec"
 
-    def test_with_engine_and_spec_advances(self, store: JobStorage) -> None:
+    def test_with_engine_stub_and_spec_advances(self, store: JobStorage) -> None:
+        """A stub engine that returns a valid EngineOutput advances."""
+        from saimc.compose.engine import EngineOutput
+        from saimc.compose.score import (
+            KeySignature,
+            Measure,
+            NotationScore,
+            NoteEvent,
+            PerformanceNoteEvent,
+            PerformancePlan,
+        )
+
+        def _stub_engine(spec):
+            # Minimal valid 1-bar NotationScore in C major 4/4.
+            note = NoteEvent(
+                voice_id=0,
+                pitch_midi=60,
+                tick=0,
+                duration_ticks=480,
+                velocity=64,
+            )
+            measure = Measure(index=0, start_tick=0, end_tick=1920, time_signature="4/4")
+            notation = NotationScore.make(
+                ppq=480,
+                key=KeySignature(root="C", mode="major"),
+                time_signature="4/4",
+                tempo_bpm=80.0,
+                measures=[measure],
+                notes=[note],
+            )
+            perf_note = PerformanceNoteEvent(
+                voice_id=0,
+                pitch_midi=60,
+                start_us=0,
+                duration_us=500_000,
+                velocity=64,
+            )
+            performance = PerformancePlan.make(sample_rate=44100, notes=[perf_note])
+            return EngineOutput(
+                notation_score=notation,
+                performance_plan=performance,
+                arrangement=type(
+                    "Arrangement",
+                    (),
+                    {
+                        "form_bars": 1,
+                        "template": None,
+                        "repetition_count": 1,
+                        "total_bars": 1,
+                        "tempo_bpm": 80.0,
+                    },
+                )(),
+                key=KeySignature(root="C", mode="major"),
+                time_signature="4/4",
+            )
+
         job = store.create("p")
         job.input_spec = CompositionSpec(mood=Mood.CALMING)
-        transition_to(job, JobState.PARSING)
-        transition_to(job, JobState.COMPOSING)
-        result = compose_stage(
-            job,
-            store,
-            engine=lambda s: (object(), object()),
-        )
+        result = compose_stage(job, store, engine=_stub_engine)
         assert result.next_state == JobState.VALIDATING
         assert result.error is None
 
@@ -160,10 +197,16 @@ class TestComposeStage:
 
         job = store.create("p")
         job.input_spec = CompositionSpec(mood=Mood.CALMING)
-        transition_to(job, JobState.PARSING)
-        transition_to(job, JobState.COMPOSING)
         result = compose_stage(job, store, engine=_bad_engine)
         assert result.next_state == JobState.FAILED
         assert result.error is not None
         assert result.error.error_code == "compose_failed"
         assert "music21 broke" in (result.error.message or "")
+
+    def test_default_engine_is_real(self, store: JobStorage) -> None:
+        """Without an engine argument, the real Phase 1 composer is used."""
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=42)
+        result = compose_stage(job, store)
+        assert result.next_state == JobState.VALIDATING
+        assert result.error is None
