@@ -47,11 +47,13 @@ find_broker_server() {
 }
 
 broker_ping() {
-    # Ping the broker through the venv's redis client so we honour $VALKEY_URL.
+    # Ping the broker through the venv's redis client so we honour $VALKEY_URL
+    # (redis-py rejects the valkey:// scheme; redis_url() rewrites it).
     "$PYTHON_BIN" - <<PY 2>/dev/null
 import redis
+from saimc.jobs.worker import redis_url
 try:
-    redis.Redis.from_url("$VALKEY_URL", socket_connect_timeout=1.0).ping()
+    redis.Redis.from_url(redis_url("$VALKEY_URL"), socket_connect_timeout=1.0).ping()
 except Exception:
     raise SystemExit(1)
 PY

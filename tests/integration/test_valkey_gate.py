@@ -34,8 +34,10 @@ def _valkey_url() -> str:
 def _valkey_reachable(url: str) -> bool:
     import redis
 
+    from saimc.jobs.worker import redis_url
+
     try:
-        client = redis.Redis.from_url(url, socket_connect_timeout=1.0)
+        client = redis.Redis.from_url(redis_url(url), socket_connect_timeout=1.0)
         client.ping()
     except Exception:
         return False
@@ -51,28 +53,44 @@ pytestmark = pytest.mark.skipif(
 def test_broker_round_trips_primitive_values() -> None:
     import redis
 
-    client = redis.Redis.from_url(_valkey_url())
+    from saimc.jobs.worker import redis_url
+
+    client = redis.Redis.from_url(redis_url(_valkey_url()))
     key = "saimc:release-gate:roundtrip"
     client.set(key, json.dumps({"job_id": "gate", "primitive": True}))
     assert json.loads(client.get(key)) == {"job_id": "gate", "primitive": True}
     client.delete(key)
 
 
-def test_enqueue_job_lands_run_job_on_default_queue_as_json(tmp_path: Path) -> None:
+def test_enqueue_job_lands_run_job_as_json(tmp_path: Path) -> None:
+    import zlib
+
+    import redis
+
     from saimc.jobs.storage import JobStorage
-    from saimc.jobs.worker import DEFAULT_QUEUE, enqueue_job
+    from saimc.jobs.worker import enqueue_job, redis_url
 
     store = JobStorage(tmp_path)
     job = store.create("valkey gate")
 
-    enqueue_job(job.job_id, valkey_url=_valkey_url())
-
-    import redis
-
-    client = redis.Redis.from_url(_valkey_url())
-    raw = client.lindex(f"rq:queue:{DEFAULT_QUEUE}", -1)
-    assert raw is not None
-    payload = json.loads(raw)
-    assert payload["func"] == "saimc.jobs.worker.run_job"
-    assert payload["args"] == [job.job_id]
-    client.delete(f"rq:queue:{DEFAULT_QUEUE}")
+    client = redis.Redis.from_url(redis_url(_valkey_url()))
+    # Enqueue to a gate-only queue: a live worker on `default` (which
+    # sits in an indefinite blocking BLMOVE) would drain the payload
+    # before we can inspect it, and RQ's suspension flag cannot hold it
+    # back. The gate queue has no listener, so the raw payload is stable.
+    #
+    # RQ 2.0 pushes only the job id onto the list (itself a primitive)
+    # and stores the body in the job hash as zlib-compressed JSON
+    # [func, instance, args, kwargs]. The gate asserts the body is
+    # decompressible JSON — never pickle — with the primitive args.
+    queue_key = "rq:queue:saimc:release-gate"
+    enqueue_job(job.job_id, valkey_url=_valkey_url(), queue_name="saimc:release-gate")
+    raw_job_id = client.lindex(queue_key, -1)
+    assert raw_job_id is not None
+    rq_job_id = raw_job_id.decode()
+    body = zlib.decompress(client.hget(f"rq:job:{rq_job_id}", "data"))
+    payload = json.loads(body)
+    assert payload[0] == "saimc.jobs.worker.run_job"
+    assert payload[2] == [job.job_id]
+    client.delete(queue_key)
+    client.delete(f"rq:job:{rq_job_id}")

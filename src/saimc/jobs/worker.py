@@ -26,6 +26,7 @@ in the broker contain no Python objects that would need pickling.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from saimc.jobs.stages import (
@@ -76,7 +77,9 @@ def worker_entry(
     worker.work()
 
 
-def enqueue_job(job_id: str, *, valkey_url: str | None = None) -> str:
+def enqueue_job(
+    job_id: str, *, valkey_url: str | None = None, queue_name: str = DEFAULT_QUEUE
+) -> str:
     """Submit `job_id` for processing by the RQ worker.
 
     Returns the RQ job id. Fails if Valkey is unreachable — the API
@@ -87,7 +90,7 @@ def enqueue_job(job_id: str, *, valkey_url: str | None = None) -> str:
 
     url = valkey_url or os.environ.get("SAIMC_VALKEY_URL") or "valkey://127.0.0.1:6379/0"
     queue = Queue(
-        name=DEFAULT_QUEUE,
+        name=queue_name,
         connection=_redis_from_url(url),
         serializer=JSONSerializer(),
     )
@@ -95,7 +98,6 @@ def enqueue_job(job_id: str, *, valkey_url: str | None = None) -> str:
         "saimc.jobs.worker.run_job",
         job_id,
         job_timeout="30m",
-        serializer=JSONSerializer(),
     )
     return rq_job.get_id()
 
@@ -280,16 +282,27 @@ def _build_default_llm_client() -> Any:
         return _NoopLLM()
 
 
+def redis_url(url: str) -> str:
+    """Normalize a broker URL to a scheme the `redis` client accepts.
+
+    Valkey speaks the same RESP protocol as Redis, but redis-py only
+    parses `redis://`/`rediss://`/`unix://`, so a `valkey://` URL is
+    rewritten to `redis://` before it reaches the client.
+    """
+    return re.sub(r"^valkey://", "redis://", url)
+
+
 def _redis_from_url(url: str) -> Any:
     """Build a `redis.Redis` client from a Valkey-compatible URL."""
     import redis
 
-    return redis.Redis.from_url(url)
+    return redis.Redis.from_url(redis_url(url))
 
 
 __all__ = [
     "DEFAULT_QUEUE",
     "enqueue_job",
+    "redis_url",
     "run_job",
     "worker_entry",
 ]
