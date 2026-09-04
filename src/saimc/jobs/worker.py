@@ -31,6 +31,7 @@ from typing import Any
 from saimc.jobs.stages import (
     compose_stage,
     parse_stage,
+    render_audio_stage,
     transition_to,
 )
 from saimc.jobs.state import IllegalTransitionError, JobState, JobStateMachine
@@ -102,10 +103,11 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
 
     This is the only function the worker invokes. It loads the
     canonical Job from storage, runs `parse_stage` then `compose_stage`,
-    and persists the job after each transition. Render stages (audio /
-    sheet / animation) are stubbed until slices 5-7 land; the worker
-    transitions through `validating → rendering_audio → ... → complete`
-    as no-ops for now so the state-machine wiring is exercised.
+    and persists the job after each transition. The audio renderer is
+    real (slice 5.3); sheet and animation are stubs until slices 6.2
+    and 7.1 land — the worker transitions through
+    `rendering_sheet → rendering_animation → complete` as no-ops for
+    now so the state-machine wiring is exercised.
 
     Args:
         job_id: the opaque job id. Only primitive arguments may be
@@ -176,23 +178,27 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
         storage.save(job)
 
     # validating -> rendering_audio -> rendering_sheet -> rendering_animation -> complete
-    for next_state in (
-        JobState.RENDERING_AUDIO,
-        JobState.RENDERING_SHEET,
-        JobState.RENDERING_ANIMATION,
-        JobState.COMPLETE,
-    ):
-        if job.state == JobState.VALIDATING and next_state == JobState.RENDERING_AUDIO:
-            transition_to(job, next_state, sm)
-            storage.save(job)
-        elif job.state in (
-            JobState.RENDERING_AUDIO,
-            JobState.RENDERING_SHEET,
-            JobState.RENDERING_ANIMATION,
-        ):
-            # Renderers are stubs in this slice — move on to the next stage.
-            transition_to(job, next_state, sm)
-            storage.save(job)
+    if job.state == JobState.VALIDATING:
+        transition_to(job, JobState.RENDERING_AUDIO, sm)
+        storage.save(job)
+
+    if job.state == JobState.RENDERING_AUDIO:
+        result = render_audio_stage(job, storage)
+        if result.error is not None:
+            job.error = result.error
+            _mark_failed(job, storage, result.error)
+            return
+        if result.next_state is not None:
+            transition_to(job, result.next_state, sm)
+        storage.save(job)
+
+    # Sheet + animation renderers land in slices 6.2 and 7.1.
+    if job.state == JobState.RENDERING_SHEET:
+        transition_to(job, JobState.RENDERING_ANIMATION, sm)
+        storage.save(job)
+    if job.state == JobState.RENDERING_ANIMATION:
+        transition_to(job, JobState.COMPLETE, sm)
+        storage.save(job)
 
 
 def _mark_failed(job: Job, storage: JobStorage, error: JobError) -> None:

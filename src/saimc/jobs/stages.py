@@ -25,6 +25,7 @@ launched through `safe_run()` which enforces a timeout.
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 import subprocess
 import time
@@ -36,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from saimc.compose.engine import CompositionEngineError
 from saimc.jobs.state import JobState, JobStateMachine
 from saimc.jobs.storage import (
+    ArtifactRecord,
     Job,
     JobError,
     JobStorage,
@@ -219,6 +221,13 @@ def compose_stage(
     job.engine_version = (
         f"{job.engine_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
     )
+    # Persist the full engine output as a sidecar so later render
+    # stages (audio, sheet, animation) can read it without re-running
+    # the composer.
+    from saimc.compose.serialization import write_engine_output
+
+    sidecar_path = storage.job_dir(job.job_id) / "engine_output.json"
+    write_engine_output(sidecar_path, output)
     # The next-state decision (continue to validating or fail with
     # lint_unpassable) is made here. Lint is also re-checked inside the
     # engine, but we re-run here defensively in case a future engine
@@ -239,6 +248,110 @@ def compose_stage(
     return StageResult(job=job, next_state=JobState.VALIDATING)
 
 
+def render_audio_stage(
+    job: Job,
+    storage: JobStorage,
+    *,
+    soundfont_path: Path | None = None,
+    fluidsynth_bin: str | None = None,
+    ffmpeg_bin: str | None = None,
+) -> StageResult:
+    """Run the `rendering_audio` stage.
+
+    Loads the engine output sidecar, calls `render_audio`, and
+    attaches one or two `ArtifactRecord` entries to the job (WAV
+    primary, OGG Opus secondary when encoding succeeded).
+
+    `soundfont_path` defaults to `$SAIMC_RENDER_SOUNDFONT` or
+    `./assets/Salamander.sf2`. `fluidsynth_bin` and `ffmpeg_bin`
+    default to the env vars `$SAIMC_FLUIDSYNTH_BIN` /
+    `$SAIMC_FFMPEG_BIN`, falling back to PATH lookup inside
+    `render_audio`.
+
+    Module-level so tests can monkeypatch it.
+    """
+    from saimc.compose.serialization import read_engine_output
+    from saimc.render.audio import AudioRenderError, render_audio
+
+    if job.input_spec is None:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="no_spec",
+                message="Cannot render audio without a parsed spec.",
+                stage="rendering_audio",
+            ),
+        )
+
+    sidecar_path = storage.job_dir(job.job_id) / "engine_output.json"
+    if not sidecar_path.exists():
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="engine_output_missing",
+                message=f"Engine output sidecar not found at {sidecar_path}",
+                stage="rendering_audio",
+            ),
+        )
+
+    output = read_engine_output(sidecar_path)
+
+    sf = soundfont_path or Path(os.environ.get("SAIMC_RENDER_SOUNDFONT", "./assets/Salamander.sf2"))
+    artifacts_dir = storage.ensure_artifact_dir(job.job_id)
+
+    try:
+        artifact = render_audio(
+            output.performance_plan,
+            bpm=output.arrangement.tempo_bpm,
+            soundfont_path=sf,
+            out_dir=artifacts_dir,
+            job_id=job.job_id,
+            fluidsynth_bin=fluidsynth_bin,
+            ffmpeg_bin=ffmpeg_bin,
+        )
+    except AudioRenderError as exc:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code=exc.code,
+                message=exc.message,
+                stage="rendering_audio",
+            ),
+        )
+
+    storage.attach_artifact(
+        job,
+        ArtifactRecord(
+            kind="audio",
+            container=artifact.primary_container,
+            codec=artifact.primary_codec,
+            path=artifact.primary_path.name,
+            sha256=artifact.primary_sha256,
+            size_bytes=artifact.primary_size_bytes,
+        ),
+    )
+    if artifact.ogg_path is not None and artifact.ogg_path.exists():
+        storage.attach_artifact(
+            job,
+            ArtifactRecord(
+                # A second kind, not a second "audio" record: the
+                # kind-keyed dict holds one record per key, and the
+                # streamable primary must keep `kind="audio"` for
+                # `GET /jobs/{id}/artifact/audio`.
+                kind="audio_ogg",
+                container="ogg",
+                codec=artifact.ogg_codec or "opus",
+                path=artifact.ogg_path.name,
+                sha256=artifact.ogg_sha256 or "",
+                size_bytes=artifact.ogg_size_bytes or 0,
+            ),
+        )
+    return StageResult(job=job, next_state=JobState.RENDERING_SHEET)
+
+
 def transition_to(job: Job, target: JobState, sm: JobStateMachine | None = None) -> Job:
     """Apply `target` via the state machine, raising `IllegalTransitionError` on bad moves."""
     sm = sm or JobStateMachine()
@@ -254,6 +367,7 @@ __all__ = [
     "SubprocessTimeoutError",
     "compose_stage",
     "parse_stage",
+    "render_audio_stage",
     "safe_run",
     "transition_to",
 ]

@@ -52,7 +52,7 @@ class ArtifactRecord:
     resolves.
     """
 
-    kind: str  # "audio" | "sheet" | "animation"
+    kind: str  # "audio" | "audio_ogg" | "sheet" | "animation"
     container: str  # "wav" | "ogg" | "svg" | "png" | "pdf" | "webm"
     codec: str
     path: str

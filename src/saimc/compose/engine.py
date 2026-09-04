@@ -29,6 +29,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from saimc.compose.duration import (
     DurationArrangement,
@@ -52,6 +53,7 @@ from saimc.compose.score import (
     NoteEvent,
     PerformanceNoteEvent,
     PerformancePlan,
+    TempoMap,
     ticks_to_microseconds,
 )
 from saimc.spec import CompositionSpec
@@ -86,6 +88,69 @@ class EngineOutput:
     arrangement: DurationArrangement
     key: KeySignature
     time_signature: str
+
+    def to_sidecar(self) -> dict[str, Any]:
+        """Serialize to a JSON-friendly dict for the sidecar file.
+
+        The compose types are plain `@dataclass(frozen=True)`, not
+        Pydantic, so we use `dataclasses.asdict` for the conversion.
+        """
+        from dataclasses import asdict
+
+        return {
+            "notation_score": asdict(self.notation_score),
+            "performance_plan": asdict(self.performance_plan),
+            "arrangement": asdict(self.arrangement),
+            "key": asdict(self.key),
+            "time_signature": self.time_signature,
+        }
+
+    @classmethod
+    def from_sidecar(cls, payload: dict[str, Any]) -> EngineOutput:
+        """Reconstruct from the sidecar JSON dict.
+
+        Nested dataclasses (`NotationScore`, `PerformancePlan`,
+        `DurationArrangement`, `KeySignature`, `ChordTemplate`,
+        `Measure`, `NoteEvent`, `PerformanceNoteEvent`) are rebuilt
+        with their constructors by name; `asdict` collapses them
+        into plain `dict`s, so we rehydrate each one explicitly.
+        """
+        score_payload = payload["notation_score"]
+        plan_payload = payload["performance_plan"]
+        arrangement_payload = payload["arrangement"]
+        score = NotationScore(
+            format=score_payload["format"],
+            ppq=score_payload["ppq"],
+            key=KeySignature(**score_payload["key"]),
+            time_signature=score_payload["time_signature"],
+            tempo=TempoMap(**score_payload["tempo"]),
+            measures=tuple(Measure(**m) for m in score_payload["measures"]),
+            notes=tuple(NoteEvent(**n) for n in score_payload["notes"]),
+        )
+        plan = PerformancePlan(
+            format=plan_payload["format"],
+            sample_rate=plan_payload["sample_rate"],
+            notes=tuple(PerformanceNoteEvent(**n) for n in plan_payload["notes"]),
+        )
+        arrangement = DurationArrangement(
+            form_bars=arrangement_payload["form_bars"],
+            template=ChordTemplate(
+                name=arrangement_payload["template"]["name"],
+                bars=arrangement_payload["template"]["bars"],
+                chords=tuple(tuple(chord) for chord in arrangement_payload["template"]["chords"]),
+            ),
+            repetition_count=arrangement_payload["repetition_count"],
+            total_bars=arrangement_payload["total_bars"],
+            tempo_bpm=arrangement_payload["tempo_bpm"],
+            coda_bars=arrangement_payload.get("coda_bars", 0),
+        )
+        return cls(
+            notation_score=score,
+            performance_plan=plan,
+            arrangement=arrangement,
+            key=KeySignature(**payload["key"]),
+            time_signature=payload["time_signature"],
+        )
 
 
 def compose(spec: CompositionSpec) -> EngineOutput:

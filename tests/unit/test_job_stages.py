@@ -131,7 +131,9 @@ class TestComposeStage:
 
     def test_with_engine_stub_and_spec_advances(self, store: JobStorage) -> None:
         """A stub engine that returns a valid EngineOutput advances."""
+        from saimc.compose.duration import DurationArrangement
         from saimc.compose.engine import EngineOutput
+        from saimc.compose.forms import ChordTemplate
         from saimc.compose.score import (
             KeySignature,
             Measure,
@@ -167,20 +169,21 @@ class TestComposeStage:
                 velocity=64,
             )
             performance = PerformancePlan.make(sample_rate=44100, notes=[perf_note])
+            arrangement = DurationArrangement(
+                form_bars=1,
+                template=ChordTemplate(
+                    name="stub_1bar",
+                    bars=1,
+                    chords=((0, 1),),
+                ),
+                repetition_count=1,
+                total_bars=1,
+                tempo_bpm=80.0,
+            )
             return EngineOutput(
                 notation_score=notation,
                 performance_plan=performance,
-                arrangement=type(
-                    "Arrangement",
-                    (),
-                    {
-                        "form_bars": 1,
-                        "template": None,
-                        "repetition_count": 1,
-                        "total_bars": 1,
-                        "tempo_bpm": 80.0,
-                    },
-                )(),
+                arrangement=arrangement,
                 key=KeySignature(root="C", mode="major"),
                 time_signature="4/4",
             )
