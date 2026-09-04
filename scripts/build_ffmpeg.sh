@@ -82,7 +82,7 @@ else
 fi
 
 log "verifying archive sha256"
-ACTUAL_SHA256="$(${sha256_cmd} < "${ARCHIVE}" | awk '{print $1}')"
+ACTUAL_SHA256="$(sha256_cmd < "${ARCHIVE}" | awk '{print $1}')"
 if [[ "${ACTUAL_SHA256}" != "${SOURCE_SHA256}" ]]; then
     fail "sha256 mismatch: expected ${SOURCE_SHA256}, got ${ACTUAL_SHA256}"
 fi
@@ -125,7 +125,7 @@ fi
 log "capturing binary and sha256"
 cp "${FFMPEG_BIN}" "${DIST_DIR}/ffmpeg"
 chmod +x "${DIST_DIR}/ffmpeg"
-BIN_SHA256="$(${sha256_cmd} < "${DIST_DIR}/ffmpeg" | awk '{print $1}')"
+BIN_SHA256="$(sha256_cmd < "${DIST_DIR}/ffmpeg" | awk '{print $1}')"
 echo "${BIN_SHA256}  ffmpeg" > "${DIST_DIR}/ffmpeg.sha256"
 log "binary sha256: ${BIN_SHA256}"
 
