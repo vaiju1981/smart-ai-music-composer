@@ -86,6 +86,30 @@ class TestTickConversion:
         assert _us_to_ticks(1_000_000, 60.0) == 480
 
 
+class TestSmfChannelMapping:
+    def test_voice_ids_skip_gm_percussion_channel(self) -> None:
+        """Channel 10 (index 9) is the GM percussion kit; voices must skip it."""
+
+        def _plan(voice_id: int) -> PerformancePlan:
+            return PerformancePlan.make(
+                sample_rate=44100,
+                notes=[
+                    PerformanceNoteEvent(
+                        voice_id=voice_id,
+                        pitch_midi=60,
+                        start_us=0,
+                        duration_us=500_000,
+                        velocity=64,
+                    )
+                ],
+            )
+
+        for voice_id, expected_channel in [(0, 0), (8, 8), (9, 10), (10, 11), (16, 0)]:
+            smf = build_smf(_plan(voice_id), bpm=120.0)
+            channels = {m.channel for m in smf.tracks[0] if m.type == "note_on"}
+            assert channels == {expected_channel}
+
+
 class TestFindFluidsynth:
     def test_finds_in_path(self, tmp_path: Path) -> None:
         # Create a fake fluidsynth in a temp dir, prepend to PATH.
@@ -147,7 +171,7 @@ class TestRunFluidsynthContract:
         with (
             patch("shutil.which", return_value=str(fake_bin)),
             patch("saimc.render.audio._read_fluidsynth_version", return_value="2.3.4"),
-            patch("saimc.render.audio.canonical_sha256", return_value="x" * 64),
+            patch("saimc.render.audio.sha256_file", return_value="x" * 64),
             patch("saimc.render.audio.safe_run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
@@ -156,6 +180,10 @@ class TestRunFluidsynthContract:
             )
         # We didn't call run_fluidsynth; this is just exercising find_fluidsynth.
         assert run_version == "2.3.4"
+        # The file sample format is pinned explicitly: the manifest
+        # reports pcm_s16le and must not depend on the binary's default.
+        cmd = mock_run.call_args[0][0]
+        assert cmd[cmd.index("-o") + 1] == "audio.file.format=s16"
 
     def test_timeout_raises(self, tmp_path: Path) -> None:
         from saimc.jobs.stages import SubprocessTimeoutError

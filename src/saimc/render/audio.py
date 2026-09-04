@@ -27,13 +27,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from saimc.canonical import canonical_sha256
 from saimc.compose.score import (
     PPQ,
     PerformancePlan,
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
 from saimc.render.ffmpeg_audit import audit_ffmpeg
+from saimc.render.util import sha256_file
 
 if TYPE_CHECKING:
     from mido import MidiFile
@@ -75,7 +75,7 @@ class AudioArtifact:
 
     primary_path: Path
     primary_container: str  # "wav"
-    primary_codec: str  # "pcm_s24le"
+    primary_codec: str  # "pcm_s16le"
     primary_sha256: str
     primary_size_bytes: int
 
@@ -134,13 +134,18 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
             # trip; the engine shouldn't produce these but we don't
             # want a malformed MIDI file to crash the renderer.
             off_tick = on_tick + 1
+        # Channel 10 (index 9) is the GM percussion kit — a voice
+        # mapped there would play drums instead of its instrument.
+        channel = note.voice_id % 16
+        if channel >= 9:
+            channel += 1
         events.append(
             (
                 on_tick,
                 0,
                 mido.Message(
                     "note_on",
-                    channel=note.voice_id % 16,
+                    channel=channel,
                     note=note.pitch_midi,
                     velocity=note.velocity,
                 ),
@@ -152,7 +157,7 @@ def build_smf(plan: PerformancePlan, *, bpm: float) -> MidiFile:
                 1,
                 mido.Message(
                     "note_off",
-                    channel=note.voice_id % 16,
+                    channel=channel,
                     note=note.pitch_midi,
                     velocity=0,
                 ),
@@ -238,28 +243,20 @@ def run_fluidsynth(
         )
     out_wav_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Pin the file sample format: FluidSynth's default is s16 and the
+    # manifest reports pcm_s16le, so the setting is made explicit
+    # rather than relying on the default never changing.
     cmd = [
         bin_path,
-        "-F",  # render to WAV
+        "-F",  # render to a file
+        str(out_wav_path),
         "-q",  # quiet
         "-r",
         str(sample_rate),
         "-o",
-        "alsa.audio=sink-dummy",
-        str(soundfont_path),
-        str(smf_path),
-    ]
-    # FluidSynth writes to a file when given -F + -o pointing at a file
-    # output. We adjust: use -F and redirect via the -o flag's file mode.
-    # Actually -F expects a destination, not -o. Simplest: use -F with
-    # the output path as the positional arg, after the soundfont.
-    cmd = [
-        bin_path,
-        "-F",
-        str(out_wav_path),
-        "-q",
-        "-r",
-        str(sample_rate),
+        "audio.file.format=s16",
+        "-o",
+        "audio.file.endian=little",
         str(soundfont_path),
         str(smf_path),
     ]
@@ -283,7 +280,10 @@ def run_fluidsynth(
             "fluidsynth returned 0 but no WAV file was written",
         )
     version = _read_fluidsynth_version(bin_path)
-    build_sha = canonical_sha256({"binary": bin_path})  # placeholder; see audit() below
+    # Hash the binary itself (the FFmpeg audit pattern), not its path
+    # string. The binary is effectively immutable for the process
+    # lifetime, so cache the digest.
+    build_sha = sha256_file(Path(bin_path), cached=True)
     logger.info("fluidsynth rendered %s -> %s in %.1fs", smf_path, out_wav_path, elapsed)
     return version, build_sha
 
@@ -456,14 +456,12 @@ def render_audio(
     ogg_size = _file_size(ogg_path)
     # The soundfont is an immutable asset: cache its digest per process
     # instead of re-hashing ~1 GB on every job.
-    soundfont_sha = (
-        _hash_file(soundfont_path, cached=True) if soundfont_path.exists() else ""
-    )
+    soundfont_sha = _hash_file(soundfont_path, cached=True) if soundfont_path.exists() else ""
 
     return AudioArtifact(
         primary_path=wav_path,
         primary_container="wav",
-        primary_codec="pcm_s24le",
+        primary_codec="pcm_s16le",
         primary_sha256=primary_sha,
         primary_size_bytes=primary_size,
         ogg_path=ogg_path,

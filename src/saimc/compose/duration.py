@@ -123,7 +123,7 @@ def arrange_for_duration(
     4. If even a coda doesn't work, raise DurationUnfulfillableError.
     """
     if base_form_bars is None:
-        base_form_bars = _pick_base_form(mood, target_duration_seconds)
+        base_form_bars = _pick_base_form(mood, target_duration_seconds, time_signature)
     if base_form_bars not in PHRASE_SIZES:
         raise ValueError(f"base_form_bars must be one of {PHRASE_SIZES}; got {base_form_bars}")
 
@@ -168,7 +168,6 @@ def arrange_for_duration(
     if coda_bars >= base_form_bars:
         coda_bars = base_form_bars - 4 if base_form_bars >= 4 else 0
     if coda_bars >= 1:
-        best_with_coda: tuple[float, int, float, int] | None = None
         for repetition_count in range(1, MAX_REPEATS + 1):
             total_bars_no_coda = base_form_bars * repetition_count
             total_ticks_no_coda = total_bars_no_coda * ticks_per_bar
@@ -194,23 +193,10 @@ def arrange_for_duration(
                         tempo_bpm=chosen,
                         coda_bars=coda_bars,
                     )
-                if best_with_coda is None or (delta, repetition_count) < (
-                    best_with_coda[0],
-                    best_with_coda[1],
-                ):
-                    best_with_coda = (delta, repetition_count, bpm, total_ticks)
 
-        if best_with_coda is not None:
-            chosen = round(best_with_coda[2] * 2) / 2
-            return DurationArrangement(
-                form_bars=base_form_bars,
-                template=template,
-                repetition_count=best_with_coda[1],
-                total_bars=base_form_bars * best_with_coda[1],
-                tempo_bpm=chosen,
-                coda_bars=coda_bars,
-            )
-
+    # No in-tolerance arrangement exists — with or without a coda. Per
+    # §10 #1 the policy must fail loudly rather than silently return an
+    # arrangement that misses the target.
     # Surface the closest no-coda arrangement as part of the error.
     if best_no_coda is None:
         raise DurationUnfulfillableError(
@@ -228,24 +214,27 @@ def arrange_for_duration(
     )
 
 
-def _pick_base_form(mood: str, target_duration_seconds: float) -> int:
+def _pick_base_form(mood: str, target_duration_seconds: float, time_signature: str) -> int:
     """Pick the smallest form whose max repetition can hit the target duration.
 
     For each candidate form, compute the maximum seconds achievable at
-    MAX_REPEATS x the mood's slowest tempo in 4/4. If that maximum
-    meets or exceeds the target, the form is a candidate. We then
-    return the smallest such form (smallest repetition count in the
-    downstream arrange_for_duration tends to be the cleanest output).
+    MAX_REPEATS x the mood's slowest tempo in the spec's time
+    signature. If that maximum meets or exceeds the target, the form
+    is a candidate. We then return the smallest such form (smallest
+    repetition count in the downstream arrange_for_duration tends to
+    be the cleanest output).
     """
     low_bpm, _high_bpm = TEMPO_RANGE_BPM[mood]
+    beats_per_bar = bar_ticks(time_signature) / PPQ
     for form in PHRASE_SIZES:
         # Max achievable seconds for this form: MAX_REPEATS at lowest tempo.
-        max_seconds = (form * MAX_REPEATS * 4 / low_bpm) * 60.0
+        max_seconds = (form * MAX_REPEATS * beats_per_bar / low_bpm) * 60.0
         if max_seconds >= target_duration_seconds:
             return form
     raise DurationUnfulfillableError(
-        f"no Phase 1 form can reach {target_duration_seconds}s for mood={mood!r}; "
-        f"max achievable is {(PHRASE_SIZES[-1] * MAX_REPEATS * 4 / low_bpm) * 60.0:.1f}s"
+        f"no Phase 1 form can reach {target_duration_seconds}s for mood={mood!r} "
+        f"in {time_signature}; max achievable is "
+        f"{(PHRASE_SIZES[-1] * MAX_REPEATS * beats_per_bar / low_bpm) * 60.0:.1f}s"
     )
 
 

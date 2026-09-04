@@ -8,10 +8,12 @@ from saimc.compose.duration import (
     DURATION_TOLERANCE,
     MAX_REPEATS,
     DurationArrangement,
+    DurationUnfulfillableError,
     arrange_for_duration,
     bar_ticks,
     section_seed,
 )
+from saimc.compose.score import PPQ
 
 
 class TestBarTicks:
@@ -136,6 +138,34 @@ class TestArrangeForDuration:
                 target_duration_seconds=180.0,
                 time_signature="4/4",
                 base_form_bars=24,
+            )
+
+    def test_2_4_long_target_fits_after_form_pick_fixed(self) -> None:
+        """Regression: _pick_base_form used to assume 4 beats per bar.
+
+        Calming 2/4 at 300s: the 8-bar form's true max is 8*8*2 beats at
+        50bpm = 153.6s, so the policy must pick a larger form (32 bars,
+        4 reps at 51.2bpm = 300s) — not silently undershoot.
+        """
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=300.0,
+            time_signature="2/4",
+        )
+        realised = (arr.total_bars_with_coda * bar_ticks("2/4") / PPQ) * 60.0 / arr.tempo_bpm
+        assert abs(realised - 300.0) / 300.0 <= DURATION_TOLERANCE
+
+    def test_impossible_target_raises_instead_of_undershooting(self) -> None:
+        """Per §10 #1: fail loudly, never return an out-of-tolerance arrangement.
+
+        Calming 4/4 at 20s is unreachable: the 8-bar form alone is 24s
+        at the fastest tempo, and form+coda is 27s at fastest.
+        """
+        with pytest.raises(DurationUnfulfillableError):
+            arrange_for_duration(
+                mood="calming",
+                target_duration_seconds=20.0,
+                time_signature="4/4",
             )
 
 

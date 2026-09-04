@@ -215,12 +215,13 @@ def compose_stage(
             ),
         )
 
-    # Successful compose: attach hashes for the manifest.
+    # Successful compose: attach hashes for the manifest. Rebuilt from
+    # the base version each time — a retried compose overwrites the
+    # previous hashes instead of growing the string on every re-run.
     score_hash = output.notation_score.compute_hash()
     plan_hash = output.performance_plan.compute_hash()
-    job.engine_version = (
-        f"{job.engine_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
-    )
+    base_version = job.engine_version.split(";score_hash=", 1)[0]
+    job.engine_version = f"{base_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
     # Persist the full engine output as a sidecar so later render
     # stages (audio, sheet, animation) can read it without re-running
     # the composer.
