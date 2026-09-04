@@ -86,6 +86,73 @@ class TestTickConversion:
         assert _us_to_ticks(1_000_000, 60.0) == 480
 
 
+class TestSmfPercussion:
+    """Drum-set voices: pinned to GM channel 10, no program change."""
+
+    @staticmethod
+    def _plan(voice_id: int) -> PerformancePlan:
+        return PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=voice_id,
+                    pitch_midi=38,  # GM snare
+                    start_us=0,
+                    duration_us=100_000,
+                    velocity=80,
+                )
+            ],
+        )
+
+    def test_percussion_voice_goes_to_channel_10(self) -> None:
+        smf = build_smf(self._plan(2), bpm=120.0, voice_instruments={2: "drum_set"})
+        channels = {m.channel for m in smf.tracks[0] if m.type == "note_on"}
+        assert channels == {9}
+
+    def test_percussion_voice_gets_no_program_change(self) -> None:
+        smf = build_smf(self._plan(2), bpm=120.0, voice_instruments={2: "drum_set"})
+        changes = [m for m in smf.tracks[0] if m.type == "program_change"]
+        assert {c.channel for c in changes} == set()  # only the drum voice exists
+
+    def test_mixed_voices_keep_percussion_on_10_and_melody_off_it(self) -> None:
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=1,
+                    pitch_midi=60,
+                    start_us=0,
+                    duration_us=500_000,
+                    velocity=64,
+                ),
+                PerformanceNoteEvent(
+                    voice_id=2,
+                    pitch_midi=36,  # kick
+                    start_us=0,
+                    duration_us=100_000,
+                    velocity=90,
+                ),
+            ],
+        )
+        smf = build_smf(
+            plan,
+            bpm=120.0,
+            voice_instruments={1: "piano", 2: "drum_set"},
+        )
+        note_channels = {m.channel for m in smf.tracks[0] if m.type == "note_on"}
+        change_channels = {m.channel for m in smf.tracks[0] if m.type == "program_change"}
+        assert 9 in note_channels
+        assert 9 not in change_channels  # drums need no patch
+        assert change_channels == {1}  # melody voice only
+
+    def test_drum_set_resolves_to_the_general_font(self) -> None:
+        from saimc.render.instruments import soundfont_for_instrument
+
+        # With no local font files the fallback path is returned; either
+        # way it must resolve without error.
+        assert soundfont_for_instrument("drum_set") is not None
+
+
 class TestSmfChannelMapping:
     def test_voice_ids_skip_gm_percussion_channel(self) -> None:
         """Channel 10 (index 9) is the GM percussion kit; voices must skip it."""
@@ -477,9 +544,9 @@ class TestInstrumentRegistry:
             assert 0 <= program <= 127
 
     def test_every_instrument_has_a_family(self) -> None:
-        from saimc.render.instruments import INSTRUMENT_FAMILIES, INSTRUMENT_PROGRAMS
+        from saimc.render.instruments import INSTRUMENT_FAMILIES, SUPPORTED_INSTRUMENTS
 
-        assert set(INSTRUMENT_FAMILIES) == set(INSTRUMENT_PROGRAMS)
+        assert set(INSTRUMENT_FAMILIES) == set(SUPPORTED_INSTRUMENTS)
         assert set(INSTRUMENT_FAMILIES.values()) <= {"western", "world"}
 
     def test_western_orchestra_palette(self) -> None:

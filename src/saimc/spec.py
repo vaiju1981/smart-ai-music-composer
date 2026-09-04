@@ -125,6 +125,11 @@ class Instrument(StrEnum):
     AGOGO = "agogo"
     WOODBLOCK = "woodblock"
     TAIKO = "taiko"
+    # Percussion kit — no melodic program; renders through GM channel 10
+    # where the note pitch IS the drum piece. Composes a piano
+    # accompaniment under a mood-driven rhythm-pattern voice (see
+    # `saimc.compose.percussion`).
+    DRUM_SET = "drum_set"
 
 
 class WesternKey(StrEnum):

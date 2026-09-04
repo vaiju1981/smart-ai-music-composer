@@ -243,11 +243,11 @@ class TestMeta:
         assert meta["duration_seconds"] == {"min": 30, "max": 600, "default": 180}
 
     def test_meta_instruments_come_from_the_registry(self, client: TestClient) -> None:
-        """Adding an instrument to INSTRUMENT_PROGRAMS surfaces it in /meta."""
-        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+        """Adding an instrument to SUPPORTED_INSTRUMENTS surfaces it in /meta."""
+        from saimc.render.instruments import SUPPORTED_INSTRUMENTS
 
         meta = client.get("/meta").json()
-        assert meta["instruments"] == sorted(INSTRUMENT_PROGRAMS)
+        assert meta["instruments"] == sorted(SUPPORTED_INSTRUMENTS)
 
     def test_spec_instrumentations_are_all_registered(self) -> None:
         """Drift guard: the spec vocabulary and the render registry must
@@ -255,13 +255,13 @@ class TestMeta:
         time; registry-only names would never be requestable."""
         from saimc.render.instruments import (
             INSTRUMENT_FAMILIES,
-            INSTRUMENT_PROGRAMS,
+            SUPPORTED_INSTRUMENTS,
             soundfont_for_instrument,
         )
         from saimc.spec import Instrument
 
         expected = {member.value for member in Instrument}
-        assert set(INSTRUMENT_PROGRAMS) == expected
+        assert set(SUPPORTED_INSTRUMENTS) == expected
         assert set(INSTRUMENT_FAMILIES) == expected
         for instrument in expected:
             soundfont_for_instrument(instrument)  # must resolve without error

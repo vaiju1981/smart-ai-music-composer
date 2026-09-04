@@ -180,7 +180,7 @@ def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
     error naming what *is* supported.
     """
     from saimc.compose.engine import compose as _phase1_compose
-    from saimc.render.instruments import INSTRUMENT_PROGRAMS
+    from saimc.render.instruments import SUPPORTED_INSTRUMENTS
 
     registry: dict[str, Callable[[Any], Any]] = {
         # e.g. "sitar": _raga_compose — dedicated engines go here.
@@ -188,11 +188,11 @@ def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
     composer = registry.get(instrumentation)
     if composer is not None:
         return composer
-    if instrumentation in INSTRUMENT_PROGRAMS:
+    if instrumentation in SUPPORTED_INSTRUMENTS:
         return _phase1_compose
     raise LookupError(
         f"no composer registered for instrumentation {instrumentation!r}; "
-        f"known instrumentations: {', '.join(sorted(INSTRUMENT_PROGRAMS))}"
+        f"known instrumentations: {', '.join(sorted(SUPPORTED_INSTRUMENTS))}"
     ) from None
 
 
@@ -313,7 +313,7 @@ def render_audio_stage(
 
     Module-level so tests can monkeypatch it.
     """
-    from saimc.compose.score import VOICE_BASS, VOICE_MELODY
+    from saimc.compose.score import VOICE_BASS, VOICE_MELODY, VOICE_PERCUSSION
     from saimc.compose.serialization import read_engine_output
     from saimc.render.audio import AudioRenderError, render_audio
     from saimc.render.instruments import soundfont_for_instrument
@@ -345,9 +345,19 @@ def render_audio_stage(
 
     # Phase 1's spec carries one instrumentation for the whole piece;
     # both voices play it. Phase 2's per-voice instrument map replaces
-    # this fan-out.
+    # this fan-out. A drum-set piece is the one exception: the piano
+    # stays as the accompaniment and the engine's percussion voice
+    # (voice 2, GM channel-10 keys) carries the kit — its notes sound
+    # as drums precisely because they go to channel 10.
     instrumentation = job.input_spec.instrumentation
-    voice_instruments = {VOICE_BASS: instrumentation, VOICE_MELODY: instrumentation}
+    if instrumentation == "drum_set":
+        voice_instruments = {
+            VOICE_BASS: "piano",
+            VOICE_MELODY: "piano",
+            VOICE_PERCUSSION: instrumentation,
+        }
+    else:
+        voice_instruments = {VOICE_BASS: instrumentation, VOICE_MELODY: instrumentation}
     sf = soundfont_path or soundfont_for_instrument(instrumentation)
     artifacts_dir = storage.ensure_artifact_dir(job.job_id)
 

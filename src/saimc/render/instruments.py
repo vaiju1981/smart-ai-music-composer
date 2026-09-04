@@ -171,7 +171,20 @@ INSTRUMENT_FAMILIES: dict[str, str] = {
     "agogo": "world",
     "woodblock": "world",
     "taiko": "world",
+    # Percussion kit
+    "drum_set": "western",
 }
+
+# Instruments with no GM melodic program: they render through the
+# channel-10 percussion kit, where the note's pitch IS the drum piece
+# (kick=36, snare=38, ...). `build_smf` routes these voices to channel
+# 10 and emits no program_change for them.
+PERCUSSION_INSTRUMENTS: frozenset[str] = frozenset({"drum_set"})
+
+# Everything a spec may request: melodic instruments (INSTRUMENT_PROGRAMS
+# keys) plus the percussion kit. This — not INSTRUMENT_PROGRAMS alone —
+# is what /meta advertises and the composer registry resolves against.
+SUPPORTED_INSTRUMENTS: frozenset[str] = frozenset(INSTRUMENT_PROGRAMS) | PERCUSSION_INSTRUMENTS
 
 # Where downloaded fonts live. `scripts/download_soundfonts.py` fills
 # this directory with pinned-sha256 files (gitignored — re-downloadable
@@ -221,7 +234,9 @@ __all__ = [
     "GENERAL_SOUNDFONT",
     "INSTRUMENT_FAMILIES",
     "INSTRUMENT_PROGRAMS",
+    "PERCUSSION_INSTRUMENTS",
     "PIANO_SOUNDFONT",
     "SOUNDFONT_DIR",
+    "SUPPORTED_INSTRUMENTS",
     "soundfont_for_instrument",
 ]

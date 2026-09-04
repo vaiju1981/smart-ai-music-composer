@@ -53,11 +53,18 @@ from saimc.compose.forms import (
     key_signature_from_spec,
 )
 from saimc.compose.linter import LintIssue, lint
+from saimc.compose.percussion import (
+    MOOD_VELOCITY_SCALE,
+    PERCUSSION_NOTE_TICKS,
+    PERCUSSION_VELOCITY_MAX,
+    style_for,
+)
 from saimc.compose.score import (
     DEFAULT_VELOCITY,
     PPQ,
     VOICE_BASS,
     VOICE_MELODY,
+    VOICE_PERCUSSION,
     KeySignature,
     Measure,
     NotationScore,
@@ -67,7 +74,7 @@ from saimc.compose.score import (
     TempoMap,
     ticks_to_microseconds,
 )
-from saimc.spec import CompositionSpec
+from saimc.spec import CompositionSpec, Instrument
 
 
 class EngineErrorCode(StrEnum):
@@ -270,6 +277,24 @@ def _build_score(
         )
         notes.extend(coda_notes)
         cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
+
+    # Drum set: when the piece is written for the kit, the piano stays
+    # as the accompaniment and a percussion voice plays the mood's
+    # rhythm pattern in every bar (voice 2, GM channel-10 keys). Styles
+    # with A/B variants rotate across sections, matching the chord
+    # templates' variation rule. Melodic meters the library does not
+    # cover (5/4, 7/8) get no percussion rather than a wrong pattern.
+    if spec.instrumentation == Instrument.DRUM_SET:
+        notes.extend(
+            _generate_percussion(
+                mood=spec.mood.value,
+                time_signature=time_signature,
+                form_bars=arrangement.form_bars,
+                repetition_count=arrangement.repetition_count,
+                total_bars=arrangement.total_bars_with_coda,
+                seed=rng_base_seed,
+            )
+        )
 
     # Build measures with strict 1-based bar indexing, including any
     # coda bars after the full repetitions.
@@ -542,6 +567,51 @@ def _arpeggiate_bar(
                 ),
             )
         )
+    return notes
+
+
+def _generate_percussion(
+    *,
+    mood: str,
+    time_signature: str,
+    form_bars: int,
+    repetition_count: int,
+    total_bars: int,
+    seed: int,
+) -> list[NoteEvent]:
+    """Generate the percussion voice for a drum-set piece.
+
+    The style comes from the mood + meter (`style_for`); its variants
+    rotate across sections the way the chord templates do, with the
+    coda treated as one more section. A per-bar seeded jitter of a few
+    velocity points keeps repeated bars from sounding machine-stamped.
+    """
+    style = style_for(mood, time_signature)
+    if style is None:
+        return []
+    ticks_per_bar = bar_ticks(time_signature)
+    mood_scale = MOOD_VELOCITY_SCALE.get(mood, 1.0)
+    notes: list[NoteEvent] = []
+    for bar in range(total_bars):
+        in_body = bar < repetition_count * form_bars
+        section_idx = bar // form_bars if in_body else repetition_count
+        pattern = style.pattern(time_signature, section_idx)
+        if pattern is None:
+            continue
+        bar_rng = random.Random(seed + bar)
+        bar_start = bar * ticks_per_bar
+        for hit in pattern:
+            jitter = bar_rng.uniform(0.92, 1.06)
+            velocity = round(hit.velocity * style.velocity_scale * mood_scale * jitter)
+            notes.append(
+                NoteEvent(
+                    voice_id=VOICE_PERCUSSION,
+                    pitch_midi=hit.key,
+                    tick=bar_start + hit.offset_ticks,
+                    duration_ticks=PERCUSSION_NOTE_TICKS,
+                    velocity=min(PERCUSSION_VELOCITY_MAX, max(1, velocity)),
+                )
+            )
     return notes
 
 

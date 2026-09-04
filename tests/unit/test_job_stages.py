@@ -16,7 +16,7 @@ from saimc.jobs.stages import (
 from saimc.jobs.state import IllegalTransitionError, JobState
 from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult
-from saimc.spec import CompositionSpec, Mood
+from saimc.spec import CompositionSpec, Instrument, Mood
 
 
 @pytest.fixture
@@ -229,3 +229,16 @@ class TestComposeStage:
         assert result.error is not None
         assert result.error.error_code == "instrumentation_unsupported"
         assert "piano" in (result.error.message or "")
+
+    def test_drum_set_composes(self, store: JobStorage) -> None:
+        """drum_set is a supported instrumentation, not a lookup failure."""
+        job = store.create("p")
+        job.input_spec = CompositionSpec(
+            mood=Mood.ELECTRIFYING,
+            instrumentation=Instrument.DRUM_SET,
+            duration_seconds=30,
+            seed=42,
+        )
+        result = compose_stage(job, store)
+        assert result.next_state == JobState.VALIDATING
+        assert result.error is None

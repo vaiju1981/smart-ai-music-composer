@@ -34,7 +34,7 @@ from saimc.compose.score import (
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
 from saimc.render.ffmpeg_audit import audit_ffmpeg
-from saimc.render.instruments import INSTRUMENT_PROGRAMS
+from saimc.render.instruments import INSTRUMENT_PROGRAMS, PERCUSSION_INSTRUMENTS
 from saimc.render.util import sha256_file
 
 if TYPE_CHECKING:
@@ -132,16 +132,28 @@ def build_smf(
 
     # Program changes up front, one per (voice, channel) that appears in
     # the plan or in voice_instruments. Channels are assigned the same
-    # way as the note events below.
+    # way as the note events below. Percussion voices (drum set) go to
+    # GM channel 10 and get NO program change — channel 10 already
+    # selects the kit, and a melodic program there would sound wrong.
     instruments = dict(voice_instruments or {})
+    percussion_voices = {
+        voice_id for voice_id, inst in instruments.items() if inst in PERCUSSION_INSTRUMENTS
+    }
     voice_channels: dict[int, int] = {}
     for note in plan.notes:
         if note.voice_id not in voice_channels:
-            voice_channels[note.voice_id] = _channel_for_voice(note.voice_id)
+            voice_channels[note.voice_id] = _channel_for_voice(
+                note.voice_id, percussion=note.voice_id in percussion_voices
+            )
     for voice_id in instruments:
-        voice_channels.setdefault(voice_id, _channel_for_voice(voice_id))
+        voice_channels.setdefault(
+            voice_id,
+            _channel_for_voice(voice_id, percussion=voice_id in percussion_voices),
+        )
     for voice_id in sorted(voice_channels):
         instrument = instruments.get(voice_id, "piano")
+        if voice_id in percussion_voices:
+            continue
         program = INSTRUMENT_PROGRAMS.get(instrument)
         if program is None:
             raise AudioRenderError(
@@ -170,7 +182,7 @@ def build_smf(
             # trip; the engine shouldn't produce these but we don't
             # want a malformed MIDI file to crash the renderer.
             off_tick = on_tick + 1
-        channel = _channel_for_voice(note.voice_id)
+        channel = _channel_for_voice(note.voice_id, percussion=note.voice_id in percussion_voices)
         events.append(
             (
                 on_tick,
@@ -209,12 +221,15 @@ def _us_to_ticks(microseconds: int, bpm: float) -> int:
     return round(microseconds * bpm * PPQ / 60_000_000)
 
 
-def _channel_for_voice(voice_id: int) -> int:
-    """Map a voice ID to a MIDI channel, skipping GM channel 10.
+def _channel_for_voice(voice_id: int, *, percussion: bool = False) -> int:
+    """Map a voice ID to a MIDI channel.
 
-    Channel 10 (index 9) is the GM percussion kit — a voice mapped
-    there would play drums instead of its instrument.
+    Channel 10 (index 9) is the GM percussion kit — melodic voices are
+    mapped around it, but a percussion voice (drum set) is pinned
+    exactly there: on channel 10 the note pitch IS the drum piece.
     """
+    if percussion:
+        return 9
     channel = voice_id % 16
     if channel >= 9:
         channel += 1
