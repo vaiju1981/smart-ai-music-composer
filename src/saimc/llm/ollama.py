@@ -147,7 +147,10 @@ class OllamaAdapter:
 
         schema = CompositionSpec.model_json_schema()
         messages = self._build_messages(
-            request.prompt, schema, prompted=not self._structured_output
+            request.prompt,
+            schema,
+            prompted=not self._structured_output,
+            previous_error=request.previous_error,
         )
 
         body: dict[str, Any] = {
@@ -244,7 +247,11 @@ class OllamaAdapter:
 
     @staticmethod
     def _build_messages(
-        prompt: str, schema: dict[str, Any], *, prompted: bool
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        prompted: bool,
+        previous_error: str | None = None,
     ) -> list[dict[str, str]]:
         sys = (
             "You convert natural-language music requests into a strict JSON "
@@ -254,6 +261,11 @@ class OllamaAdapter:
         if prompted:
             sys += " The JSON object MUST match this schema exactly: " + json.dumps(
                 schema, separators=(",", ":")
+            )
+        if previous_error:
+            sys += (
+                f" Your previous attempt was rejected: {previous_error}. "
+                "Return a corrected JSON object that fixes exactly that problem."
             )
         return [
             {"role": "system", "content": sys},

@@ -33,6 +33,12 @@ class ParseRequest:
     request_id: str
     """Opaque correlation token for benchmark/run logging; not used by the adapter logic."""
 
+    previous_error: str | None = None
+    """Why the previous attempt failed (error code + message), for the §6
+    repair loop. None on the first attempt; adapters fold this into the
+    system prompt so the model can fix what went wrong instead of
+    re-rolling a blind retry."""
+
 
 @dataclass(frozen=True)
 class ParseResult:

@@ -23,8 +23,10 @@ class _ScriptedClient:
         self._responses = list(responses)
         self.calls = 0
         self._latency_ms = latency_ms
+        self.requests: list[ParseRequest] = []
 
     async def parse(self, request: ParseRequest) -> ParseResult:
+        self.requests.append(request)
         self.calls += 1
         if not self._responses:
             raise AssertionError(
@@ -90,7 +92,10 @@ async def test_fallback_used_after_three_attempts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_out_of_vocabulary_falls_through_to_llm_error() -> None:
+async def test_out_of_vocabulary_surfaces_fallback_message() -> None:
+    """When the LLM fails schema validation and fallback rejects the
+    prompt as out-of-vocabulary, the user gets the vocabulary hint —
+    not the LLM plumbing error."""
     client: LLMClient = _ScriptedClient(
         [
             ParseResult(parser_source="llm", error=_err()),
@@ -101,8 +106,46 @@ async def test_out_of_vocabulary_falls_through_to_llm_error() -> None:
     result = await parse_prompt(client, "an angry piano piece", request_id="r4")
     assert result.spec is None
     assert result.error is not None
-    assert result.error.error_code == "schema_invalid"
+    assert result.error.error_code == "out_of_vocabulary"
+    assert "calming" in result.error.message  # the vocabulary hint
+    assert result.extra.get("llm_error_code") == "schema_invalid"
+
+
+@pytest.mark.asyncio
+async def test_transport_error_not_replaced_by_fallback_rejection() -> None:
+    """A transport-level LLM failure (llm_unreachable) stays surfaced —
+    the fallback vocabulary hint would misstate the cause."""
+    client: LLMClient = _ScriptedClient(
+        [
+            ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+            ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+            ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+        ]
+    )
+    result = await parse_prompt(client, "an angry piano piece", request_id="r6")
+    assert result.error is not None
+    assert result.error.error_code == "llm_unreachable"
     assert result.extra.get("fallback_error_code") == "out_of_vocabulary"
+
+
+@pytest.mark.asyncio
+async def test_repair_attempts_carry_previous_error() -> None:
+    """The §6 repair loop must tell the model what went wrong."""
+    client: LLMClient = _ScriptedClient(
+        [
+            ParseResult(parser_source="llm", error=_err("schema_invalid")),
+            ParseResult(parser_source="llm", spec=_spec(), extra={"latency_ms": "5"}),
+        ]
+    )
+    result = await parse_prompt(client, "calming piano music", request_id="r7")
+    assert result.spec is not None
+    assert result.attempts == 2
+    # Second call's request carried the first attempt's error.
+    second_request = client.requests[1]
+    assert second_request.previous_error is not None
+    assert "schema_invalid" in second_request.previous_error
+    # First attempt had no feedback to give.
+    assert client.requests[0].previous_error is None
 
 
 @pytest.mark.asyncio

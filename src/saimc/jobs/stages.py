@@ -152,7 +152,7 @@ def parse_stage(
             error=JobError(
                 error_code=spec_err.error_code,
                 message=spec_err.message,
-                stage="parsing",
+                stage=spec_err.stage,
             ),
         )
     return StageResult(

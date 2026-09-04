@@ -55,6 +55,13 @@ async def parse_prompt(client: LLMClient, prompt: str, request_id: str) -> Parse
     last_result: ParseResult | None = None
 
     for attempt in range(1, MAX_LLM_ATTEMPTS + 1):
+        # Repairs are not blind retries: attempt N>1 carries what the
+        # previous attempt got wrong so the model can fix it.
+        if attempt > 1 and last_error is not None:
+            request = dataclasses.replace(
+                request,
+                previous_error=(f"{last_error.error_code}: {last_error.message}"),
+            )
         result = await client.parse(request)
         result = dataclasses.replace(result, attempts=attempt)
         last_result = result
@@ -87,6 +94,26 @@ async def parse_prompt(client: LLMClient, prompt: str, request_id: str) -> Parse
         )
 
     assert last_error is not None  # guaranteed by the loop above
+    # When the LLM kept producing schema-invalid output and the
+    # fallback rejected the prompt as out-of-vocabulary, the actionable
+    # answer for the user is the vocabulary constraint — not the LLM's
+    # plumbing error. Surface the fallback rejection (which names the
+    # Phase 1 mood keywords) with the LLM error preserved in extra.
+    if last_error.error_code == "schema_invalid" and fallback_outcome.error_code in (
+        "out_of_vocabulary",
+        "empty_prompt",
+    ):
+        return _PRs(
+            parser_source="llm",
+            attempts=MAX_LLM_ATTEMPTS,
+            structured_output=bool(last_result.structured_output) if last_result else False,
+            capability_probe=last_result.capability_probe if last_result else None,
+            error=fallback_outcome,
+            extra={
+                "llm_error_code": last_error.error_code,
+                "llm_error_message": last_error.message,
+            },
+        )
     return _PRs(
         parser_source="llm",
         attempts=MAX_LLM_ATTEMPTS,

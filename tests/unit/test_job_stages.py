@@ -106,7 +106,11 @@ class TestParseStage:
         result = parse_stage(job, client, request_id="t2")
         assert result.next_state == JobState.FAILED
         assert result.error is not None
-        assert result.error.error_code == "schema_invalid"
+        # "angsty piano" is out-of-vocabulary, so the fallback's
+        # rejection (with the vocabulary hint) is surfaced, and the
+        # SpecError's own stage propagates instead of a hardcoded one.
+        assert result.error.error_code == "out_of_vocabulary"
+        assert result.error.stage == "fallback"
 
     def test_parser_exception_is_caught(self, store: JobStorage) -> None:
         class _Boom:
