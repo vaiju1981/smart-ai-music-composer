@@ -6,126 +6,247 @@
 <title>Smart AI Music Composer</title>
 <style>
   :root {
-    --bg: #101418;
-    --panel: #1a2028;
-    --border: #2c3542;
-    --text: #e6ebf1;
-    --muted: #8a97a5;
-    --accent: #4f9cf9;
-    --ok: #4fc98a;
-    --err: #e5645f;
+    --bg: #0c1016;
+    --panel: #141a23;
+    --panel-2: #1a222e;
+    --border: #29323f;
+    --text: #e8edf4;
+    --muted: #94a1b0;
+    --faint: #5f6b78;
+    --accent: #7aa2ff;
+    --accent-strong: #4f83f7;
+    --ok: #46c98f;
+    --err: #ef6a62;
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   }
   * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
   body {
     margin: 0;
-    background: var(--bg);
+    background:
+      radial-gradient(1200px 500px at 50% -10%, rgba(79, 131, 247, 0.14), transparent 60%),
+      var(--bg);
     color: var(--text);
-    font: 16px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 1.4rem; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 24px; font-size: 0.9rem; }
-  .panel {
+  main { max-width: 880px; margin: 0 auto; padding: 40px 20px 80px; }
+
+  header { text-align: center; margin-bottom: 32px; }
+  .logo {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em;
+  }
+  .logo .mark {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 1.05rem; color: #0b0e13;
+  }
+  .tagline { color: var(--muted); margin: 6px 0 0; font-size: 0.95rem; }
+  .tagline b { color: var(--text); font-weight: 600; }
+
+  .card {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    margin-bottom: 16px;
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    padding: 22px;
+    margin-bottom: 18px;
   }
-  .prompt-row { display: flex; gap: 8px; }
+
+  label.field-label {
+    display: block; font-size: 0.8rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  .prompt-row { display: flex; gap: 10px; }
   #prompt {
-    flex: 1;
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 1rem;
+    flex: 1; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; font-size: 1rem;
   }
-  #prompt:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  button {
-    background: var(--accent);
-    color: #0b0e12;
-    border: 0;
-    border-radius: 8px;
-    padding: 10px 18px;
-    font-size: 1rem;
-    cursor: pointer;
+  #prompt::placeholder { color: var(--faint); }
+  #prompt:focus { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(79, 131, 247, 0.25); }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+    color: #0b0e13; border: 0; border-radius: 10px;
+    padding: 12px 22px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
   }
-  button:disabled { opacity: 0.5; cursor: default; }
-  #cancel { background: transparent; color: var(--err); border: 1px solid var(--err); }
-  .status-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .state { font-weight: 600; }
-  .state.running { color: var(--accent); }
-  .state.complete { color: var(--ok); }
-  .state.failed, .state.cancelled { color: var(--err); }
-  .muted { color: var(--muted); font-size: 0.85rem; }
-  .job-id { color: var(--muted); font-size: 0.8rem; word-break: break-all; }
+  button.primary:disabled { opacity: 0.45; cursor: default; }
+  button.ghost {
+    background: transparent; color: var(--err);
+    border: 1px solid rgba(239, 106, 98, 0.5); border-radius: 10px;
+    padding: 12px 16px; font-size: 0.9rem; cursor: pointer;
+  }
+  .examples { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .examples span.try { color: var(--faint); font-size: 0.85rem; }
+  .chip {
+    border: 1px solid var(--border); background: var(--panel-2);
+    color: var(--muted); border-radius: 999px; padding: 5px 12px;
+    font-size: 0.82rem; cursor: pointer;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent-strong); }
+
+  .alert {
+    border: 1px solid rgba(239, 106, 98, 0.45); background: rgba(239, 106, 98, 0.08);
+    border-radius: 10px; padding: 10px 14px; margin-top: 14px;
+    color: var(--err); font-size: 0.9rem; white-space: pre-wrap;
+  }
+  .alert:empty { display: none; }
+
+  /* ---- pipeline stepper ---- */
+  .stepper { display: flex; align-items: flex-start; margin-top: 4px; }
+  .step { flex: 1; text-align: center; position: relative; }
+  .step .dot {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 2px solid var(--border); background: var(--panel-2);
+    color: var(--faint); font-size: 0.72rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+    position: relative; z-index: 1;
+  }
+  .step .bar {
+    position: absolute; top: 12px; left: -50%; width: 100%; height: 2px;
+    background: var(--border); z-index: 0;
+  }
+  .step:first-child .bar { display: none; }
+  .step.done .dot { border-color: var(--ok); background: rgba(70, 201, 143, 0.15); color: var(--ok); }
+  .step.done .bar { background: var(--ok); }
+  .step.active .dot { border-color: var(--accent-strong); color: var(--text); }
+  .step.active .bar { background: var(--ok); }
+  .step.active .dot::after {
+    content: ""; position: absolute; inset: -7px; border-radius: 50%;
+    border: 2px solid rgba(79, 131, 247, 0.35);
+    animation: pulse 1.4s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { transform: scale(0.7); opacity: 1; }
+    100% { transform: scale(1.25); opacity: 0; }
+  }
+  .step .lbl {
+    display: block; margin-top: 8px; font-size: 0.72rem;
+    color: var(--faint); letter-spacing: 0.02em;
+  }
+  .step.done .lbl, .step.active .lbl { color: var(--muted); }
+  .step.active .lbl { color: var(--text); font-weight: 600; }
+
+  .status-line { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+  .stage-note { color: var(--muted); font-size: 0.92rem; }
+  .percent { color: var(--muted); font-size: 0.85rem; margin-left: auto; font-variant-numeric: tabular-nums; }
   .progress {
-    height: 6px; background: var(--border); border-radius: 3px;
-    margin-top: 12px; overflow: hidden;
+    height: 5px; background: var(--border); border-radius: 3px;
+    margin-top: 10px; overflow: hidden;
   }
   .progress > div {
-    height: 100%; width: 0; background: var(--accent);
-    transition: width 0.4s ease;
+    height: 100%; width: 0; border-radius: 3px;
+    background: linear-gradient(90deg, var(--accent-strong), var(--accent));
+    transition: width 0.5s ease;
   }
-  .error-box {
-    border: 1px solid var(--err); border-radius: 8px;
-    padding: 10px 12px; margin-top: 12px; color: var(--err);
-    font-size: 0.9rem; white-space: pre-wrap;
-  }
-  .error-box:empty { display: none; }
+  .job-meta { color: var(--faint); font-size: 0.78rem; word-break: break-all; margin: 14px 0 0; }
+  .cancel-row { margin-top: 12px; }
+
+  /* ---- results ---- */
   #previews { display: none; }
-  #previews h2 { font-size: 1.05rem; margin: 20px 0 8px; }
-  audio, video { width: 100%; border-radius: 8px; }
-  .sheet-wrap {
-    background: #f5f2ec; border-radius: 8px; padding: 8px;
-    max-height: 420px; overflow: auto;
+  .ready-banner {
+    display: flex; align-items: center; gap: 10px;
+    border: 1px solid rgba(70, 201, 143, 0.4); background: rgba(70, 201, 143, 0.08);
+    color: var(--ok); border-radius: 12px; padding: 12px 16px;
+    font-weight: 600; margin-bottom: 18px;
   }
-  .sheet-wrap img { width: 100%; display: block; }
-  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .result-card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px; box-shadow: var(--shadow);
+  }
+  .result-card.wide { grid-column: 1 / -1; }
+  .result-card h2 {
+    margin: 0 0 12px; font-size: 0.8rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+  }
+  audio, video { width: 100%; border-radius: 8px; display: block; }
+  .sheet-wrap {
+    background: #f7f4ee; border-radius: 10px; padding: 14px;
+    max-height: 460px; overflow: auto;
+  }
+  #sheet-holder svg { width: 100%; height: auto; display: block; }
+  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
   .downloads a {
-    color: var(--accent); text-decoration: none;
-    border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 14px; font-size: 0.9rem;
+    color: var(--text); text-decoration: none;
+    border: 1px solid var(--border); background: var(--panel-2);
+    border-radius: 9px; padding: 8px 14px; font-size: 0.85rem;
+  }
+  .downloads a:hover { border-color: var(--accent-strong); color: var(--accent); }
+  footer {
+    text-align: center; color: var(--faint); font-size: 0.78rem;
+    margin-top: 40px; line-height: 1.7;
+  }
+  @media (max-width: 640px) {
+    .result-grid { grid-template-columns: 1fr; }
+    .prompt-row { flex-direction: column; }
+    .step .lbl { font-size: 0.62rem; }
   }
 </style>
 </head>
 <body>
 <main>
-  <h1>Smart AI Music Composer</h1>
-  <p class="sub">Phase 1 — mood-based piano pieces. Describe the mood and length; rendering runs as a background job.</p>
+  <header>
+    <div class="logo"><span class="mark">♪</span> Smart AI Music Composer</div>
+    <p class="tagline">Describe a <b>mood</b> and a length — the studio renders audio, sheet music, and an animation.</p>
+  </header>
 
-  <section class="panel">
-    <form id="compose-form" class="prompt-row">
-      <input id="prompt" type="text" maxlength="4096" required
-             placeholder="e.g. build me a 30 second calming piano piece"
-             aria-label="Composition prompt">
-      <button id="compose" type="submit">Compose</button>
-      <button id="cancel" type="button" hidden>Cancel</button>
+  <section class="card">
+    <form id="compose-form">
+      <label class="field-label" for="prompt">Your prompt</label>
+      <div class="prompt-row">
+        <input id="prompt" type="text" maxlength="4096" required autocomplete="off"
+               placeholder="e.g. build me a 30 second calming piano piece">
+        <button id="compose" class="primary" type="submit">Compose</button>
+        <button id="cancel" class="ghost" type="button" hidden>Cancel</button>
+      </div>
+      <div class="examples">
+        <span class="try">Try:</span>
+        <button type="button" class="chip">calming piano music</button>
+        <button type="button" class="chip">build me a 5 min electrifying piano piece</button>
+        <button type="button" class="chip">sleepy lullaby, ten minutes</button>
+      </div>
+      <p class="alert" id="form-error" role="alert"></p>
     </form>
-    <p class="error-box" id="form-error" role="alert"></p>
   </section>
 
-  <section class="panel" id="status-panel" hidden>
+  <section class="card" id="status-panel" hidden>
+    <div class="stepper" id="stepper"></div>
     <div class="status-line">
-      <span class="state" id="state">queued</span>
-      <span class="muted" id="stage"></span>
+      <span class="stage-note" id="stage-note" aria-live="polite"></span>
+      <span class="percent" id="percent">0%</span>
     </div>
-    <p class="job-id" id="job-id"></p>
     <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
-    <p class="error-box" id="job-error"></p>
+    <p class="alert" id="job-error"></p>
+    <div class="cancel-row"><button id="cancel2" class="ghost" type="button" hidden>Cancel this job</button></div>
+    <p class="job-meta" id="job-id"></p>
   </section>
 
   <section id="previews">
-    <h2>Audio</h2>
-    <audio id="audio-player" controls preload="none"></audio>
-    <h2>Animation</h2>
-    <video id="animation-player" controls preload="none"></video>
-    <h2>Sheet music</h2>
-    <div class="sheet-wrap"><img id="sheet-image" alt="Rendered sheet music"></div>
+    <div class="ready-banner">✓ Your piece is ready — listen below</div>
+    <div class="result-grid">
+      <div class="result-card">
+        <h2>Audio</h2>
+        <audio id="audio-player" controls preload="none"></audio>
+      </div>
+      <div class="result-card">
+        <h2>Animation</h2>
+        <video id="animation-player" controls preload="none"></video>
+      </div>
+      <div class="result-card wide">
+        <h2>Sheet music</h2>
+        <div class="sheet-wrap"><div id="sheet-holder"></div></div>
+      </div>
+    </div>
     <div class="downloads" id="downloads"></div>
   </section>
+
+  <footer>
+    Rendered locally with FluidSynth + Salamander Grand Piano (CC BY 3.0) ·
+    FFmpeg (LGPL) · OpenSheetMusicDisplay · Attribution in THIRD_PARTY_NOTICES.md
+  </footer>
 </main>
 
 <script>
@@ -133,20 +254,43 @@
   "use strict";
 
   var POLL_MS = 1500;
-  var STATE_CLASSES = ["running", "complete", "failed", "cancelled"];
-  var RUNNING_STATES = ["queued", "parsing", "composing", "rendering_audio",
-                        "rendering_sheet", "rendering_animation"];
+
+  // The five pipeline steps shown in the stepper, and which job states
+  // map to each. Anything outside this table is terminal/unknown.
+  var STEPS = [
+    { label: "Queued",   states: ["queued"] },
+    { label: "Prompt",   states: ["parsing"] },
+    { label: "Compose",  states: ["composing"] },
+    { label: "Render",   states: ["rendering_audio", "rendering_sheet", "rendering_animation"] },
+    { label: "Done",     states: ["complete"] }
+  ];
+  var STAGE_NOTES = {
+    queued: "Waiting for a free worker…",
+    parsing: "Understanding your prompt…",
+    composing: "Composing the score…",
+    rendering_audio: "Recording the piano audio…",
+    rendering_sheet: "Engraving the sheet music…",
+    rendering_animation: "Rendering the animation — the slowest step, hang tight…",
+    complete: "Everything is ready.",
+    failed: "Something went wrong.",
+    cancelled: "Cancelled."
+  };
+  var ARTIFACT_LABELS = {
+    audio: "audio.wav", audio_ogg: "audio.ogg",
+    sheet: "sheet.svg", animation: "animation.webm"
+  };
   var CANCELLABLE_STATES = ["queued", "parsing", "composing"];
 
   var el = function (id) { return document.getElementById(id); };
-  var stateEl = el("state"), stageEl = el("stage"), jobEl = el("job-id");
+  var stepperEl = el("stepper"), stageNoteEl = el("stage-note"), percentEl = el("percent");
   var barEl = el("progress-bar"), jobErrEl = el("job-error");
   var statusPanel = el("status-panel"), previews = el("previews");
-  var cancelBtn = el("cancel"), formErrEl = el("form-error");
-  var composeBtn = el("compose");
+  var composeBtn = el("compose"), formErrEl = el("form-error");
+  var cancelBtns = [el("cancel"), el("cancel2")];
 
   var jobId = null;
   var pollTimer = null;
+  var pollFailures = 0;
 
   function setJob(id) {
     jobId = id;
@@ -167,25 +311,52 @@
     return "/jobs/" + encodeURIComponent(jobId) + "/artifact/" + kind;
   }
 
+  function renderStepper(state) {
+    var activeIdx = -1;
+    STEPS.forEach(function (step, i) {
+      if (step.states.indexOf(state) !== -1) { activeIdx = i; }
+    });
+    var failed = state === "failed" || state === "cancelled";
+    stepperEl.innerHTML = "";
+    STEPS.forEach(function (step, i) {
+      var div = document.createElement("div");
+      div.className = "step";
+      var dotCls = "dot";
+      var text = String(i + 1);
+      var stepDone = i < activeIdx || state === "complete";
+      var stepActive = i === activeIdx && !failed && state !== "complete";
+      if (failed && i === STEPS.length - 1) { text = "!"; }
+      else if (stepDone) { dotCls = "dot done"; text = "✓"; }
+      else if (stepActive) { dotCls = "dot active"; }
+      if (stepDone) { div.className += " done"; }
+      if (stepActive) { div.className += " active"; }
+      div.innerHTML =
+        '<span class="bar"></span>' +
+        '<span class="' + dotCls + '">' + text + "</span>" +
+        '<span class="lbl">' + step.label + "</span>";
+      stepperEl.appendChild(div);
+    });
+  }
+
+  function setCancelVisible(show) {
+    cancelBtns.forEach(function (b) { b.hidden = !show; });
+  }
+
   function renderJob(job) {
     statusPanel.hidden = false;
-    stateEl.textContent = job.state;
-    stateEl.className = "state " + (
-      job.state === "complete" ? "complete"
-      : job.state === "failed" ? "failed"
-      : job.state === "cancelled" ? "cancelled"
-      : "running"
-    );
-    stageEl.textContent = job.current_stage || "";
-    barEl.style.width = Math.round((job.progress || 0) * 100) + "%";
-    jobEl.textContent = "job " + job.job_id;
+    renderStepper(job.state);
+    stageNoteEl.textContent = STAGE_NOTES[job.state] || job.current_stage || job.state;
+    var pct = Math.round((job.progress || 0) * 100);
+    percentEl.textContent = pct + "%";
+    barEl.style.width = pct + "%";
+    el("job-id").textContent = "job " + job.job_id;
     jobErrEl.textContent = job.error
-      ? (job.error.error_code + " (" + job.error.stage + "): " + job.error.message)
+      ? job.error.error_code + " — " + job.error.message
       : "";
 
-    var running = RUNNING_STATES.indexOf(job.state) !== -1;
+    var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
     composeBtn.disabled = running;
-    cancelBtn.hidden = CANCELLABLE_STATES.indexOf(job.state) === -1;
+    setCancelVisible(CANCELLABLE_STATES.indexOf(job.state) !== -1);
 
     if (job.state === "complete") {
       stopPolling();
@@ -198,41 +369,50 @@
   function renderArtifacts(job) {
     previews.style.display = "block";
     var kinds = Object.keys(job.artifacts || {});
-    if (kinds.indexOf("audio_ogg") !== -1) {
-      el("audio-player").src = artifactUrl("audio_ogg");
-    } else if (kinds.indexOf("audio") !== -1) {
-      el("audio-player").src = artifactUrl("audio");
-    }
+    var audioKind = kinds.indexOf("audio_ogg") !== -1 ? "audio_ogg"
+      : kinds.indexOf("audio") !== -1 ? "audio" : null;
+    if (audioKind) { el("audio-player").src = artifactUrl(audioKind); }
     if (kinds.indexOf("animation") !== -1) {
       el("animation-player").src = artifactUrl("animation");
     }
+    // The sheet artifact is an HTML fragment wrapping the SVG (OSMD
+    // canvas markup), so it is embedded as markup, not via <img>.
     if (kinds.indexOf("sheet") !== -1) {
-      el("sheet-image").src = artifactUrl("sheet");
+      window.fetch(artifactUrl("sheet"))
+        .then(function (res) { return res.text(); })
+        .then(function (html) { el("sheet-holder").innerHTML = html; });
     }
     var downloads = el("downloads");
     downloads.innerHTML = "";
-    var labels = { audio: "audio.wav", audio_ogg: "audio.ogg",
-                   sheet: "sheet.svg", animation: "animation.webm" };
     kinds.forEach(function (kind) {
       var a = document.createElement("a");
       a.href = artifactUrl(kind);
-      a.download = labels[kind] || kind;
-      a.textContent = "download " + (labels[kind] || kind);
+      a.download = ARTIFACT_LABELS[kind] || kind;
+      a.textContent = "⤓ " + (ARTIFACT_LABELS[kind] || kind);
       downloads.appendChild(a);
     });
   }
 
   function poll() {
-    fetch("/jobs/" + encodeURIComponent(jobId))
+    window.fetch("/jobs/" + encodeURIComponent(jobId))
       .then(function (res) {
         if (res.status === 404) { throw new Error("job not found"); }
         if (!res.ok) { throw new Error("status " + res.status); }
         return res.json();
       })
-      .then(renderJob)
+      .then(function (job) {
+        pollFailures = 0;
+        renderJob(job);
+      })
       .catch(function (err) {
-        stopPolling();
-        jobErrEl.textContent = "Could not load job: " + err.message;
+        // A transient failure (server restart, brief network drop)
+        // must not freeze the page: keep the interval alive and show
+        // what happened. Only a missing job is terminal.
+        pollFailures += 1;
+        if (err.message === "job not found") { stopPolling(); }
+        jobErrEl.textContent = pollFailures > 1
+          ? "Still retrying — could not load the job: " + err.message
+          : "Reconnecting after: " + err.message;
       });
   }
 
@@ -242,13 +422,13 @@
     var prompt = el("prompt").value.trim();
     if (!prompt) { return; }
     composeBtn.disabled = true;
-    fetch("/jobs", {
+    window.fetch("/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: prompt })
     })
       .then(function (res) {
-        if (res.status === 503) { throw new Error("job queue unavailable — try again"); }
+        if (res.status === 503) { throw new Error("job queue unavailable — try again shortly"); }
         if (!res.ok) {
           return res.json().then(function (body) {
             throw new Error(body.detail || ("status " + res.status));
@@ -257,6 +437,7 @@
         return res.json();
       })
       .then(function (job) {
+        previews.style.display = "none";
         setJob(job.job_id);
         renderJob(job);
         startPolling();
@@ -267,14 +448,26 @@
       });
   });
 
-  cancelBtn.addEventListener("click", function () {
-    fetch("/jobs/" + encodeURIComponent(jobId) + "/cancel", { method: "POST" })
-      .then(function (res) { return res.json(); })
-      .then(renderJob)
-      .catch(function (err) { formErrEl.textContent = "Cancel failed: " + err.message; });
+  // Example chips fill the prompt box without submitting, so the user
+  // can tweak before composing.
+  Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (chip) {
+    chip.addEventListener("click", function () {
+      el("prompt").value = chip.textContent;
+      el("prompt").focus();
+    });
   });
 
-  // Resume tracking the last job across reloads.
+  cancelBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      window.fetch("/jobs/" + encodeURIComponent(jobId) + "/cancel", { method: "POST" })
+        .then(function (res) { return res.json(); })
+        .then(renderJob)
+        .catch(function (err) { formErrEl.textContent = "Cancel failed: " + err.message; });
+    });
+  });
+
+  // Resume tracking the last job across reloads, and catch up
+  // immediately whenever the tab regains focus.
   try {
     var saved = localStorage.getItem("saimc.job_id");
     if (saved) {
@@ -282,6 +475,13 @@
       startPolling();
     }
   } catch (e) { /* private mode */ }
+
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && jobId !== null) { poll(); }
+  });
+  window.addEventListener("focus", function () {
+    if (jobId !== null) { poll(); }
+  });
 })();
 </script>
 </body>

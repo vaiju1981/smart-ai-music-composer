@@ -261,9 +261,13 @@ def _mark_failed(job: Job, storage: JobStorage, error: JobError) -> None:
 def _build_default_llm_client() -> Any:
     """Construct the default LLM client. Phase 1 uses OllamaAdapter.
 
-    The import is deferred so that running `worker_entry` without an
-    Ollama endpoint doesn't crash on import. If the env is missing,
-    we fall back to a no-op client whose `parse` always fails cleanly.
+    Settings come from `saimc.config:load_llm_config` (config file,
+    env vars, or built-in defaults — see `saimc.llm.config`). The
+    import is deferred so that running `worker_entry` without a
+    reachable Ollama endpoint doesn't crash on import. If the
+    configuration is invalid, we fall back to a no-op client whose
+    `parse` always fails cleanly (the parser's fallback path then
+    handles in-vocabulary prompts).
     """
     from saimc.llm.base import ParseRequest, ParseResult
 
@@ -273,7 +277,7 @@ def _build_default_llm_client() -> Any:
                 parser_source="llm",
                 error=__import__("saimc.spec", fromlist=["SpecError"]).SpecError(
                     error_code="llm_not_configured",
-                    message="No OLLAMA_* environment variables set.",
+                    message="No valid LLM configuration found.",
                     stage="parsing",
                 ),
             )
@@ -282,9 +286,11 @@ def _build_default_llm_client() -> Any:
             return None
 
     try:
+        from saimc.llm.config import load_llm_config
         from saimc.llm.ollama import OllamaAdapter
 
-        return OllamaAdapter()
+        cfg = load_llm_config()
+        return OllamaAdapter(base_url=cfg.base_url, model=cfg.model, api_key=cfg.api_key)
     except ValueError:
         return _NoopLLM()
 

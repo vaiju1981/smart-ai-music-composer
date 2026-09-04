@@ -1,0 +1,12 @@
+# Smart AI Music Composer configuration.
+#
+# Resolution per key: environment variable, then this file, then the
+# built-in default (see src/saimc/llm/config.py).
+#   - OLLAMA_BASE_URL / OLLAMA_MODEL / OLLAMA_API_KEY override [llm].
+#   - SAIMC_CONFIG selects a different config file path.
+# The API key is optional — only needed for hosts that require a
+# Bearer token (e.g. Ollama Cloud); leave unset otherwise.
+
+[llm]
+base_url = "http://127.0.0.1:11434"
+model = "gemma4:31b-cloud"
