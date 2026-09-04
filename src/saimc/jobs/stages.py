@@ -420,6 +420,92 @@ def render_sheet_stage(job: Job, storage: JobStorage) -> StageResult:
     return StageResult(job=job, next_state=JobState.RENDERING_ANIMATION)
 
 
+def render_animation_stage(
+    job: Job,
+    storage: JobStorage,
+    *,
+    ffmpeg_bin: str | None = None,
+) -> StageResult:
+    """Run the `rendering_animation` stage.
+
+    Loads the engine output sidecar, locates the audio stage's WAV
+    (the animation's audio track), renders the piano-roll WebM, and
+    attaches the artifact (kind="animation") to the job.
+    """
+    from saimc.compose.serialization import read_engine_output
+    from saimc.render.animation import AnimationRenderError, render_animation
+
+    if job.input_spec is None:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="no_spec",
+                message="Cannot render animation without a parsed spec.",
+                stage="rendering_animation",
+            ),
+        )
+
+    sidecar_path = storage.job_dir(job.job_id) / "engine_output.json"
+    if not sidecar_path.exists():
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="engine_output_missing",
+                message=f"Engine output sidecar not found at {sidecar_path}",
+                stage="rendering_animation",
+            ),
+        )
+
+    output = read_engine_output(sidecar_path)
+    artifacts_dir = storage.ensure_artifact_dir(job.job_id)
+
+    audio_record = job.artifacts.get("audio")
+    if audio_record is None:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="audio_artifact_missing",
+                message="Animation needs the audio stage's WAV, but no audio artifact is attached.",
+                stage="rendering_animation",
+            ),
+        )
+    audio_wav_path = artifacts_dir / audio_record.path
+
+    try:
+        artifact = render_animation(
+            output.performance_plan,
+            audio_wav_path=audio_wav_path,
+            out_dir=artifacts_dir,
+            ffmpeg_bin=ffmpeg_bin,
+        )
+    except AnimationRenderError as exc:
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code=exc.code,
+                message=exc.message,
+                stage="rendering_animation",
+            ),
+        )
+
+    storage.attach_artifact(
+        job,
+        ArtifactRecord(
+            kind="animation",
+            container=artifact.container,
+            codec=artifact.codec,
+            path=artifact.webm_path.name,
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+        ),
+    )
+    return StageResult(job=job, next_state=JobState.COMPLETE)
+
+
 def transition_to(job: Job, target: JobState, sm: JobStateMachine | None = None) -> Job:
     """Apply `target` via the state machine, raising `IllegalTransitionError` on bad moves."""
     sm = sm or JobStateMachine()
@@ -435,6 +521,7 @@ __all__ = [
     "SubprocessTimeoutError",
     "compose_stage",
     "parse_stage",
+    "render_animation_stage",
     "render_audio_stage",
     "render_sheet_stage",
     "safe_run",

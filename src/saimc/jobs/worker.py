@@ -31,6 +31,7 @@ from typing import Any
 from saimc.jobs.stages import (
     compose_stage,
     parse_stage,
+    render_animation_stage,
     render_audio_stage,
     render_sheet_stage,
     transition_to,
@@ -104,11 +105,8 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
 
     This is the only function the worker invokes. It loads the
     canonical Job from storage, runs `parse_stage` then `compose_stage`,
-    and persists the job after each transition. The audio and sheet
-    renderers are real (slices 5.3 and 6.2); animation is a stub until
-    slice 7.1 lands — the worker transitions through
-    `rendering_animation → complete` as a no-op for now so the
-    state-machine wiring is exercised.
+    and persists the job after each transition. All three renderers are
+    real: audio (slice 5.3), sheet (slice 6.2), animation (slice 7.1).
 
     Args:
         job_id: the opaque job id. Only primitive arguments may be
@@ -193,8 +191,7 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
 
-    # Sheet renderer is real (slice 6.2); animation is a stub until
-    # slice 7.1 lands.
+    # Sheet renderer is real (slice 6.2).
     if job.state == JobState.RENDERING_SHEET:
         result = render_sheet_stage(job, storage)
         if result.error is not None:
@@ -205,8 +202,16 @@ def _walk_stages(job: Job, storage: JobStorage, sm: JobStateMachine) -> None:
             transition_to(job, result.next_state, sm)
         storage.save(job)
 
+    # Animation renderer is real (slice 7.1): piano-roll WebM muxed
+    # with the audio stage's WAV.
     if job.state == JobState.RENDERING_ANIMATION:
-        transition_to(job, JobState.COMPLETE, sm)
+        result = render_animation_stage(job, storage)
+        if result.error is not None:
+            job.error = result.error
+            _mark_failed(job, storage, result.error)
+            return
+        if result.next_state is not None:
+            transition_to(job, result.next_state, sm)
         storage.save(job)
 
 
@@ -269,8 +274,10 @@ def main() -> None:  # pragma: no cover — entry point
     import argparse
 
     parser = argparse.ArgumentParser(description="saimc job worker")
-    parser.add_argument("tojobs-root", default=os.environ.get("SAIMC_JOBS_DIR"))
-    parser.add_argument("tovalkey-url", default=os.environ.get("SAIMC_VALKEY_URL"))
+    parser.add_argument("--jobs-root", default=os.environ.get("SAIMC_JOBS_DIR"), dest="jobs_root")
+    parser.add_argument(
+        "--valkey-url", default=os.environ.get("SAIMC_VALKEY_URL"), dest="valkey_url"
+    )
     args = parser.parse_args()
     worker_entry(jobs_root=args.jobs_root, valkey_url=args.valkey_url)
 
