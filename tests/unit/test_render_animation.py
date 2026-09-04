@@ -13,9 +13,10 @@ from saimc.compose.score import PerformanceNoteEvent, PerformancePlan
 from saimc.render.animation import (
     AnimationRenderError,
     AnimationRenderErrorCode,
+    build_roll,
     encode_webm,
+    iter_roll_frames,
     render_animation,
-    render_frames,
     total_frames,
 )
 
@@ -40,38 +41,57 @@ def test_total_frames_counts_one_extra_settled_frame() -> None:
     assert total_frames(0.0, 24) == 1
 
 
-class TestRenderFrames:
-    def test_writes_one_png_per_frame(self, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        count = render_frames(_plan(), frames_dir, fps=24)
-        assert count == 37  # 1.5s of notes at 24fps -> 36 frames + the settled one
-        assert len(list(frames_dir.glob("*.png"))) == count
-        assert (frames_dir / "000000.png").is_file()
-
-    def test_empty_plan_raises(self, tmp_path: Path) -> None:
+class TestBuildRoll:
+    def test_empty_plan_raises(self) -> None:
         empty = PerformancePlan.make(sample_rate=44100, notes=[])
         with pytest.raises(AnimationRenderError) as exc_info:
-            render_frames(empty, tmp_path / "frames")
+            build_roll(empty)
         assert exc_info.value.code == AnimationRenderErrorCode.FRAME_RENDER_FAILED
 
-    def test_note_appears_in_first_frame_at_playhead(self, tmp_path: Path) -> None:
-        """The note starting at t=0 sits under the playhead in frame 0."""
+    def test_note_appears_in_roll_at_playhead_offset(self) -> None:
+        """A note at t=0 is drawn at x = playhead (1280 * 0.25 = 320)."""
         from PIL import Image
 
-        frames_dir = tmp_path / "frames"
-        render_frames(_plan(), frames_dir, fps=24)
-        img = Image.open(frames_dir / "000000.png")
-        # Playhead x for the defaults: 1280 * 0.25 = 320. The pitch-60
-        # note's lane starts at y=700 (720 minus the 20px bottom margin)
-        # and the note spans x 320..344. Sample inside that rectangle.
-        pixel = img.getpixel((324, 705))
+        roll = build_roll(_plan())
+        assert isinstance(roll, Image.Image)
+        # The pitch-60 note's lane starts at y=700 (720 minus the 20px
+        # bottom margin) and the note spans x 320..344 at 48 px/s.
+        pixel = roll.getpixel((324, 705))
         assert pixel == (86, 156, 214)
+
+    def test_roll_is_wide_enough_for_the_last_frame(self) -> None:
+        roll = build_roll(_plan())
+        # 1.5s * 48 px/s + one full frame width of lead-in/out.
+        assert roll.size[0] >= 1280 + 72
+        assert roll.size[1] == 720
+
+
+class TestIterRollFrames:
+    def test_yields_one_frame_per_tick(self) -> None:
+        roll = build_roll(_plan())
+        frames = list(iter_roll_frames(roll, count=total_frames(1.5, 24)))
+        assert len(frames) == 37  # 36 frames + the settled one
+        # Each frame is one raw 1280x720 RGB buffer.
+        assert len(frames[0]) == 1280 * 720 * 3
+
+    def test_playhead_is_fixed_in_every_frame(self) -> None:
+        from PIL import Image
+
+        roll = build_roll(_plan())
+        frames = list(iter_roll_frames(roll, count=2))
+        for raw in frames:
+            img = Image.frombytes("RGB", (1280, 720), raw)
+            assert img.getpixel((320, 100)) == (232, 232, 232)
+            # The playhead column equals the crop origin: frame 1 has
+            # advanced exactly 2 px (48 px/s / 24 fps).
+        first = Image.frombytes("RGB", (1280, 720), frames[0])
+        second = Image.frombytes("RGB", (1280, 720), frames[1])
+        assert first.getpixel((324, 705)) == (86, 156, 214)  # t=0 note
+        assert second.getpixel((322, 705)) == (86, 156, 214)  # scrolled 2px
 
 
 class TestEncodeWebm:
     def test_ffmpeg_missing_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"RIFF")
         # The audio module's find_ffmpeg raises AudioRenderError; the
@@ -88,12 +108,10 @@ class TestEncodeWebm:
 
         monkeypatch.setattr("saimc.render.animation.find_ffmpeg", _raise_missing)
         with pytest.raises(AnimationRenderError) as exc_info:
-            encode_webm(frames_dir, audio, tmp_path / "out.webm")
+            encode_webm(iter(()), audio, tmp_path / "out.webm")
         assert exc_info.value.code == AnimationRenderErrorCode.FFMPEG_MISSING
 
     def test_audit_failure_raises(self, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"RIFF")
         with (
@@ -103,12 +121,10 @@ class TestEncodeWebm:
             mock_audit.return_value.ok = False
             mock_audit.return_value.reasons = ("missing --enable-libvpx",)
             with pytest.raises(AnimationRenderError) as exc_info:
-                encode_webm(frames_dir, audio, tmp_path / "out.webm")
+                encode_webm(iter(()), audio, tmp_path / "out.webm")
         assert exc_info.value.code == AnimationRenderErrorCode.FFMPEG_AUDIT_FAILED
 
     def test_missing_audio_raises(self, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
         with (
             patch("saimc.render.animation.find_ffmpeg", return_value="ffmpeg"),
             patch("saimc.render.animation.audit_ffmpeg") as mock_audit,
@@ -117,69 +133,104 @@ class TestEncodeWebm:
             mock_audit.return_value.version = "7.0"
             mock_audit.return_value.binary_sha256 = "a" * 64
             with pytest.raises(AnimationRenderError) as exc_info:
-                encode_webm(frames_dir, tmp_path / "missing.wav", tmp_path / "out.webm")
+                encode_webm(iter(()), tmp_path / "missing.wav", tmp_path / "out.webm")
         assert exc_info.value.code == AnimationRenderErrorCode.AUDIO_MISSING
 
     def test_encode_failure_surfaces_stderr(self, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"RIFF")
 
         class _Proc:
             returncode = 1
-            stdout = ""
-            stderr = "Encoder init failed\n"
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                import io
+
+                self.stdin = io.BytesIO()
+                self.stderr = io.BytesIO(b"Encoder init failed\n")
+
+            def wait(self, timeout: float | None = None) -> int:
+                return self.returncode
 
         with (
             patch("saimc.render.animation.find_ffmpeg", return_value="ffmpeg"),
             patch("saimc.render.animation.audit_ffmpeg") as mock_audit,
-            patch("saimc.render.animation.safe_run", return_value=_Proc()),
+            patch("saimc.render.animation.subprocess.Popen", return_value=_Proc()),
         ):
             mock_audit.return_value.ok = True
             mock_audit.return_value.version = "7.0"
             mock_audit.return_value.binary_sha256 = "a" * 64
             with pytest.raises(AnimationRenderError) as exc_info:
-                encode_webm(frames_dir, audio, tmp_path / "out.webm")
+                encode_webm(iter(()), audio, tmp_path / "out.webm")
         assert exc_info.value.code == AnimationRenderErrorCode.FFMPEG_FAILED
         assert "Encoder init failed" in exc_info.value.message
 
-    def test_success_invokes_ffmpeg_with_expected_args(self, tmp_path: Path) -> None:
-        frames_dir = tmp_path / "frames"
-        frames_dir.mkdir()
+    def test_success_streams_rawvideo_and_sets_vp9_flags(self, tmp_path: Path) -> None:
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"RIFF")
         out = tmp_path / "out.webm"
         seen_cmds: list[list[str]] = []
+        written: list[bytes] = []
 
-        def _fake_safe_run(cmd: list[str], *, timeout_s: float, **_kw: Any) -> Any:
-            seen_cmds.append(cmd)
+        class _Proc:
+            returncode = 0
+
+            def __init__(self, cmd: list[str], **_kw: Any) -> None:
+                import io
+
+                seen_cmds.append(cmd)
+                self.stdin = _Writer(written)
+                self.stderr = io.BytesIO(b"")
+
+            def wait(self, timeout: float | None = None) -> int:
+                return self.returncode
+
+        class _Writer:
+            def __init__(self, sink: list[bytes]) -> None:
+                self._sink = sink
+                self.closed = False
+
+            def write(self, data: bytes) -> int:
+                self._sink.append(data)
+                return len(data)
+
+            def close(self) -> None:
+                self.closed = True
+
+        def _popen(cmd: list[str], **_kw: Any) -> Any:
             out.write_bytes(b"\x1aE\xdf\xa3webm")
-            return type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            return _Proc(cmd)
 
         with (
             patch("saimc.render.animation.find_ffmpeg", return_value="ffmpeg"),
             patch("saimc.render.animation.audit_ffmpeg") as mock_audit,
-            patch("saimc.render.animation.safe_run", side_effect=_fake_safe_run),
+            patch("saimc.render.animation.subprocess.Popen", side_effect=_popen),
         ):
             mock_audit.return_value.ok = True
             mock_audit.return_value.version = "7.0-stub"
             mock_audit.return_value.binary_sha256 = "b" * 64
-            version, _sha, _config = encode_webm(frames_dir, audio, out)
+            mock_audit.return_value.configuration_line = "--enable-libvpx"
+            version, _sha, _config = encode_webm(
+                iter([b"\x00" * 16]), audio, out, width=1280, height=720
+            )
 
         assert version == "7.0-stub"
         assert out.is_file()
         cmd = seen_cmds[0]
         assert cmd[0] == "ffmpeg"
+        assert cmd[cmd.index("-f") + 1] == "rawvideo"
+        assert cmd[cmd.index("-s") + 1] == "1280x720"
         assert cmd[cmd.index("-c:v") + 1] == "libvpx-vp9"
+        assert cmd[cmd.index("-deadline") + 1] == "good"
+        assert cmd[cmd.index("-cpu-used") + 1] == "4"
         assert cmd[cmd.index("-c:a") + 1] == "libopus"
         assert cmd[-1] == str(out)
+        # The frame bytes reached ffmpeg's stdin.
+        assert written == [b"\x00" * 16]
 
 
 class TestRenderAnimation:
-    def test_end_to_end_writes_webm_and_cleans_frames(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_end_to_end_writes_webm(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr("saimc.render.animation.find_ffmpeg", lambda _=None: "ffmpeg")
 
         class _Audit:
@@ -191,11 +242,33 @@ class TestRenderAnimation:
 
         monkeypatch.setattr("saimc.render.animation.audit_ffmpeg", lambda *_a, **_k: _Audit())
 
-        def _fake_safe_run(cmd: list[str], *, timeout_s: float, **_kw: Any) -> Any:
+        def _fake_popen(cmd: list[str], **_kw: Any) -> Any:
             Path(cmd[-1]).write_bytes(b"\x1aE\xdf\xa3webm")
-            return type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        monkeypatch.setattr("saimc.render.animation.safe_run", _fake_safe_run)
+            class _P:
+                returncode = 0
+
+                def __init__(self) -> None:
+                    import io
+
+                    self.stdin = _DevNull()
+                    self.stderr = io.BytesIO(b"")
+
+                def wait(self, timeout: float | None = None) -> int:
+                    return self.returncode
+
+            class _DevNull:
+                closed = False
+
+                def write(self, data: bytes) -> int:
+                    return len(data)
+
+                def close(self) -> None:
+                    self.closed = True
+
+            return _P()
+
+        monkeypatch.setattr("saimc.render.animation.subprocess.Popen", _fake_popen)
 
         out_dir = tmp_path / "artifacts"
         audio_wav = tmp_path / "a.wav"
@@ -215,7 +288,8 @@ class TestRenderAnimation:
         assert webm.is_file()
         assert artifact.sha256 == hashlib.sha256(webm.read_bytes()).hexdigest()
         assert artifact.size_bytes == webm.stat().st_size
-        # Frames are intermediate: cleaned up after the encode.
+        # No intermediate frame directory exists any more: frames go
+        # straight through the pipe.
         assert not (out_dir / "frames").exists()
 
     def test_nonzero_rc_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -230,13 +304,35 @@ class TestRenderAnimation:
 
         monkeypatch.setattr("saimc.render.animation.audit_ffmpeg", lambda *_a, **_k: _Audit())
 
-        def _fake_safe_run(cmd: list[str], *, timeout_s: float, **_kw: Any) -> Any:
-            return type("Proc", (), {"returncode": 1, "stdout": "", "stderr": "boom\n"})()
+        def _fake_popen(cmd: list[str], **_kw: Any) -> Any:
+            import io
 
-        monkeypatch.setattr("saimc.render.animation.safe_run", _fake_safe_run)
+            class _P:
+                returncode = 1
+
+                def __init__(self) -> None:
+                    self.stdin = _DevNull()
+                    self.stderr = io.BytesIO(b"boom\n")
+
+                def wait(self, timeout: float | None = None) -> int:
+                    return self.returncode
+
+            class _DevNull:
+                closed = False
+
+                def write(self, data: bytes) -> int:
+                    return len(data)
+
+                def close(self) -> None:
+                    self.closed = True
+
+            return _P()
+
+        monkeypatch.setattr("saimc.render.animation.subprocess.Popen", _fake_popen)
 
         audio_wav = tmp_path / "a.wav"
         audio_wav.write_bytes(b"RIFF")
         with pytest.raises(AnimationRenderError) as exc_info:
-            render_animation(_plan(), audio_wav_path=audio_wav, out_dir=tmp_path)
+            render_animation(_plan(), audio_wav_path=audio_wav, out_dir=tmp_path / "o")
         assert exc_info.value.code == AnimationRenderErrorCode.FFMPEG_FAILED
+        assert "boom" in exc_info.value.message

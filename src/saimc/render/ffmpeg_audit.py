@@ -74,13 +74,38 @@ class FfmpegAuditResult:
 _VERSION_RE = re.compile(r"ffmpeg version (\S+)")
 _CONFIG_LINE_RE = re.compile(r"^\s*configuration:\s*(.+)$", re.MULTILINE)
 
+# (path, size, mtime_ns) -> result. The audit runs twice per job (audio
+# encode + animation encode) against the same unchanging binary; the
+# result is memoized so the second call and the binary SHA-256 are free.
+_AUDIT_CACHE: dict[tuple[str, int, int], FfmpegAuditResult] = {}
+
 
 def audit_ffmpeg(binary_path: str, *, timeout_s: float = 5.0) -> FfmpegAuditResult:
     """Run `binary_path -version` and audit the configuration line.
 
     Returns a structured result. `result.ok` is True iff the binary is
-    LGPL, has every required codec, and has no non-free flags.
+    LGPL, has every required codec, and has no non-free flags. Results
+    are memoized per binary (path, size, mtime) — safe because the
+    audited configuration cannot change without the file changing.
     """
+    import os
+
+    try:
+        stat = os.stat(binary_path)
+        cache_key = (str(binary_path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and cache_key in _AUDIT_CACHE:
+        return _AUDIT_CACHE[cache_key]
+
+    result = _audit_ffmpeg_uncached(binary_path, timeout_s=timeout_s)
+    if cache_key is not None:
+        _AUDIT_CACHE[cache_key] = result
+    return result
+
+
+def _audit_ffmpeg_uncached(binary_path: str, *, timeout_s: float) -> FfmpegAuditResult:
+    """Run `binary_path -version` and audit the configuration line."""
     version_proc = subprocess.run(
         [binary_path, "-version"],
         capture_output=True,

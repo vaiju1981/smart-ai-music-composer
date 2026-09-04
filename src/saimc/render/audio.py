@@ -172,15 +172,11 @@ def _us_to_ticks(microseconds: int, bpm: float) -> int:
     return round(microseconds * bpm * PPQ / 60_000_000)
 
 
-def _hash_file(path: Path) -> str:
+def _hash_file(path: Path, *, cached: bool = False) -> str:
     """SHA-256 over the file's bytes (streaming)."""
-    import hashlib
+    from saimc.render.util import sha256_file
 
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return sha256_file(path, cached=cached)
 
 
 def _file_size(path: Path) -> int:
@@ -458,7 +454,11 @@ def render_audio(
     primary_size = _file_size(wav_path)
     ogg_sha = _hash_file(ogg_path)
     ogg_size = _file_size(ogg_path)
-    soundfont_sha = _hash_file(soundfont_path) if soundfont_path.exists() else ""
+    # The soundfont is an immutable asset: cache its digest per process
+    # instead of re-hashing ~1 GB on every job.
+    soundfont_sha = (
+        _hash_file(soundfont_path, cached=True) if soundfont_path.exists() else ""
+    )
 
     return AudioArtifact(
         primary_path=wav_path,
