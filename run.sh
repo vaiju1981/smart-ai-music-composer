@@ -32,6 +32,11 @@ API_PORT_CHECK="$(printf '%s' "$API_PORT" | tr -cd '0-9')"
 
 export SAIMC_JOBS_DIR="${SAIMC_JOBS_DIR:-$REPO_ROOT/var/jobs}"
 export SAIMC_VALKEY_URL="$VALKEY_URL"
+# Prefer the repo's audited LGPL build over any GPL ffmpeg on PATH —
+# the render audit gate would (correctly) reject the latter.
+if [ -z "${SAIMC_RENDER_FFMPEG:-}" ] && [ -x "$REPO_ROOT/dist/ffmpeg/8.1.2/ffmpeg" ]; then
+    export SAIMC_RENDER_FFMPEG="$REPO_ROOT/dist/ffmpeg/8.1.2/ffmpeg"
+fi
 
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 WORKER_BIN="${WORKER_BIN:-$REPO_ROOT/.venv/bin/saimc-jobs}"
