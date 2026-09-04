@@ -241,3 +241,29 @@ class TestMeta:
         assert "4/4" in meta["time_signatures"]
         assert meta["instruments"] == ["piano"]
         assert meta["duration_seconds"] == {"min": 30, "max": 600, "default": 180}
+
+    def test_meta_instruments_come_from_the_registry(self, client: TestClient) -> None:
+        """Adding an instrument to INSTRUMENT_PROGRAMS surfaces it in /meta."""
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS
+
+        meta = client.get("/meta").json()
+        assert meta["instruments"] == sorted(INSTRUMENT_PROGRAMS)
+
+    def test_spec_instrumentations_are_all_registered(self) -> None:
+        """Drift guard: every instrumentation the spec accepts must have
+        a GM program and a soundfont resolution, or /meta advertises an
+        instrument that cannot render."""
+        import typing
+
+        from saimc.render.instruments import INSTRUMENT_PROGRAMS, soundfont_for_instrument
+        from saimc.spec import CompositionSpec
+
+        annotation = CompositionSpec.model_fields["instrumentation"].annotation
+        accepted: tuple[str, ...] = typing.get_args(annotation)  # type: ignore[arg-type]
+        assert accepted, "spec instrumentation must be a Literal of instrument names"
+        for instrument in accepted:
+            assert instrument in INSTRUMENT_PROGRAMS, (
+                f"instrumentation {instrument!r} is accepted by the spec but has "
+                f"no GM program in INSTRUMENT_PROGRAMS"
+            )
+            soundfont_for_instrument(instrument)  # must resolve without error

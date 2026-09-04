@@ -205,9 +205,12 @@ def list_jobs(request: Request, limit: int = 50) -> list[JobResponse]:
 def get_meta() -> dict[str, Any]:
     """Authoring vocabulary for the UI — what Phase 1 accepts.
 
-    One source of truth: the values come straight from the spec module,
-    so schema and UI can never drift.
+    One source of truth: the values come straight from the spec module
+    and the instrument registry, so schema and UI can never drift. A
+    new instrument becomes visible here the moment it is added to
+    `INSTRUMENT_PROGRAMS` (and the spec's instrumentation Literal).
     """
+    from saimc.render.instruments import INSTRUMENT_PROGRAMS
     from saimc.spec import (
         DURATION_SECONDS_DEFAULT,
         DURATION_SECONDS_MAX,
@@ -219,7 +222,7 @@ def get_meta() -> dict[str, Any]:
     return {
         "moods": [m.value for m in Mood],
         "time_signatures": [t.value for t in TimeSignature],
-        "instruments": ["piano"],
+        "instruments": sorted(INSTRUMENT_PROGRAMS),
         "duration_seconds": {
             "min": DURATION_SECONDS_MIN,
             "max": DURATION_SECONDS_MAX,
