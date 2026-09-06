@@ -25,9 +25,29 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from saimc.compose.score import KeySignature
 from saimc.spec import WesternKey
+
+
+class ChordSlot(NamedTuple):
+    """One chord of a template: (degree, bars) plus colour options.
+
+    `seventh` adds the diatonic 7th to the chord (the engine renders
+    the mode-aware 4-tone table: Imaj7, ii7, V7, ...).
+    `borrowed` renders the chord from the opposite mode's table — in a
+    major key that is the parallel-minor colour (bVII instead of vii°),
+    in a minor key the raised (harmonic-minor) dominant instead of v.
+    `bass_degree` pins the bass to a scale degree (root-position
+    cadences); None lets the bass walk to the nearest chord tone.
+    """
+
+    degree: int
+    bars: int
+    seventh: bool = False
+    borrowed: bool = False
+    bass_degree: int | None = None
 
 
 @dataclass(frozen=True)
@@ -35,15 +55,14 @@ class ChordTemplate:
     """A single chord-progression template.
 
     `bars` is the total length of the template in bars; `chords` is a
-    list of (scale_degree, duration_bars) tuples that must sum to
-    exactly `bars` bars.
+    list of ChordSlot entries whose `bars` must sum to exactly `bars`.
 
     `name` is a stable identifier used in logs and manifest records.
     """
 
     name: str
     bars: int
-    chords: tuple[tuple[int, int], ...]
+    chords: tuple[ChordSlot, ...]
 
 
 @dataclass(frozen=True)
@@ -72,17 +91,36 @@ MOOD_PROFILES: Mapping[str, MoodProfile] = {
             ChordTemplate(
                 name="calming_50s_progression",
                 bars=8,
-                chords=((0, 2), (5, 2), (3, 2), (4, 2)),
+                chords=(
+                    ChordSlot(0, 2, seventh=True),  # Imaj7
+                    ChordSlot(5, 2, seventh=True),  # vi7
+                    ChordSlot(3, 2, seventh=True),  # IVmaj7
+                    ChordSlot(4, 2),  # V
+                ),
             ),
             ChordTemplate(
                 name="calming_iii_substitute",
                 bars=8,
-                chords=((0, 2), (2, 2), (3, 2), (4, 2)),
+                chords=(
+                    ChordSlot(0, 2, seventh=True),
+                    ChordSlot(2, 2, seventh=True),  # iii7
+                    ChordSlot(3, 2, seventh=True),
+                    ChordSlot(4, 2),
+                ),
             ),
             ChordTemplate(
                 name="calming_extended_16",
                 bars=16,
-                chords=((0, 2), (5, 2), (3, 2), (4, 2), (0, 2), (5, 2), (3, 2), (1, 4)),
+                chords=(
+                    ChordSlot(0, 2, seventh=True),
+                    ChordSlot(5, 2, seventh=True),
+                    ChordSlot(3, 2, seventh=True),
+                    ChordSlot(4, 2),
+                    ChordSlot(0, 2, seventh=True),
+                    ChordSlot(5, 2, seventh=True),
+                    ChordSlot(3, 2, seventh=True, borrowed=True),  # iv, minor colour
+                    ChordSlot(1, 4, seventh=True),  # ii7 over the last phrase
+                ),
             ),
         ),
     ),
@@ -93,25 +131,35 @@ MOOD_PROFILES: Mapping[str, MoodProfile] = {
             ChordTemplate(
                 name="electrifying_anthemic",
                 bars=8,
-                chords=((0, 2), (4, 2), (5, 2), (3, 2)),
+                chords=(
+                    ChordSlot(0, 2),  # I
+                    ChordSlot(4, 2, seventh=True),  # V7
+                    ChordSlot(5, 2),  # vi
+                    ChordSlot(3, 2),  # IV
+                ),
             ),
             ChordTemplate(
                 name="electrifying_vi_first",
                 bars=8,
-                chords=((5, 2), (3, 2), (0, 2), (4, 2)),
+                chords=(
+                    ChordSlot(5, 2),
+                    ChordSlot(3, 2, seventh=True),  # IVmaj7
+                    ChordSlot(0, 2),
+                    ChordSlot(4, 2, seventh=True),  # V7
+                ),
             ),
             ChordTemplate(
                 name="electrifying_extended_16",
                 bars=16,
                 chords=(
-                    (0, 2),
-                    (4, 2),
-                    (5, 2),
-                    (3, 2),
-                    (6, 2),
-                    (3, 2),
-                    (0, 2),
-                    (4, 2),
+                    ChordSlot(0, 2),
+                    ChordSlot(4, 2, seventh=True),
+                    ChordSlot(5, 2),
+                    ChordSlot(3, 2),
+                    ChordSlot(6, 2, borrowed=True),  # bVII, borrowed major
+                    ChordSlot(3, 2),
+                    ChordSlot(0, 2),
+                    ChordSlot(4, 2, seventh=True),
                 ),
             ),
         ),
@@ -123,25 +171,33 @@ MOOD_PROFILES: Mapping[str, MoodProfile] = {
             ChordTemplate(
                 name="sleep_lullaby",
                 bars=8,
-                chords=((0, 2), (5, 2), (2, 2), (3, 2)),
+                chords=(
+                    ChordSlot(0, 2, seventh=True),  # Imaj7
+                    ChordSlot(5, 2, seventh=True),  # vi7
+                    ChordSlot(2, 2, seventh=True),  # iii7
+                    ChordSlot(3, 2, seventh=True),  # IVmaj7
+                ),
             ),
             ChordTemplate(
                 name="sleep_drone",
                 bars=8,
-                chords=((0, 4), (3, 4)),
+                chords=(
+                    ChordSlot(0, 4, seventh=True),
+                    ChordSlot(3, 4, seventh=True),
+                ),
             ),
             ChordTemplate(
                 name="sleep_extended_16",
                 bars=16,
                 chords=(
-                    (0, 2),
-                    (5, 2),
-                    (2, 2),
-                    (3, 2),
-                    (0, 2),
-                    (5, 2),
-                    (2, 2),
-                    (3, 2),
+                    ChordSlot(0, 2, seventh=True),
+                    ChordSlot(5, 2, seventh=True),
+                    ChordSlot(2, 2, seventh=True),
+                    ChordSlot(3, 2, seventh=True, borrowed=True),
+                    ChordSlot(0, 2, seventh=True),
+                    ChordSlot(5, 2, seventh=True),
+                    ChordSlot(2, 2, seventh=True),
+                    ChordSlot(3, 2, seventh=True),
                 ),
             ),
         ),
@@ -195,14 +251,14 @@ def get_template_for_form(
 
 def _truncate_template(template: ChordTemplate, target_bars: int) -> ChordTemplate:
     """Keep the first `target_bars` bars; partial final chord is allowed."""
-    kept: list[tuple[int, int]] = []
+    kept: list[ChordSlot] = []
     consumed = 0
-    for degree, dur in template.chords:
-        if consumed + dur > target_bars:
-            kept.append((degree, target_bars - consumed))
+    for slot in template.chords:
+        if consumed + slot.bars > target_bars:
+            kept.append(slot._replace(bars=target_bars - consumed))
             break
-        kept.append((degree, dur))
-        consumed += dur
+        kept.append(slot)
+        consumed += slot.bars
     return ChordTemplate(name=f"{template.name}_truncated", bars=target_bars, chords=tuple(kept))
 
 
@@ -236,21 +292,102 @@ def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
     """Rewrite a template's last two bars as its mood's cadence.
 
     The bar before the final tonic becomes the dominant (V) for
-    electrifying or the subdominant (IV) for calming/sleep, giving the
-    melody a harmonic target to resolve onto. Bar count is preserved:
-    the cadence bars replace the template's last two bars, so
-    duration arithmetic is unaffected. Templates shorter than three
-    bars are returned unchanged (there is no room for a 2-bar close).
+    electrifying — as a V7 — or the subdominant (IV) for calming/sleep,
+    giving the melody a harmonic target to resolve onto. Both cadence
+    chords are pinned to root-position bass (`bass_degree`) so the
+    final close lands on the tonic's root, not on a walking inversion.
+    Bar count is preserved: the cadence bars replace the template's
+    last two bars, so duration arithmetic is unaffected. Templates
+    shorter than three bars are returned unchanged (there is no room
+    for a 2-bar close).
     """
     cadence_degree = _CADENCE_DEGREE.get(mood, 4)
     if template.bars < 3:
         return template
     kept = _truncate_template(template, template.bars - 2).chords
+    cadence = (
+        ChordSlot(cadence_degree, 1, seventh=(mood == "electrifying"), bass_degree=cadence_degree),
+        ChordSlot(0, 1, bass_degree=0),
+    )
     return ChordTemplate(
         name=f"{template.name}_cad",
         bars=template.bars,
-        chords=(*kept, (cadence_degree, 1), (0, 1)),
+        chords=(*kept, *cadence),
     )
+
+
+# Root-relative chord-tone intervals per (mode, degree). Degree is
+# 0-based (0 = I). Triads are 3-tone; sevenths are 4-tone diatonic
+# sevenths (Imaj7, ii7, iii7, IVmaj7, V7, vi7, vii m7b5 in major;
+# i7, ii m7b5, IIImaj7, iv7, v7, VImaj7, VII7 in minor).
+_TRIAD_TABLES: Mapping[str, tuple[tuple[int, ...], ...]] = {
+    "major": (
+        (0, 4, 7),
+        (0, 3, 7),
+        (0, 3, 7),
+        (0, 4, 7),
+        (0, 4, 7),
+        (0, 3, 7),
+        (0, 3, 6),
+    ),
+    "minor": (
+        (0, 3, 7),
+        (0, 3, 6),
+        (0, 4, 7),
+        (0, 3, 7),
+        (0, 3, 7),
+        (0, 4, 7),
+        (0, 4, 7),
+    ),
+}
+
+_SEVENTH_TABLES: Mapping[str, tuple[tuple[int, ...], ...]] = {
+    "major": (
+        (0, 4, 7, 11),  # Imaj7
+        (0, 3, 7, 10),  # ii7
+        (0, 3, 7, 10),  # iii7
+        (0, 4, 7, 11),  # IVmaj7
+        (0, 4, 7, 10),  # V7
+        (0, 3, 7, 10),  # vi7
+        (0, 3, 6, 10),  # vii m7b5
+    ),
+    "minor": (
+        (0, 3, 7, 10),  # i7
+        (0, 3, 6, 10),  # ii m7b5
+        (0, 4, 7, 11),  # IIImaj7
+        (0, 3, 7, 10),  # iv7
+        (0, 3, 7, 10),  # v7
+        (0, 4, 7, 11),  # VImaj7
+        (0, 4, 7, 10),  # VII7
+    ),
+}
+
+
+def chord_intervals(
+    degree: int,
+    key: KeySignature,
+    *,
+    seventh: bool = False,
+    borrowed: bool = False,
+) -> tuple[int, ...]:
+    """Return the root-relative chord-tone intervals for a diatonic chord.
+
+    Major key degrees: I, ii, iii, IV, V, vi, vii -> major, minor,
+    minor, major, major, minor, dim triads (maj7/min7/dom7/m7b5 as
+    sevenths). Minor key: i, ii°, III, iv, v, VI, VII. Each entry is an
+    interval above the chord root — callers add these to the chord
+    root, not to the scale-degree root, to get absolute pitches.
+
+    `borrowed` renders the chord from the opposite mode's table: in a
+    major key that is the parallel-minor colour (degree 6 becomes a
+    bVII major triad instead of vii°); in a minor key it is the raised
+    dominant colour (degree 4 becomes a major V instead of v).
+    """
+    mode = key.mode
+    if borrowed:
+        mode = "minor" if mode == "major" else "major"
+    table = _SEVENTH_TABLES[mode] if seventh else _TRIAD_TABLES[mode]
+    return table[degree % 7]
 
 
 # Root-to-semitone mapping for major/minor keys. The key name in

@@ -149,16 +149,18 @@ class TestComposeIntegrationWithWorker:
 class TestMusicalShape:
     """The §10 quality upgrades: real left hand, register split, A/B form."""
 
-    def test_bass_plays_root_fifth_per_bar(self) -> None:
+    def test_bass_plays_two_chord_tones_per_bar(self) -> None:
         out = compose(_spec(Mood.CALMING, duration=60))
         bass = [n for n in out.notation_score.notes if n.voice_id == 0]
         bar_ticks_count = out.notation_score.ppq * 4
         first_bar = [n for n in bass if n.tick < bar_ticks_count]
-        assert len(first_bar) == 2  # root + fifth, not a held drone
+        assert len(first_bar) == 2  # two tones, not a held drone
         pitches = {n.pitch_midi for n in first_bar}
         assert len(pitches) == 2
-        root, fifth = sorted(pitches)
-        assert fifth - root == 7  # perfect fifth above the root
+        low, high = sorted(pitches)
+        tonic = key_root_midi(out.key)
+        assert low == tonic - 12  # the section opens in root position
+        assert (high - low) % 12 in (3, 4, 7)  # a third or fifth above it
 
     def test_melody_sits_above_bass(self) -> None:
         out = compose(_spec(Mood.CALMING, duration=60))
@@ -212,8 +214,8 @@ class TestChordToneHarmony:
     the wrong triad (e.g. F#m over an Am bass in C major).
     """
 
-    # Independent oracle: diatonic triads as semitone offsets from the
-    # TONIC, degrees I..VII. Major and minor keys.
+    # Independent oracle: diatonic triads and sevenths as semitone
+    # offsets from the TONIC, degrees I..VII. Major and minor keys.
     MAJOR_TRIADS_ABS = (
         (0, 4, 7),
         (2, 5, 9),
@@ -232,20 +234,50 @@ class TestChordToneHarmony:
         (8, 12, 15),
         (10, 14, 17),
     )
+    MAJOR_SEVENTHS_ABS = (
+        (0, 4, 7, 11),
+        (2, 5, 9, 12),
+        (4, 7, 11, 14),
+        (5, 9, 12, 16),
+        (7, 11, 14, 17),
+        (9, 12, 16, 19),
+        (11, 14, 17, 20),
+    )
+    MINOR_SEVENTHS_ABS = (
+        (0, 3, 7, 10),
+        (2, 5, 8, 12),
+        (3, 7, 10, 14),
+        (5, 8, 12, 15),
+        (7, 10, 14, 17),
+        (8, 12, 15, 19),
+        (10, 14, 17, 21),
+    )
 
-    def _triads(self, mode: str) -> tuple[tuple[int, int, int], ...]:
-        return self.MAJOR_TRIADS_ABS if mode == "major" else self.MINOR_TRIADS_ABS
+    def _chord_offsets(
+        self, slot, mode: str
+    ) -> tuple[int, ...]:
+        """Tonic-relative chord tones for a slot (triad or seventh)."""
+        if mode == "major":
+            triads, sevenths = self.MAJOR_TRIADS_ABS, self.MAJOR_SEVENTHS_ABS
+        else:
+            triads, sevenths = self.MINOR_TRIADS_ABS, self.MINOR_SEVENTHS_ABS
+        if slot.borrowed:
+            triads, sevenths = (
+                (self.MINOR_TRIADS_ABS, self.MINOR_SEVENTHS_ABS)
+                if mode == "major"
+                else (self.MAJOR_TRIADS_ABS, self.MAJOR_SEVENTHS_ABS)
+            )
+        return sevenths[slot.degree % 7] if slot.seventh else triads[slot.degree % 7]
 
-    def _bar_degrees_and_triads(
+    def _bar_degrees_and_offsets(
         self, out, mood: str
-    ) -> list[tuple[int, tuple[int, int, int]]]:
-        """Mirror the engine's per-bar chord walk: (degree, tonic-relative triad)."""
+    ) -> list[tuple[int, tuple[int, ...]]]:
+        """Mirror the engine's per-bar chord walk: (degree, tonic-relative tones)."""
         from saimc.compose.forms import apply_final_cadence, get_template_for_form
 
         arrangement = out.arrangement
-        triads = self._triads(out.key.mode)
 
-        result: list[tuple[int, tuple[int, int, int]]] = []
+        result: list[tuple[int, tuple[int, ...]]] = []
         for section in range(arrangement.repetition_count):
             template = (
                 arrangement.template
@@ -256,15 +288,21 @@ class TestChordToneHarmony:
             )
             if section == arrangement.repetition_count - 1:
                 template = apply_final_cadence(template, mood)
-            for degree, dur in template.chords:
-                result.extend((degree, triads[degree % 7]) for _ in range(dur))
+            for slot in template.chords:
+                result.extend(
+                    (slot.degree, self._chord_offsets(slot, out.key.mode))
+                    for _ in range(slot.bars)
+                )
         if arrangement.coda_bars > 0:
             coda = apply_final_cadence(
                 _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
                 mood,
             )
-            for degree, dur in coda.chords:
-                result.extend((degree, triads[degree % 7]) for _ in range(dur))
+            for slot in coda.chords:
+                result.extend(
+                    (slot.degree, self._chord_offsets(slot, out.key.mode))
+                    for _ in range(slot.bars)
+                )
         return result
 
     @pytest.mark.parametrize(
@@ -273,43 +311,95 @@ class TestChordToneHarmony:
     )
     def test_all_notes_are_chord_tones(self, mood: Mood, duration: int) -> None:
         out = compose(_spec(mood, duration=duration, seed=42))
-        bars = self._bar_degrees_and_triads(out, mood.value)
+        bars = self._bar_degrees_and_offsets(out, mood.value)
         assert len(bars) == out.arrangement.total_bars_with_coda
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
         for note in out.notation_score.notes:
             if note.voice_id == 2:  # percussion keys are GM drum map, not pitched
                 continue
-            _degree, triad = bars[note.tick // ticks_per_bar]
-            sounding = {(tonic + offset) % 12 for offset in triad}
+            _degree, offsets = bars[note.tick // ticks_per_bar]
+            sounding = {(tonic + offset) % 12 for offset in offsets}
             assert note.pitch_midi % 12 in sounding, (
                 f"bar {note.tick // ticks_per_bar}: pitch {note.pitch_midi} "
-                f"not in chord pcs {sounding} (triad {triad})"
+                f"not in chord pcs {sounding} (offsets {offsets})"
             )
 
-    def test_bass_fifth_matches_chord_quality(self) -> None:
-        """The bass upper voice is a perfect fifth on major/minor triads
-        and a diminished fifth (6 semitones) on diminished triads."""
+    def test_seventh_chords_reach_the_score(self) -> None:
+        """Templates with 7th slots play their 4th tone, and it is a
+        genuine chord tone (the S1 triad test passes it too)."""
+        from saimc.compose.forms import MOOD_PROFILES
+
+        assert any(
+            slot.seventh
+            for template in MOOD_PROFILES["calming"].templates
+            for slot in template.chords
+        )
+        out = compose(_spec(Mood.CALMING, duration=60, seed=42))
+        bars = self._bar_degrees_and_offsets(out, Mood.CALMING.value)
+        assert any(len(offsets) == 4 for _degree, offsets in bars)
+
+    def test_bass_walks_and_stays_on_chord_tones(self) -> None:
+        """The bass is a walking line: every note is a chord tone of its
+        bar, section starts land in root position, and consecutive chord
+        basses move by small intervals instead of jumping octaves."""
         out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
-        bars = self._bar_degrees_and_triads(out, Mood.ELECTRIFYING.value)
+        bars = self._bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
         bass_by_bar: dict[int, list[int]] = {}
         for note in out.notation_score.notes:
             if note.voice_id == 0:
                 bass_by_bar.setdefault(note.tick // ticks_per_bar, []).append(note.pitch_midi)
-        seen_dim = False
-        for bar, (degree, triad) in enumerate(bars):
-            chord_root = tonic + _scale_degree_to_semitones(degree, out.key.mode)
-            pitches = sorted(set(bass_by_bar[bar]))
-            assert len(pitches) == 2, f"bar {bar}: expected root+fifth bass, got {pitches}"
-            expected_fifth = (chord_root - 12) + (triad[2] - triad[0])
-            assert pitches[0] == chord_root - 12, f"bar {bar}: bass root {pitches[0]}"
-            assert pitches[1] == expected_fifth, (
-                f"bar {bar}: bass fifth {pitches[1]} != {expected_fifth} (triad {triad})"
-            )
-            seen_dim = seen_dim or (triad[2] - triad[0] == 6)
-        assert seen_dim, "expected the walk to reach at least one diminished triad"
+        for bar, (_degree, offsets) in enumerate(bars):
+            sounding = {(tonic + offset) % 12 for offset in offsets}
+            for pitch in set(bass_by_bar[bar]):
+                assert pitch % 12 in sounding, (
+                    f"bar {bar}: bass {pitch} not a chord tone of {sounding}"
+                )
+        # Consecutive chord-change basses stay close (the walk).
+        last_pitch: int | None = None
+        for bar in sorted(bass_by_bar):
+            downbeat = min(p for p in bass_by_bar[bar])
+            if last_pitch is not None:
+                assert abs(downbeat - last_pitch) <= 7, (
+                    f"bass jumped {abs(downbeat - last_pitch)} semitones "
+                    f"into bar {bar}"
+                )
+            last_pitch = downbeat
+
+    def test_borrowed_bVII_reaches_the_score(self) -> None:
+        """The extended electrifying template's borrowed bVII (a major
+        triad a whole step below the tonic) actually sounds: the bar's
+        notes sit on the lowered-root pcs, not the diatonic vii."""
+        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
+        assert out.key.mode == "major"
+        tonic = key_root_midi(out.key)
+        bars = self._bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
+        # Diatonic major degree 6 is (11, 14, 17); the borrowed bVII
+        # takes the minor-mode table, giving (10, 14, 17).
+        borrowed_bars = [b for b, (_degree, offsets) in enumerate(bars) if offsets == (10, 14, 17)]
+        assert borrowed_bars, "expected the bVII borrowed slot to sound"
+        ticks_per_bar = out.notation_score.ppq * 4
+        pitched = [n for n in out.notation_score.notes if n.voice_id != 2]
+        for bar in borrowed_bars:
+            sounding = {(tonic + offset) % 12 for offset in (10, 14, 17)}
+            for note in pitched:
+                if note.tick // ticks_per_bar == bar:
+                    assert note.pitch_midi % 12 in sounding
+
+    def test_cadence_bass_is_root_position(self) -> None:
+        """The cadence's pinned bass_degree lands the final tonic's root
+        in the bass (the S3 final-cadence invariant)."""
+        out = compose(_spec(Mood.CALMING, duration=60, seed=42))
+        tonic = key_root_midi(out.key)
+        ticks_per_bar = out.notation_score.ppq * 4
+        bass = [n for n in out.notation_score.notes if n.voice_id == 0]
+        final_bar_notes = [n for n in bass if n.tick // ticks_per_bar == (
+            out.arrangement.total_bars_with_coda - 1
+        )]
+        assert final_bar_notes
+        assert final_bar_notes[0].pitch_midi % 12 == tonic % 12
 
 
 class TestSharpMinorKeys:
@@ -441,8 +531,8 @@ class TestPhraseStructure:
             )
             if section == arrangement.repetition_count - 1:
                 template = apply_final_cadence(template, "calming")
-            for degree, dur in template.chords:
-                chords.extend([degree] * dur)
+            for slot in template.chords:
+                chords.extend([slot.degree] * slot.bars)
         anchored = 0
         for note in downbeats:
             degree = chords[note.tick // ticks_per_bar]

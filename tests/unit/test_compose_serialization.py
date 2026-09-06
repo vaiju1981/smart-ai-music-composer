@@ -8,7 +8,7 @@ import pytest
 
 from saimc.compose.duration import DurationArrangement
 from saimc.compose.engine import EngineOutput, compose
-from saimc.compose.forms import ChordTemplate
+from saimc.compose.forms import ChordSlot, ChordTemplate
 from saimc.compose.score import (
     KeySignature,
     Measure,
@@ -43,7 +43,7 @@ def _make_engine_output() -> EngineOutput:
     performance = PerformancePlan.make(sample_rate=44100, notes=[perf_note])
     arrangement = DurationArrangement(
         form_bars=1,
-        template=ChordTemplate(name="stub_1bar", bars=1, chords=((0, 1),)),
+        template=ChordTemplate(name="stub_1bar", bars=1, chords=(ChordSlot(0, 1),)),
         repetition_count=1,
         total_bars=1,
         tempo_bpm=80.0,
@@ -96,7 +96,7 @@ def test_coda_bars_round_trips(tmp_path: Path) -> None:
     # 4-bar form with a 2-bar coda.
     arrangement = DurationArrangement(
         form_bars=4,
-        template=ChordTemplate(name="stub_4bar", bars=4, chords=((0, 2), (5, 2))),
+        template=ChordTemplate(name="stub_4bar", bars=4, chords=(ChordSlot(0, 2), ChordSlot(5, 2))),
         repetition_count=1,
         total_bars=4,
         tempo_bpm=80.0,

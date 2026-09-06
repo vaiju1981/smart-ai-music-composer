@@ -48,8 +48,10 @@ from saimc.compose.duration import (
     section_seed,
 )
 from saimc.compose.forms import (
+    ChordSlot,
     ChordTemplate,
     apply_final_cadence,
+    chord_intervals,
     get_template_for_form,
     key_root_midi,
     key_signature_from_spec,
@@ -166,7 +168,7 @@ class EngineOutput:
             template=ChordTemplate(
                 name=arrangement_payload["template"]["name"],
                 bars=arrangement_payload["template"]["bars"],
-                chords=tuple(tuple(chord) for chord in arrangement_payload["template"]["chords"]),
+                chords=tuple(ChordSlot(*chord) for chord in arrangement_payload["template"]["chords"]),
             ),
             repetition_count=arrangement_payload["repetition_count"],
             total_bars=arrangement_payload["total_bars"],
@@ -253,6 +255,7 @@ def _build_score(
     notes: list[NoteEvent] = []
     section_starts: list[int] = []  # start_tick of each section
     cursor_tick = 0
+    prev_bass: int | None = None
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
 
@@ -283,9 +286,13 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
+            prev_bass=prev_bass,
             is_final_section=section_idx == arrangement.repetition_count - 1,
         )
         notes.extend(section_notes)
+        bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
+        if bass_notes:
+            prev_bass = max(bass_notes, key=lambda n: n.tick).pitch_midi
         cursor_tick += arrangement.form_bars * bar_ticks(time_signature)
 
     # Optional coda: append a coda-length tail using the same chord
@@ -304,6 +311,7 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=coda_rng,
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
+            prev_bass=prev_bass,
         )
         notes.extend(coda_notes)
         cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
@@ -358,19 +366,24 @@ def _generate_section(
     section_start_tick: int,
     rng: random.Random,
     seed_for_variation: int,
+    prev_bass: int | None = None,
     is_final_section: bool = False,
 ) -> list[NoteEvent]:
     """Generate the bass + melody notes for one section.
 
-    The left hand plays a root-fifth broken pattern (root on the
-    downbeat, fifth at the bar's midpoint) instead of a held drone.
-    The melody is an octave above the bass and develops the section's
-    motif: every bar replays the motif through one classic operation
-    (repetition, transposition, sequence, inversion, truncation,
-    ornament) onto that bar's chord. Velocity follows an arch across
-    the section with a slight accent on downbeats. Everything is
-    derived from `seed_for_variation`, so repeated sections sound
-    different but stay deterministic.
+    The left hand walks: each chord's bass lands on the chord tone
+    nearest the previous chord's bass (root position when there is no
+    previous bass, or wherever the template pins `bass_degree`), and
+    the bar's midpoint sounds the next chord tone above it — so the
+    bass line moves stepwise through inversions instead of jumping
+    root to root, and the walk carries across section boundaries via
+    `prev_bass`. The melody is an octave above the chord root and
+    develops the section's motif: every bar replays the motif through
+    one classic operation (repetition, transposition, sequence,
+    inversion, truncation, ornament) onto that bar's chord. Velocity
+    follows an arch across the section with a slight accent on
+    downbeats. Everything is derived from `seed_for_variation`, so
+    repeated sections sound different but stay deterministic.
 
     Phrase shape: one bar per section is the melodic apex (raised an
     octave-portion above the line, near the 60% mark); bars ending a
@@ -390,26 +403,73 @@ def _generate_section(
     cursor = 0
     bar_index = 0
     total_bars = template.bars
-    for degree, dur in template.chords:
-        chord_root = tonic_midi + _scale_degree_to_semitones(degree, key.mode)
-        chord_tones = _chord_intervals(degree, key)
+    for slot in template.chords:
+        degree = slot.degree
+        dur = slot.bars
+        root_offset = _scale_degree_to_semitones(degree, key.mode)
+        if slot.borrowed and key.mode == "major" and degree % 7 in (2, 5, 6):
+            # bIII/bVI/bVII: the borrowed roots sit a semitone below the
+            # diatonic scale degrees (Bb, not B, in C major).
+            root_offset -= 1
+        chord_root = tonic_midi + root_offset
+        chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
         chord_root_tick = section_start_tick + cursor
+
+        # Walking bass: the pinned bass degree wins; otherwise the
+        # chord tone nearest the previous bass (root on the first
+        # chord). The midpoint sounds the next chord tone above.
+        if slot.bass_degree is not None:
+            bass_pitch = _octave_down(
+                tonic_midi + _scale_degree_to_semitones(slot.bass_degree, key.mode),
+                octaves=1,
+            )
+            prev_bass = bass_pitch
+        else:
+            # Two octaves of candidates keep the walk inside the bass
+            # register even in sharp minor keys whose chord roots sit
+            # above the middle of the keyboard.
+            candidates = [
+                _octave_down(chord_root + tone, octaves=octaves)
+                for tone in chord_tones
+                for octaves in (1, 2)
+            ]
+            candidates = [c for c in candidates if 21 <= c <= 60]
+            if not candidates:
+                bass_pitch = _octave_down(chord_root, octaves=2)
+            elif prev_bass is None:
+                bass_pitch = candidates[0]
+            else:
+                last_bass = prev_bass
+                bass_pitch = min(candidates, key=lambda c: abs(c - last_bass))
+        above = sorted(
+            chord_root + tone
+            for tone in chord_tones
+            if chord_root + tone > bass_pitch
+            and (chord_root + tone) % 12 != bass_pitch % 12
+        )
+        bass_fifth = above[0] if above else bass_pitch + 12
+        while bass_fifth - bass_pitch > 12:
+            bass_fifth -= 12
+        # Stay near the bass register — an octave shift keeps the note
+        # a chord tone (a hard clamp would not be).
+        if bass_fifth > 67:
+            bass_fifth -= 12
+        if bass_fifth <= bass_pitch:
+            bass_fifth += 12
+        while bass_fifth - bass_pitch > 12:
+            bass_fifth -= 12
 
         for _bar in range(dur):
             bar_tick = chord_root_tick + _bar * ticks_per_bar
             bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
-            bass_root = _octave_down(chord_root, octaves=1)
-            # The upper voice of the open fifth follows the triad quality:
-            # a perfect fifth on major/minor chords, a diminished fifth
-            # (6 semitones) on the ii°/vii° chords the templates use.
-            bass_fifth = min(107, bass_root + chord_tones[2] - chord_tones[0])
 
-            # Left hand: root on the downbeat, fifth at the midpoint.
+            # Left hand: the walking tone on the downbeat, the next
+            # chord tone above it at the midpoint.
             half = ticks_per_bar // 2
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_BASS,
-                    pitch_midi=bass_root,
+                    pitch_midi=bass_pitch,
                     tick=bar_tick,
                     duration_ticks=half,
                     velocity=_shaped_velocity(
@@ -472,6 +532,8 @@ def _generate_section(
             )
             bar_index += 1
 
+        if slot.bass_degree is None:
+            prev_bass = bass_pitch
         cursor += dur * ticks_per_bar
 
     # Canonical order: the bass and melody interleave within a bar, so
@@ -489,21 +551,21 @@ def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> Chor
     on. Coda length is always strictly less than the form's full
     length. Zero-duration chord entries are dropped.
     """
-    kept: list[tuple[int, int]] = []
+    kept: list[ChordSlot] = []
     consumed = 0
-    for degree, dur in template.chords:
+    for slot in template.chords:
         remaining = coda_bars - consumed
         if remaining <= 0:
             break
-        if dur > remaining:
-            kept.append((degree, remaining))
+        if slot.bars > remaining:
+            kept.append(slot._replace(bars=remaining))
             consumed += remaining
         else:
-            kept.append((degree, dur))
-            consumed += dur
+            kept.append(slot)
+            consumed += slot.bars
     if kept:
-        last_degree, last_dur = kept[-1]
-        kept[-1] = (0, last_dur) if last_degree != 0 else (last_degree, last_dur)
+        last = kept[-1]
+        kept[-1] = ChordSlot(0, last.bars, seventh=last.seventh, bass_degree=0)
     return ChordTemplate(
         name=f"{template.name}_coda{coda_bars}",
         bars=coda_bars,
@@ -520,36 +582,19 @@ def _scale_degree_to_semitones(degree: int, mode: str) -> int:
     return minor_scale[degree % 7]
 
 
-def _chord_intervals(degree: int, key: KeySignature) -> tuple[int, ...]:
-    """Return the root-relative chord-tone intervals for a diatonic chord.
+def _chord_intervals(
+    degree: int,
+    key: KeySignature,
+    *,
+    seventh: bool = False,
+    borrowed: bool = False,
+) -> tuple[int, ...]:
+    """Root-relative chord-tone intervals for a diatonic chord.
 
-    Major key: I, ii, iii, IV, V, vi, vii -> major, minor, minor, major,
-    major, minor, dim. Minor key: i, ii°, III, iv, v, VI, VII -> minor,
-    dim, major, minor, minor, major, major. Each entry is an interval
-    above the chord root (e.g. (0, 3, 7) is a minor triad), so callers
-    add these to the chord root — not to the scale-degree root — to get
-    absolute pitches.
+    Thin wrapper over `forms.chord_intervals`, the single source of
+    truth for the mode-aware triad/seventh/borrowed tables.
     """
-    major_triads = (
-        (0, 4, 7),
-        (0, 3, 7),
-        (0, 3, 7),
-        (0, 4, 7),
-        (0, 4, 7),
-        (0, 3, 7),
-        (0, 3, 6),
-    )
-    minor_triads = (
-        (0, 3, 7),
-        (0, 3, 6),
-        (0, 4, 7),
-        (0, 3, 7),
-        (0, 3, 7),
-        (0, 4, 7),
-        (0, 4, 7),
-    )
-    table = major_triads if key.mode == "major" else minor_triads
-    return table[degree % 7]
+    return chord_intervals(degree, key, seventh=seventh, borrowed=borrowed)
 
 
 def _octave_down(midi: int, *, octaves: int) -> int:
