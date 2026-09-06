@@ -55,6 +55,7 @@ from saimc.compose.forms import (
     key_signature_from_spec,
 )
 from saimc.compose.linter import LintIssue, lint
+from saimc.compose.motif import MotifVariant, generate_motif, vary_motif
 from saimc.compose.percussion import (
     MOOD_VELOCITY_SCALE,
     PERCUSSION_NOTE_TICKS,
@@ -363,11 +364,13 @@ def _generate_section(
 
     The left hand plays a root-fifth broken pattern (root on the
     downbeat, fifth at the bar's midpoint) instead of a held drone.
-    The melody is an octave above the bass and arpeggiates the chord
-    tones with per-bar rhythm and direction variation. Velocity
-    follows an arch across the section with a slight accent on
-    downbeats. Everything is derived from `seed_for_variation`, so
-    repeated sections sound different but stay deterministic.
+    The melody is an octave above the bass and develops the section's
+    motif: every bar replays the motif through one classic operation
+    (repetition, transposition, sequence, inversion, truncation,
+    ornament) onto that bar's chord. Velocity follows an arch across
+    the section with a slight accent on downbeats. Everything is
+    derived from `seed_for_variation`, so repeated sections sound
+    different but stay deterministic.
 
     Phrase shape: one bar per section is the melodic apex (raised an
     octave-portion above the line, near the 60% mark); bars ending a
@@ -382,6 +385,7 @@ def _generate_section(
     section_ticks = template.bars * ticks_per_bar
     # The melodic apex sits near the 60% mark, never on the final bar.
     apex_bar = min(int(template.bars * 0.6), template.bars - 2)
+    motif = generate_motif(rng, bar_ticks=ticks_per_bar)
 
     cursor = 0
     bar_index = 0
@@ -433,17 +437,27 @@ def _generate_section(
                 )
             )
 
-            # Melody voice: one bar of arpeggio, rhythm and starting
-            # tone re-chosen each bar. The last bar of the piece
-            # resolves at home; a phrase-ending bar over the V chord
-            # is a half cadence.
+            # Melody voice: one bar derived from the section's motif.
+            # The last bar of the piece resolves at home; a
+            # phrase-ending bar over the V chord is a half cadence; a
+            # random bar lifts off early into a breath.
             is_final_bar = is_final_section and bar_index == total_bars - 1
             is_apex = bar_index == apex_bar
             is_half_cadence = degree == 4 and bar_index % 4 == 3 and not is_final_bar
+            breathe = (
+                not is_final_bar and not is_half_cadence and rng.random() < 0.18
+            )
+            anchor = _downbeat_anchor(rng, len(chord_tones))
+            if is_final_bar or is_half_cadence or is_apex or breathe:
+                variant = MotifVariant(motif=motif)
+            else:
+                variant = vary_motif(motif, rng)
             notes.extend(
-                _arpeggiate_bar(
+                _melody_bar(
+                    variant=variant,
                     chord_root=chord_root + 12,
                     chord_tones=chord_tones,
+                    anchor=anchor,
                     start_tick=bar_tick,
                     bar_ticks=ticks_per_bar,
                     rng=rng,
@@ -453,6 +467,7 @@ def _generate_section(
                     is_final_bar=is_final_bar,
                     half_cadence=is_half_cadence,
                     apex=is_apex,
+                    breathe=breathe,
                 )
             )
             bar_index += 1
@@ -566,10 +581,22 @@ def _shaped_velocity(
     return max(1, min(127, round(shaped)))
 
 
-def _arpeggiate_bar(
+def _downbeat_anchor(rng: random.Random, tone_count: int) -> int:
+    """Choose a bar's starting chord tone: root (50%), third (30%), fifth (20%)."""
+    roll = rng.random()
+    if roll < 0.5:
+        return 0
+    if roll < 0.8:
+        return 1 % tone_count
+    return 2 % tone_count
+
+
+def _melody_bar(
     *,
+    variant: MotifVariant,
     chord_root: int,
     chord_tones: tuple[int, ...],
+    anchor: int,
     start_tick: int,
     bar_ticks: int,
     rng: random.Random,
@@ -579,85 +606,79 @@ def _arpeggiate_bar(
     is_final_bar: bool = False,
     half_cadence: bool = False,
     apex: bool = False,
+    breathe: bool = False,
 ) -> list[NoteEvent]:
-    """Generate one bar of melody arpeggio.
+    """Render one bar of melody from a motif variant.
 
-    Rhythm (quarter vs. eighth subdivision) and direction are re-chosen
-    per bar from the section RNG, so a long chord keeps moving instead
-    of cycling a fixed figure. The melody sits an octave above the
-    chord root handed in by the caller.
+    The motif is walked in chord-tone index space starting at `anchor`,
+    so the same shape lands correctly on every chord. When `repeat` is
+    set (the sequence operation) the motif keeps replaying from the top
+    — anchor advancing one tone per cycle — until the bar is full.
 
-    Phrase shape:
-    - the downbeat biases to the chord root, then its third, so bars
-      anchor harmonically instead of starting anywhere;
-    - an `apex` bar is transposed up an octave (capped to range) with a
+    Phrase shape (carried over from the arpeggio walk):
+    - an `apex` bar is lifted an octave (capped to range) with a
       velocity lift — the section's melodic peak;
-    - a `half_cadence` bar ends early on the dominant's root, leaving
-      a rest (the phrase breathes on the V);
-    - other bars end early into a breath with some probability;
+    - a `half_cadence` bar ends early on the chord's root, leaving a
+      rest (the phrase breathes on the V);
+    - a breathing bar shortens its last note into a rest;
     - the `is_final_bar` of the piece resolves onto the tonic or its
       third, held to the bar line.
     """
+    # Collect (offset, duration, tone_index) slots first, then resolve
+    # pitches — the bar's last note can be replaced wholesale by the
+    # cadence/breath shape.
+    slots: list[tuple[int, int, int]] = []
+    offset = 0
+    cycle_anchor = anchor % len(chord_tones)
+    while offset < bar_ticks:
+        tone_index = cycle_anchor
+        for cell in variant.motif:
+            if offset >= bar_ticks:
+                break
+            duration = min(cell.length_ticks, bar_ticks - offset)
+            slots.append((offset, duration, tone_index))
+            offset += cell.length_ticks
+            tone_index += cell.step
+        if not variant.repeat:
+            break
+        cycle_anchor += 1
+
     notes: list[NoteEvent] = []
-    rhythm_choices = (PPQ, PPQ // 2)  # quarter or eighth notes
-    note_length = rng.choice(rhythm_choices)
-    step = 1 if rng.random() < 0.7 else -1  # mostly rising figures
-    count = bar_ticks // note_length
-    if count < 1:
-        count = 1
-    # Downbeat bias: root (50%), third (30%), fifth (20%).
-    downbeat_roll = rng.random()
-    if downbeat_roll < 0.5:
-        starting_tone_index = 0
-    elif downbeat_roll < 0.8:
-        starting_tone_index = 1
-    else:
-        starting_tone_index = 2
-    starting_tone_index %= len(chord_tones)
-
-    # A bar can lift off early into a breath (a rest before the next
-    # phrase) — never on the cadence or final bars, which carry their
-    # own ending shape.
-    breathe = (
-        not is_final_bar and not half_cadence and rng.random() < 0.18
-    )
-
-    for i in range(count):
-        tone_index = (starting_tone_index + step * i) % len(chord_tones)
-        pitch = chord_root + chord_tones[tone_index]
-        if apex:
-            pitch += 12
-        # Cap melody at piano range.
-        if pitch > 107:
-            pitch -= 12
-        if pitch < 22:
-            pitch += 12
-        duration_ticks = note_length
-        if i == count - 1:
-            if is_final_bar:
-                # The piece ends at home: tonic or its third, held.
-                pitch = chord_root if rng.random() < 0.6 else chord_root + chord_tones[1]
-                if pitch > 107:
-                    pitch -= 12
-            elif half_cadence:
-                # Half cadence: land on the dominant's root, lifted
-                # early so a rest follows.
-                pitch = chord_root
-                duration_ticks = note_length // 2
-            elif breathe:
-                duration_ticks = note_length // 2
+    for slot_index, (bar_offset, duration, tone_index) in enumerate(slots):
+        tick = start_tick + bar_offset
+        if slot_index == len(slots) - 1 and is_final_bar:
+            # The piece ends at home: tonic or its third, held to the
+            # bar line.
+            pitch = chord_root if rng.random() < 0.6 else chord_root + chord_tones[1]
+            duration = bar_ticks - bar_offset
+        else:
+            pitch = chord_root + chord_tones[tone_index % len(chord_tones)]
+            if slot_index == len(slots) - 1 and half_cadence:
+                # Land on the chord's root, lifted early so a rest
+                # follows.
+                pitch = chord_root + chord_tones[0]
+                duration = duration // 2
+            elif slot_index == len(slots) - 1 and breathe:
+                duration = duration // 2
+            if apex:
+                pitch += 12
+            # Cap melody at piano range.
+            if pitch > 107:
+                pitch -= 12
+            if pitch < 22:
+                pitch += 12
         notes.append(
             NoteEvent(
                 voice_id=VOICE_MELODY,
                 pitch_midi=pitch,
-                tick=start_tick + i * note_length,
-                duration_ticks=duration_ticks,
+                tick=tick,
+                duration_ticks=duration,
                 velocity=_shaped_velocity(
                     base=DEFAULT_VELOCITY + 8 + (10 if apex else 0),
                     position=position,
-                    tick=start_tick + i * note_length,
+                    tick=tick,
                     ticks_per_bar=ticks_per_bar,
-                    rng_seed=seed_for_variation + i,
+                    rng_seed=seed_for_variation + tick,
                 ),
             )
         )
