@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 from saimc.compose.score import (
     PPQ,
+    VOICE_BASS,
+    VOICE_MELODY,
     PerformancePlan,
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
@@ -55,6 +57,36 @@ DEFAULT_FLUIDSYNTH_TIMEOUT_S: float = 300.0
 kills it if it runs longer."""
 
 DEFAULT_FFMPEG_TIMEOUT_S: float = 60.0
+
+# Mix constants (§ "produced-track quality"). FluidSynth's own default
+# gain (0.2) leaves WAV peaks around 11-19% of full scale; 0.6 lands the
+# raw render around -6..-9 dBFS peaks with clipping headroom to spare —
+# the loudnorm pass in the Opus encode sets the final delivery level.
+FLUIDSYNTH_GAIN: float = 0.6
+# Reverb pinned to FluidSynth's documented defaults (a version bump must
+# not silently change the room). Chorus is disabled in run_fluidsynth:
+# its stereo LFO can put a font's channels out of phase. Setting names
+# follow FluidSynth 2.x: synth.reverb.room-size / .damp / .width / .level.
+FLUIDSYNTH_REVERB_ROOM_SIZE: float = 0.61
+FLUIDSYNTH_REVERB_DAMP: float = 0.23
+FLUIDSYNTH_REVERB_WIDTH: float = 0.76
+FLUIDSYNTH_REVERB_LEVEL: float = 0.87
+
+# Master loudness target for the encoded deliverable (streaming-standard
+# loudness with true-peak headroom). Applied via a two-pass ffmpeg
+# loudnorm in encode_opus.
+MASTER_LOUDNESS_LUFS: float = -16.0
+MASTER_TRUE_PEAK_DBTP: float = -1.5
+MASTER_LRA: float = 11.0
+
+# CC7 (channel volume) per voice role, and CC10 (pan) to give the mix a
+# stereo image: melody right of centre, accompaniment left of centre.
+# 64 is centre; ±22 ≈ ±17% of full scale.
+MELODY_CC7: int = 100
+ACCOMPANIMENT_CC7: int = 84
+MELODY_CC10_PAN: int = 86
+ACCOMPANIMENT_CC10_PAN: int = 42
+CENTER_CC10_PAN: int = 64
 
 
 class AudioRenderErrorCode:
@@ -203,6 +235,24 @@ def build_smf(
             mido.Message("program_change", channel=voice_channels[voice_id], program=program)
         )
 
+    # Channel mix: static CC7 (channel volume) and CC10 (pan) per voice.
+    # Without these the balance is whatever each SF2 preset's own
+    # attenuation happens to be (measured ~10 dB between fonts), and the
+    # stereo image is a centre mono-ish blob or the (now disabled)
+    # chorus LFO. Melody sits right of centre and a touch louder; the
+    # accompaniment sits left of centre and softer; percussion stays
+    # centred.
+    for voice_id in sorted(voice_channels):
+        channel = voice_channels[voice_id]
+        if voice_id == VOICE_BASS and voice_id not in percussion_voices:
+            cc7, pan = ACCOMPANIMENT_CC7, ACCOMPANIMENT_CC10_PAN
+        elif voice_id == VOICE_MELODY and voice_id not in percussion_voices:
+            cc7, pan = MELODY_CC7, MELODY_CC10_PAN
+        else:
+            cc7, pan = MELODY_CC7, CENTER_CC10_PAN
+        track.append(mido.Message("control_change", channel=channel, control=7, value=cc7))
+        track.append(mido.Message("control_change", channel=channel, control=10, value=pan))
+
     track.append(mido.MetaMessage("end_of_track", time=0))
 
     # Convert each PerformanceNoteEvent to a note_on / note_off pair.
@@ -343,6 +393,15 @@ def run_fluidsynth(
     # Pin the file sample format: FluidSynth's default is s16 and the
     # manifest reports pcm_s16le, so the setting is made explicit
     # rather than relying on the default never changing.
+    #
+    # Mix settings are explicit too: the default chorus is an LFO on the
+    # stereo bus that can push a font's channels out of phase (measured
+    # corr=-0.50 on the harmonium font, where mono fold-down loses 6 dB),
+    # so it is disabled — stereo image comes from panning, not an LFO.
+    # Reverb is pinned to FluidSynth's documented defaults so a version
+    # bump cannot silently change the room. The gain raises the raw WAV
+    # to a healthy 16-bit level (~-6..-9 dBFS peaks) with headroom left
+    # for the loudnorm pass in the Opus encode.
     cmd = [
         bin_path,
         "-F",  # render to a file
@@ -350,6 +409,20 @@ def run_fluidsynth(
         "-q",  # quiet
         "-r",
         str(sample_rate),
+        "-g",
+        str(FLUIDSYNTH_GAIN),
+        "-o",
+        "synth.chorus.active=0",
+        "-o",
+        "synth.reverb.active=1",
+        "-o",
+        f"synth.reverb.room-size={FLUIDSYNTH_REVERB_ROOM_SIZE}",
+        "-o",
+        f"synth.reverb.damp={FLUIDSYNTH_REVERB_DAMP}",
+        "-o",
+        f"synth.reverb.width={FLUIDSYNTH_REVERB_WIDTH}",
+        "-o",
+        f"synth.reverb.level={FLUIDSYNTH_REVERB_LEVEL}",
         "-o",
         "audio.file.format=s16",
         "-o",
@@ -430,6 +503,86 @@ def find_ffmpeg(explicit: str | None = None) -> str:
     )
 
 
+def _loudnorm_measure(
+    bin_path: str, wav_path: Path, *, timeout_s: float
+) -> Mapping[str, str] | None:
+    """First pass of the two-pass loudnorm: measure the input's loudness.
+
+    Returns the loudnorm measurement JSON (input_i, input_tp, input_lra,
+    input_thresh, target_offset) or None if the measurement pass could
+    not run or the input is effectively silent (an -inf measurement
+    cannot drive the linear second pass).
+    """
+    import json
+
+    cmd = [
+        bin_path,
+        "-hide_banner",
+        "-i",
+        str(wav_path),
+        "-af",
+        (
+            f"loudnorm=I={MASTER_LOUDNESS_LUFS}:TP={MASTER_TRUE_PEAK_DBTP}"
+            f":LRA={MASTER_LRA}:print_format=json"
+        ),
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        proc = safe_run(cmd, timeout_s=timeout_s)
+    except SubprocessTimeoutError:
+        logger.warning("loudnorm measurement timed out; falling back to single-pass")
+        return None
+    if proc.returncode != 0:
+        logger.warning("loudnorm measurement rc=%s; falling back to single-pass", proc.returncode)
+        return None
+    text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        logger.warning("loudnorm measurement JSON unreadable; falling back to single-pass")
+        return None
+    if not isinstance(data, dict):
+        return None
+    required = ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")
+    if not all(key in data for key in required):
+        return None
+    measured = {key: str(data[key]) for key in required}
+    if any("-inf" in value for value in measured.values()):
+        return None
+    return measured
+
+
+def _loudnorm_filter(measured: Mapping[str, str] | None) -> str:
+    """Build the loudnorm filter string for the encode pass.
+
+    With measurements, `linear=true` applies a single gain so the mix's
+    dynamics are untouched (true mastering); without them the filter
+    degrades to single-pass dynamic loudnorm, which still targets the
+    same loudness.
+    """
+    base = (
+        f"loudnorm=I={MASTER_LOUDNESS_LUFS}"
+        f":TP={MASTER_TRUE_PEAK_DBTP}:LRA={MASTER_LRA}"
+    )
+    if measured is None:
+        return base
+    return (
+        base
+        + f":measured_I={measured['input_i']}"
+        + f":measured_TP={measured['input_tp']}"
+        + f":measured_LRA={measured['input_lra']}"
+        + f":measured_thresh={measured['input_thresh']}"
+        + f":offset={measured['target_offset']}"
+        + ":linear=true"
+    )
+
+
 def encode_opus(
     wav_path: Path,
     out_ogg_path: Path,
@@ -441,10 +594,14 @@ def encode_opus(
 ) -> tuple[str, str, str]:
     """Encode WAV -> OGG Opus via the audited ffmpeg binary.
 
-    Returns (version, build_sha, configuration_line) for the manifest
-    toolchain block. The OGG carries the rendered font's attribution as
-    Vorbis comments (§10 #12); `soundfont_name` picks which attribution
-    record to embed (None keeps the Salamander default).
+    The encode runs the two-pass loudnorm master first (measure, then
+    encode with the measured values applied linearly) so every
+    deliverable lands at the same loudness regardless of which font
+    rendered it. Returns (version, build_sha, configuration_line) for
+    the manifest toolchain block. The OGG carries the rendered font's
+    attribution as Vorbis comments (§10 #12); `soundfont_name` picks
+    which attribution record to embed (None keeps the Salamander
+    default).
     """
     bin_path = find_ffmpeg(ffmpeg_bin)
     audit = audit_ffmpeg(bin_path)
@@ -456,11 +613,14 @@ def encode_opus(
     out_ogg_path.parent.mkdir(parents=True, exist_ok=True)
     from saimc.render.attribution import audio_metadata_tags
 
+    measured = _loudnorm_measure(bin_path, wav_path, timeout_s=timeout_s)
     cmd = [
         bin_path,
         "-y",  # overwrite output if it exists
         "-i",
         str(wav_path),
+        "-af",
+        _loudnorm_filter(measured),
         "-c:a",
         "libopus",
         "-b:a",

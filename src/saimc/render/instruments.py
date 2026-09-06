@@ -224,6 +224,84 @@ FONT_PRESETS: dict[str, tuple[str, int, int]] = {
 
 SUPPORTED_INSTRUMENTS = SUPPORTED_INSTRUMENTS | frozenset(FONT_PRESETS)
 
+# Accompaniment voicing: the spec's instrument plays the melody voice;
+# the accompaniment voice gets a complementary patch so a piece is not
+# one patch in octave unison (measured as the single-patch drone in
+# every Phase 1 render). GM-backed main instruments map to a
+# complementary GM patch. Dedicated-font instruments keep their own
+# preset for both voices — only one font loads per job, and an
+# arbitrary GM program inside a dedicated font selects an undefined
+# preset — and get their separation from per-voice CC7/CC10 instead.
+ACCOMPANIMENT_PATCH: dict[str, str] = {
+    # Keys and mallets: a warm sustained pad under the attack.
+    "piano": "strings",
+    "harpsichord": "strings",
+    "celesta": "strings",
+    "music_box": "strings",
+    "glockenspiel": "strings",
+    "vibraphone": "strings",
+    "marimba": "strings",
+    "xylophone": "strings",
+    "tubular_bells": "strings",
+    "dulcimer": "strings",
+    # Organs and free reeds: breath-like pad.
+    "pipe_organ": "choir",
+    "accordion": "choir",
+    "harmonica": "choir",
+    # Plucked strings: short articulation keeps the pad out of the way.
+    "nylon_guitar": "pizzicato_strings",
+    "steel_guitar": "pizzicato_strings",
+    "banjo": "pizzicato_strings",
+    "shamisen": "pizzicato_strings",
+    "koto": "pizzicato_strings",
+    "harp": "pizzicato_strings",
+    "kalimba": "pizzicato_strings",
+    # Bowed and ensemble strings: pizzicato under the legato line.
+    "violin": "pizzicato_strings",
+    "viola": "pizzicato_strings",
+    "cello": "pizzicato_strings",
+    "contrabass": "pizzicato_strings",
+    "fiddle": "pizzicato_strings",
+    "strings": "pizzicato_strings",
+    "tremolo_strings": "pizzicato_strings",
+    # Winds, brass, choir: sustained pad.
+    "flute": "strings",
+    "piccolo": "strings",
+    "recorder": "strings",
+    "pan_flute": "strings",
+    "ocarina": "strings",
+    "oboe": "strings",
+    "english_horn": "strings",
+    "bassoon": "strings",
+    "clarinet": "strings",
+    "soprano_sax": "strings",
+    "alto_sax": "strings",
+    "tenor_sax": "strings",
+    "baritone_sax": "strings",
+    "french_horn": "strings",
+    "brass_section": "strings",
+    "trumpet": "strings",
+    "muted_trumpet": "strings",
+    "trombone": "strings",
+    "tuba": "strings",
+    "choir": "strings",
+    "bagpipe": "strings",
+    "shakuhachi": "strings",
+    "shanai": "strings",
+}
+
+
+def accompaniment_for(instrument: str) -> str:
+    """Return the accompaniment-voice patch for a lead instrument.
+
+    Dedicated-font instruments return themselves (same font, separated
+    by channel gain/pan); GM-backed instruments get their complementary
+    patch; anything unregistered falls back to the neutral strings pad.
+    """
+    if instrument in FONT_PRESETS:
+        return instrument
+    return ACCOMPANIMENT_PATCH.get(instrument, "strings")
+
 # Where downloaded fonts live. `scripts/download_soundfonts.py` fills
 # this directory with pinned-sha256 files (gitignored — re-downloadable
 # from documented sources, like the ffmpeg build).

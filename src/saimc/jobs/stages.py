@@ -316,7 +316,7 @@ def render_audio_stage(
     from saimc.compose.score import VOICE_BASS, VOICE_MELODY, VOICE_PERCUSSION
     from saimc.compose.serialization import read_engine_output
     from saimc.render.audio import AudioRenderError, render_audio
-    from saimc.render.instruments import soundfont_for_instrument
+    from saimc.render.instruments import accompaniment_for, soundfont_for_instrument
 
     if job.input_spec is None:
         return StageResult(
@@ -344,11 +344,14 @@ def render_audio_stage(
     output = read_engine_output(sidecar_path)
 
     # Phase 1's spec carries one instrumentation for the whole piece;
-    # both voices play it. Phase 2's per-voice instrument map replaces
-    # this fan-out. A drum-set piece is the one exception: the piano
-    # stays as the accompaniment and the engine's percussion voice
-    # (voice 2, GM channel-10 keys) carries the kit — its notes sound
-    # as drums precisely because they go to channel 10.
+    # the melody voice plays it and the accompaniment voice gets its
+    # complementary patch (per-voice orchestration arrives in Phase 2).
+    # Dedicated-font instruments keep their own preset on both voices —
+    # only one font loads per job — and separate via channel gain/pan.
+    # A drum-set piece is the other exception: the piano stays as the
+    # accompaniment and the engine's percussion voice (voice 2, GM
+    # channel-10 keys) carries the kit — its notes sound as drums
+    # precisely because they go to channel 10.
     instrumentation = job.input_spec.instrumentation
     if instrumentation == "drum_set":
         voice_instruments = {
@@ -357,7 +360,10 @@ def render_audio_stage(
             VOICE_PERCUSSION: instrumentation,
         }
     else:
-        voice_instruments = {VOICE_BASS: instrumentation, VOICE_MELODY: instrumentation}
+        voice_instruments = {
+            VOICE_BASS: accompaniment_for(instrumentation),
+            VOICE_MELODY: instrumentation,
+        }
     sf = soundfont_path or soundfont_for_instrument(instrumentation)
     artifacts_dir = storage.ensure_artifact_dir(job.job_id)
 

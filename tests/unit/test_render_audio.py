@@ -22,9 +22,17 @@ from saimc.compose.score import (
     PerformancePlan,
 )
 from saimc.render.audio import (
+    ACCOMPANIMENT_CC7,
+    ACCOMPANIMENT_CC10_PAN,
+    CENTER_CC10_PAN,
+    MASTER_LOUDNESS_LUFS,
+    MASTER_TRUE_PEAK_DBTP,
+    MELODY_CC7,
+    MELODY_CC10_PAN,
     AudioRenderError,
     AudioRenderErrorCode,
     _hash_file,
+    _loudnorm_filter,
     _us_to_ticks,
     build_smf,
     encode_opus,
@@ -32,6 +40,7 @@ from saimc.render.audio import (
     find_fluidsynth,
     render_audio,
 )
+from saimc.render.instruments import accompaniment_for
 
 
 def _plan_with_notes() -> PerformancePlan:
@@ -76,6 +85,76 @@ class TestBuildSmf:
         # is documented.
         with pytest.raises(ValueError):
             PerformanceNoteEvent(voice_id=0, pitch_midi=60, start_us=0, duration_us=0, velocity=64)
+
+
+class TestSmfChannelMix:
+    """Per-voice CC7 gain and CC10 pan: the mix, not font defaults."""
+
+    def _plan_both_voices(self) -> PerformancePlan:
+        return PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=0, pitch_midi=48, start_us=0, duration_us=500_000, velocity=64
+                ),
+                PerformanceNoteEvent(
+                    voice_id=1, pitch_midi=72, start_us=0, duration_us=500_000, velocity=72
+                ),
+            ],
+        )
+
+    def _cc(self, smf, control: int) -> dict[int, int]:
+        return {
+            m.channel: m.value
+            for m in smf.tracks[0]
+            if m.type == "control_change" and m.control == control
+        }
+
+    def test_melody_and_accompaniment_get_gain_and_pan(self) -> None:
+        smf = build_smf(
+            self._plan_both_voices(), bpm=120.0, voice_instruments={0: "strings", 1: "piano"}
+        )
+        cc7 = self._cc(smf, 7)
+        cc10 = self._cc(smf, 10)
+        # Voice 0 (bass/accompaniment) on channel 0, voice 1 (melody) on channel 1.
+        assert cc7[0] == ACCOMPANIMENT_CC7
+        assert cc7[1] == MELODY_CC7
+        assert cc10[0] == ACCOMPANIMENT_CC10_PAN
+        assert cc10[1] == MELODY_CC10_PAN
+        # The two voices sit on opposite sides of centre.
+        assert cc10[1] > 64 > cc10[0]
+
+    def test_percussion_stays_centred(self) -> None:
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=2, pitch_midi=36, start_us=0, duration_us=100_000, velocity=80
+                )
+            ],
+        )
+        smf = build_smf(plan, bpm=120.0, voice_instruments={2: "drum_set"})
+        assert self._cc(smf, 10)[9] == CENTER_CC10_PAN
+
+
+class TestLoudnormFilter:
+    def test_linear_filter_carries_measured_values(self) -> None:
+        measured = {
+            "input_i": "-23.62",
+            "input_tp": "-7.02",
+            "input_lra": "0.00",
+            "input_thresh": "-34.00",
+            "target_offset": "0.00",
+        }
+        f = _loudnorm_filter(measured)
+        assert f.startswith(f"loudnorm=I={MASTER_LOUDNESS_LUFS}:TP={MASTER_TRUE_PEAK_DBTP}")
+        assert "measured_I=-23.62" in f
+        assert "linear=true" in f
+
+    def test_no_measurement_falls_back_to_single_pass(self) -> None:
+        f = _loudnorm_filter(None)
+        assert "measured_I" not in f
+        assert "linear" not in f
 
 
 class TestTickConversion:
@@ -297,7 +376,12 @@ class TestRunFluidsynthContract:
         # The file sample format is pinned explicitly: the manifest
         # reports pcm_s16le and must not depend on the binary's default.
         cmd = mock_run.call_args[0][0]
-        assert cmd[cmd.index("-o") + 1] == "audio.file.format=s16"
+        assert "audio.file.format=s16" in cmd
+        # The mix settings are pinned too: chorus off (its stereo LFO can
+        # put a font's channels out of phase), reverb and gain explicit.
+        assert "synth.chorus.active=0" in cmd
+        assert any(setting.startswith("synth.reverb.") for setting in cmd)
+        assert cmd[cmd.index("-g") + 1] == "0.6"
 
     def test_timeout_raises(self, tmp_path: Path) -> None:
         from saimc.jobs.stages import SubprocessTimeoutError
@@ -479,6 +563,26 @@ class TestHashFile:
         p.write_bytes(b"hello world")
         expected = hashlib.sha256(b"hello world").hexdigest()
         assert _hash_file(p) == expected
+
+
+class TestAccompanimentMapping:
+    """The accompaniment voice gets a complementary patch, not the lead."""
+
+    def test_gm_backed_instruments_get_companions(self) -> None:
+        assert accompaniment_for("piano") == "strings"
+        assert accompaniment_for("violin") == "pizzicato_strings"
+        assert accompaniment_for("accordion") == "choir"
+        assert accompaniment_for("nylon_guitar") == "pizzicato_strings"
+
+    def test_dedicated_font_instruments_return_themselves(self) -> None:
+        # Only one font loads per job, so a dedicated-font lead keeps its
+        # own preset on both voices; separation comes from CC7/CC10.
+        assert accompaniment_for("harmonium") == "harmonium"
+        assert accompaniment_for("sitar") == "sitar"
+        assert accompaniment_for("bansuri") == "bansuri"
+
+    def test_unknown_instrument_falls_back_to_strings(self) -> None:
+        assert accompaniment_for("theremin") == "strings"
 
 
 class TestSoundfontResolution:
