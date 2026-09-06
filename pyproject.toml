@@ -131,8 +131,9 @@ init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
 
-[tool.pytest]
+[tool.pytest.ini_options]
 minversion = "8.0"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
@@ -147,6 +148,12 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:music21",
     "ignore::DeprecationWarning:moviepy",
+    # Transitive third-party deprecations. anyio and click emit these with a
+    # raised stacklevel, so the warning is attributed to the *caller* module
+    # and module-scoped ignores cannot match — filter by message instead.
+    # Neither is actionable here until the deps bump.
+    "ignore:The anyio\\..* alias is deprecated:DeprecationWarning",
+    "ignore:'click\\..*' is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
