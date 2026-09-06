@@ -8,8 +8,9 @@ The schema is intentionally narrow in Phase 1: three moods, one
 instrument per piece, no famous-piece catalog. `instrumentation` was
 widened from piano-only to the `Instrument` enum for Phase 2 — that is
 an additive change (every previously-valid spec value is still valid),
-so `SPEC_SCHEMA_VERSION` is unchanged. `request_kind` and
-`humanization` widen under a new `schema_version`.
+so `SPEC_SCHEMA_VERSION` stayed at 1. Version 2 widens `humanization`
+beyond "none" (the default moves to "light"); version-1 specs remain
+readable — every value they could carry is still valid.
 """
 
 from __future__ import annotations
@@ -19,11 +20,11 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
 
-SPEC_SCHEMA_VERSION: int = 1
+SPEC_SCHEMA_VERSION: int = 2
 """Bump on any breaking change to CompositionSpec."""
 
 # Type-level companion of SPEC_SCHEMA_VERSION so Pydantic / mypy accept the Literal.
-SchemaVersion1 = Literal[1]
+SchemaVersion = Literal[1, 2]
 
 DURATION_SECONDS_MIN: int = 30
 DURATION_SECONDS_MAX: int = 600
@@ -201,9 +202,12 @@ class CompositionSpec(BaseModel):
         str_strip_whitespace=True,
     )
 
-    schema_version: SchemaVersion1 = Field(
-        default=1,
-        description="Schema version of this CompositionSpec. Must equal the saimc constant.",
+    schema_version: SchemaVersion = Field(
+        default=2,
+        description=(
+            "Schema version of this CompositionSpec. Version 1 specs remain "
+            "valid input; new specs are written as version 2."
+        ),
     )
     request_kind: Literal[RequestKind.MOOD_GENERATION] = Field(
         default=RequestKind.MOOD_GENERATION,
@@ -246,9 +250,15 @@ class CompositionSpec(BaseModel):
         ge=0,
         description="RNG seed for reproducibility. None means engine chooses and reports.",
     )
-    humanization: Literal["none"] = Field(
-        default="none",
-        description="Phase 1: only 'none'. Phase 2+ will add light | expressive.",
+    humanization: Literal["none", "light", "expressive"] = Field(
+        default="light",
+        description=(
+            "How much human variation the performance layer applies to the "
+            "realized plan (the engraved score always stays on the grid): "
+            "'none' is machine-perfect timing; 'light' adds small timing "
+            "and velocity variation; 'expressive' widens both further and "
+            "shortens repeated notes into staccato."
+        ),
     )
 
 

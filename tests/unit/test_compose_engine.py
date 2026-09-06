@@ -21,6 +21,7 @@ from saimc.compose.score import (
     NotationScore,
     PerformancePlan,
     realized_duration_seconds,
+    ticks_to_microseconds,
 )
 from saimc.spec import CompositionSpec, Mood, WesternKey
 
@@ -473,3 +474,112 @@ class TestPhraseStructure:
             assert any(0.25 <= p <= 0.95 for p in peak_positions), (
                 f"section {section_idx}: peak {peak} at positions {peak_positions}"
             )
+
+
+class TestExpressionModel:
+    """S4: controllers ride the plan; humanization touches only the plan."""
+
+    def test_plan_carries_expression_swells(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        cc11 = [c for c in out.performance_plan.controllers if c.control == 11]
+        assert cc11, "expected CC11 expression events"
+        # One per measure, on the melody voice, values inside the arch.
+        assert {c.voice_id for c in cc11} == {1}
+        assert all(c.value <= 127 for c in cc11)
+
+    def test_piano_gets_sustain_pedal(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60, instrumentation="piano"))
+        cc64 = [c for c in out.performance_plan.controllers if c.control == 64]
+        assert cc64, "piano expects sustain pedal"
+        presses = [c for c in cc64 if c.value == 127]
+        releases = [c for c in cc64 if c.value == 0]
+        assert presses, "piano pedal should have presses"
+        assert releases, "piano pedal should have releases"
+        # Every release lands before the next press.
+        timeline = sorted(cc64, key=lambda c: c.start_us)
+        for prev, curr in pairwise(timeline):
+            if prev.value == 0:
+                assert curr.start_us >= prev.start_us
+
+    def test_flute_gets_no_pedal(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60, instrumentation="flute"))
+        assert not [c for c in out.performance_plan.controllers if c.control == 64]
+        # But expression swells still ride the line.
+        assert [c for c in out.performance_plan.controllers if c.control == 11]
+
+    def test_sustained_instrument_gets_legato_overlap(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60, instrumentation="strings"))
+        melody = sorted(
+            (e for e in out.performance_plan.notes if e.voice_id == 1), key=lambda e: e.start_us
+        )
+        overlaps = sum(
+            1
+            for prev, curr in pairwise(melody)
+            if prev.start_us + prev.duration_us > curr.start_us
+        )
+        assert overlaps >= 1, "sustained instruments should blur into the next note"
+
+    def test_piano_keeps_notated_durations(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60, instrumentation="piano"))
+        melody = sorted(
+            (e for e in out.performance_plan.notes if e.voice_id == 1), key=lambda e: e.start_us
+        )
+        for prev, curr in pairwise(melody):
+            assert prev.start_us + prev.duration_us <= curr.start_us
+
+    def test_light_humanization_shifts_only_the_plan(self) -> None:
+        spec = _spec(Mood.CALMING, duration=60, humanization="light")
+        out = compose(spec)
+        melody_plan = sorted(
+            (e for e in out.performance_plan.notes if e.voice_id == 1), key=lambda e: e.start_us
+        )
+        melody_score = sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+        )
+        # The sheet stays on the grid; the plan wobbles within ±10 ms.
+        for plan_event, score_note in zip(melody_plan, melody_score, strict=False):
+            grid_us = ticks_to_microseconds(
+                score_note.tick, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
+            )
+            assert abs(plan_event.start_us - grid_us) <= 10_000
+
+    def test_none_humanization_is_grid_exact(self) -> None:
+        from saimc.compose.score import microseconds_to_ticks
+
+        out = compose(_spec(Mood.CALMING, duration=60, humanization="none"))
+        for event in out.performance_plan.notes:
+            tick = microseconds_to_ticks(
+                event.start_us, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
+            )
+            back = ticks_to_microseconds(
+                tick, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
+            )
+            assert event.start_us == back
+
+    def test_humanization_deterministic(self) -> None:
+        out1 = compose(_spec(Mood.CALMING, duration=60, humanization="light", seed=7))
+        out2 = compose(_spec(Mood.CALMING, duration=60, humanization="light", seed=7))
+        assert out1.performance_plan.compute_hash() == out2.performance_plan.compute_hash()
+
+    def test_ghost_notes_in_percussion_plan(self) -> None:
+        out = compose(
+            _spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set")
+        )
+        perc = [e for e in out.performance_plan.notes if e.voice_id == 2]
+        assert perc
+        ghosts = [e for e in perc if 20 <= e.velocity <= 35]
+        assert ghosts, "expected quiet ghost hits in the drum plan"
+
+    def test_drums_get_timing_scatter(self) -> None:
+        out = compose(
+            _spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set")
+        )
+        # Realized drum hits are not all on exact 16th multiples of the
+        # quarter grid — the scatter is the point.
+        quarter_us = 60_000_000 / out.notation_score.tempo.bpm
+        off_grid = [
+            e
+            for e in out.performance_plan.notes
+            if e.voice_id == 2 and (e.start_us % (quarter_us / 4)) > 1
+        ]
+        assert off_grid, "expected percussion timing offsets off the 16th grid"

@@ -137,3 +137,27 @@ def test_to_sidecar_does_not_include_tempo_map_inline() -> None:
     assert "tempo" not in sd  # top-level
     # Sanity: TempoMap is its own dataclass.
     assert isinstance(out.notation_score.tempo, TempoMap)
+
+
+def test_sidecar_round_trips_controllers_and_pitch_bends(tmp_path: Path) -> None:
+    """The expression layer survives the sidecar (S4)."""
+    out = _make_engine_output()
+    from dataclasses import replace
+
+    from saimc.compose.score import ControllerEvent, PitchBendEvent
+
+    plan_with_expression = replace(
+        out.performance_plan,
+        controllers=(
+            ControllerEvent(voice_id=0, control=11, value=96, start_us=0),
+            ControllerEvent(voice_id=0, control=64, value=127, start_us=250_000),
+        ),
+        pitch_bends=(PitchBendEvent(voice_id=0, start_us=100_000, bend=-2048),),
+    )
+    out = replace(out, performance_plan=plan_with_expression)
+    path = tmp_path / "engine_output.json"
+    write_engine_output(path, out)
+    back = read_engine_output(path)
+    assert back == out
+    assert back.performance_plan.controllers == plan_with_expression.controllers
+    assert back.performance_plan.pitch_bends == plan_with_expression.pitch_bends

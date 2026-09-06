@@ -9,6 +9,7 @@ from saimc.spec import (
     DURATION_SECONDS_DEFAULT,
     DURATION_SECONDS_MAX,
     DURATION_SECONDS_MIN,
+    SPEC_SCHEMA_VERSION,
     CompositionSpec,
     Mood,
     SpecError,
@@ -37,8 +38,8 @@ class TestParseFallbackAccepts:
         assert out.mood.value == expected_mood
         assert out.duration_seconds == expected_duration
         assert out.instrumentation == "piano"
-        assert out.humanization == "none"
-        assert out.schema_version == 1
+        assert out.humanization == "light"
+        assert out.schema_version == SPEC_SCHEMA_VERSION
         assert out.request_kind.value == "mood_generation"
 
 

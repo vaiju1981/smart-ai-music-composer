@@ -246,23 +246,79 @@ class PerformanceNoteEvent:
 
 
 @dataclass(frozen=True)
+class ControllerEvent:
+    """A MIDI controller change in the PerformancePlan.
+
+    `control` is the CC number (7 volume, 10 pan, 11 expression,
+    64 sustain pedal, 91 reverb send), `value` the 0-127 value, and
+    `start_us` the realized time the change lands on the same integer
+    microsecond clock as the notes. `voice_id` selects the MIDI
+    channel via the same voice->channel mapping the notes use.
+    """
+
+    voice_id: int
+    control: int
+    value: int
+    start_us: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.control <= 127:
+            raise ValueError(f"control must be in [0, 127]; got {self.control}")
+        if not 0 <= self.value <= 127:
+            raise ValueError(f"value must be in [0, 127]; got {self.value}")
+        if self.start_us < 0:
+            raise ValueError(f"start_us must be non-negative; got {self.start_us}")
+
+
+@dataclass(frozen=True)
+class PitchBendEvent:
+    """A MIDI pitch-wheel movement in the PerformancePlan.
+
+    `bend` is the 14-bit signed MIDI value: 0 is centre, ±8191/8192 is
+    the full ±2 semitones the default bend range gives.
+    """
+
+    voice_id: int
+    start_us: int
+    bend: int
+
+    def __post_init__(self) -> None:
+        if not -8192 <= self.bend <= 8191:
+            raise ValueError(f"bend must be in [-8192, 8191]; got {self.bend}")
+        if self.start_us < 0:
+            raise ValueError(f"start_us must be non-negative; got {self.start_us}")
+
+
+@dataclass(frozen=True)
 class PerformancePlan:
-    """The canonical playback-surface artifact."""
+    """The canonical playback-surface artifact.
+
+    `controllers` and `pitch_bends` carry the expression layer (S4):
+    CC11 swells, sustain pedal, and later vibrato. Both are optional
+    so plans written before the expression model deserialize
+    unchanged.
+    """
 
     format: str
     sample_rate: int
     notes: tuple[PerformanceNoteEvent, ...]
+    controllers: tuple[ControllerEvent, ...] = ()
+    pitch_bends: tuple[PitchBendEvent, ...] = ()
 
     @staticmethod
     def make(
         *,
         sample_rate: int,
         notes: list[PerformanceNoteEvent],
+        controllers: list[ControllerEvent] | None = None,
+        pitch_bends: list[PitchBendEvent] | None = None,
     ) -> PerformancePlan:
         return PerformancePlan(
             format=f"PerformancePlan:{CANONICAL_FORMAT_VERSION}",
             sample_rate=sample_rate,
             notes=tuple(notes),
+            controllers=tuple(controllers or ()),
+            pitch_bends=tuple(pitch_bends or ()),
         )
 
     def realized_duration_us(self) -> int:
@@ -287,6 +343,23 @@ class PerformancePlan:
                     "tie": n.tie,
                 }
                 for n in self.notes
+            ],
+            "controllers": [
+                {
+                    "voice_id": c.voice_id,
+                    "control": c.control,
+                    "value": c.value,
+                    "start_us": c.start_us,
+                }
+                for c in self.controllers
+            ],
+            "pitch_bends": [
+                {
+                    "voice_id": b.voice_id,
+                    "start_us": b.start_us,
+                    "bend": b.bend,
+                }
+                for b in self.pitch_bends
             ],
         }
 
@@ -320,12 +393,14 @@ __all__ = [
     "DEFAULT_VELOCITY",
     "MICROSECONDS_PER_MINUTE",
     "PPQ",
+    "ControllerEvent",
     "KeySignature",
     "Measure",
     "NotationScore",
     "NoteEvent",
     "PerformanceNoteEvent",
     "PerformancePlan",
+    "PitchBendEvent",
     "TempoMap",
     "merge_notation_score",
     "merge_performance_plan",

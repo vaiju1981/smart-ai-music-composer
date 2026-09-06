@@ -859,3 +859,72 @@ class TestInstrumentRegistry:
         assert INSTRUMENT_PROGRAMS["shanai"] == 111
         assert INSTRUMENT_PROGRAMS["taiko"] == 116
         assert INSTRUMENT_PROGRAMS["kalimba"] == 108
+
+
+class TestSmfExpressionEvents:
+    """The plan's controllers and pitch bends ride the MIDI timeline."""
+
+    def _cc_events(self, smf, control: int) -> list[tuple[int, int, int]]:
+        """(tick, channel, value) for one controller number."""
+        result = []
+        tick = 0
+        for m in smf.tracks[0]:
+            tick += m.time
+            if m.type == "control_change" and m.control == control:
+                result.append((tick, m.channel, m.value))
+        return result
+
+    def test_plan_controllers_reach_the_midi(self) -> None:
+        from saimc.compose.score import ControllerEvent
+
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=_plan_with_notes().notes,
+            controllers=[
+                ControllerEvent(voice_id=1, control=11, value=96, start_us=0),
+                ControllerEvent(voice_id=1, control=64, value=127, start_us=250_000),
+            ],
+        )
+        smf = build_smf(plan, bpm=120.0, voice_instruments={1: "piano"})
+        cc11 = self._cc_events(smf, 11)
+        cc64 = self._cc_events(smf, 64)
+        # 120 bpm: 250 ms = tick 240. Voice 1 rides channel 1.
+        assert (0, 1, 96) in cc11
+        assert (240, 1, 127) in cc64
+
+    def test_pitch_bends_reach_the_midi(self) -> None:
+        from saimc.compose.score import PitchBendEvent
+
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=_plan_with_notes().notes,
+            pitch_bends=[PitchBendEvent(voice_id=1, start_us=500_000, bend=2048)],
+        )
+        smf = build_smf(plan, bpm=120.0, voice_instruments={1: "piano"})
+        bends = []
+        tick = 0
+        for m in smf.tracks[0]:
+            tick += m.time
+            if m.type == "pitchwheel":
+                bends.append((tick, m.channel, m.pitch))
+        # 120 bpm: 500 ms = tick 480, voice 1 = channel 1, bend passed through.
+        assert (480, 1, 2048) in bends
+
+    def test_pedal_press_precedes_note_at_same_tick(self) -> None:
+        from saimc.compose.score import ControllerEvent
+
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=_plan_with_notes().notes,
+            controllers=[ControllerEvent(voice_id=1, control=64, value=127, start_us=0)],
+        )
+        smf = build_smf(plan, bpm=120.0, voice_instruments={1: "piano"})
+        # The pedal CC64 must come before the first note_on of its voice.
+        order = [m.type for m in smf.tracks[0]]
+        first_note_on = order.index("note_on")
+        pedal_index = next(
+            i
+            for i, m in enumerate(smf.tracks[0])
+            if m.type == "control_change" and m.control == 64
+        )
+        assert pedal_index < first_note_on

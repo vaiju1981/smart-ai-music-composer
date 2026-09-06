@@ -103,7 +103,7 @@ def test_score_record_accepted_matched_and_field_exact() -> None:
         category="supported_paraphrase",
         expected_outcome="accepted",
         expected_spec={
-            "schema_version": 1,
+            "schema_version": 2,
             "request_kind": "mood_generation",
             "duration_seconds": 180,
             "tempo_bpm": None,
@@ -112,7 +112,7 @@ def test_score_record_accepted_matched_and_field_exact() -> None:
             "mood": "calming",
             "instrumentation": "piano",
             "seed": None,
-            "humanization": "none",
+            "humanization": "light",
         },
     )
     from saimc.benchmark import score_record
@@ -128,7 +128,7 @@ def test_score_record_accepted_wrong_duration() -> None:
         category="supported_paraphrase",
         expected_outcome="accepted",
         expected_spec={
-            "schema_version": 1,
+            "schema_version": 2,
             "request_kind": "mood_generation",
             "duration_seconds": 300,
             "tempo_bpm": None,
@@ -137,7 +137,7 @@ def test_score_record_accepted_wrong_duration() -> None:
             "mood": "calming",
             "instrumentation": "piano",
             "seed": None,
-            "humanization": "none",
+            "humanization": "light",
         },
     )
     from saimc.benchmark import score_record
@@ -181,7 +181,7 @@ def test_score_corpus_passes_with_perfect_observations() -> None:
             category="supported_paraphrase",
             expected_outcome="accepted",
             expected_spec={
-                "schema_version": 1,
+                "schema_version": 2,
                 "request_kind": "mood_generation",
                 "duration_seconds": 180,
                 "tempo_bpm": None,
@@ -190,7 +190,7 @@ def test_score_corpus_passes_with_perfect_observations() -> None:
                 "mood": "calming",
                 "instrumentation": "piano",
                 "seed": None,
-                "humanization": "none",
+                "humanization": "light",
             },
         )
         for i in range(95)
@@ -223,7 +223,7 @@ def test_score_corpus_fails_when_first_pass_validity_too_low() -> None:
             category="supported_paraphrase",
             expected_outcome="accepted",
             expected_spec={
-                "schema_version": 1,
+                "schema_version": 2,
                 "request_kind": "mood_generation",
                 "duration_seconds": 180,
                 "tempo_bpm": None,
@@ -232,7 +232,7 @@ def test_score_corpus_fails_when_first_pass_validity_too_low() -> None:
                 "mood": "calming",
                 "instrumentation": "piano",
                 "seed": None,
-                "humanization": "none",
+                "humanization": "light",
             },
         )
         for i in range(10)
@@ -252,7 +252,7 @@ def test_score_corpus_fails_when_field_level_accuracy_too_low() -> None:
             category="supported_paraphrase",
             expected_outcome="accepted",
             expected_spec={
-                "schema_version": 1,
+                "schema_version": 2,
                 "request_kind": "mood_generation",
                 "duration_seconds": 180,
                 "tempo_bpm": None,
@@ -261,7 +261,7 @@ def test_score_corpus_fails_when_field_level_accuracy_too_low() -> None:
                 "mood": "calming",
                 "instrumentation": "piano",
                 "seed": None,
-                "humanization": "none",
+                "humanization": "light",
             },
         )
         for i in range(10)
@@ -297,7 +297,7 @@ def test_score_corpus_fails_when_p95_latency_too_high() -> None:
             category="supported_paraphrase",
             expected_outcome="accepted",
             expected_spec={
-                "schema_version": 1,
+                "schema_version": 2,
                 "request_kind": "mood_generation",
                 "duration_seconds": 180,
                 "tempo_bpm": None,
@@ -306,7 +306,7 @@ def test_score_corpus_fails_when_p95_latency_too_high() -> None:
                 "mood": "calming",
                 "instrumentation": "piano",
                 "seed": None,
-                "humanization": "none",
+                "humanization": "light",
             },
         )
         for i in range(10)

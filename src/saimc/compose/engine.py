@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
+from itertools import pairwise
 from typing import Any
 
 from saimc.compose.duration import (
@@ -66,12 +67,14 @@ from saimc.compose.score import (
     VOICE_BASS,
     VOICE_MELODY,
     VOICE_PERCUSSION,
+    ControllerEvent,
     KeySignature,
     Measure,
     NotationScore,
     NoteEvent,
     PerformanceNoteEvent,
     PerformancePlan,
+    PitchBendEvent,
     TempoMap,
     ticks_to_microseconds,
 )
@@ -150,6 +153,12 @@ class EngineOutput:
             format=plan_payload["format"],
             sample_rate=plan_payload["sample_rate"],
             notes=tuple(PerformanceNoteEvent(**n) for n in plan_payload["notes"]),
+            controllers=tuple(
+                ControllerEvent(**c) for c in plan_payload.get("controllers", ())
+            ),
+            pitch_bends=tuple(
+                PitchBendEvent(**b) for b in plan_payload.get("pitch_bends", ())
+            ),
         )
         arrangement = DurationArrangement(
             form_bars=arrangement_payload["form_bars"],
@@ -205,7 +214,12 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             lint_issues=lint_report.issues,
         )
 
-    performance = _build_performance_plan(score)
+    performance = _build_performance_plan(
+        score,
+        instrumentation=spec.instrumentation.value,
+        humanization=spec.humanization,
+        seed=spec.seed,
+    )
     return EngineOutput(
         notation_score=score,
         performance_plan=performance,
@@ -696,11 +710,66 @@ def _generate_percussion(
 
 
 # ---------------------------------------------------------------------------
-# Performance plan: convert tick-level notation into microsecond timestamps.
+# Performance plan: convert tick-level notation into microsecond timestamps,
+# then lay the expression layer on top (the engraved score stays on-grid).
 # ---------------------------------------------------------------------------
 
+# Sustained instruments: their notes blur into one another, so the
+# performance layer lets each melody note ring slightly into the next
+# (legato). Percussive, plucked, and mallet instruments keep their
+# notated durations — that attack gap IS their articulation.
+SUSTAINED_INSTRUMENTS: frozenset[str] = frozenset(
+    {
+        "violin", "viola", "cello", "contrabass", "fiddle", "strings",
+        "tremolo_strings", "flute", "piccolo", "recorder", "pan_flute",
+        "ocarina", "oboe", "english_horn", "bassoon", "clarinet",
+        "soprano_sax", "alto_sax", "tenor_sax", "baritone_sax",
+        "french_horn", "brass_section", "trumpet", "muted_trumpet",
+        "trombone", "tuba", "choir", "pipe_organ", "accordion",
+        "harmonica", "sitar", "harmonium", "bansuri", "sarangi",
+        "rudra_veena", "sarasvati_veena", "qanoon", "ud", "kora",
+        "shakuhachi", "shanai", "bagpipe",
+    }
+)
 
-def _build_performance_plan(score: NotationScore) -> PerformancePlan:
+# Keyboard instruments that read a sustain pedal; organ voices sustain
+# by themselves and gain nothing from CC64.
+PEDAL_INSTRUMENTS: frozenset[str] = frozenset(
+    {"piano", "harpsichord", "celesta", "music_box"}
+)
+
+# How far a legato note rings past its written end (never past the next
+# note's start: a same-pitch retrigger would re-attack the line).
+LEGATO_OVERLAP_US: int = 35_000
+
+# Pedal lifts a moment before each bar line so chords do not blur across
+# the bar; the lift is a fixed 40 ms before the next downbeat.
+PEDAL_RELEASE_LEAD_US: int = 40_000
+
+# Humanization profiles (spec.humanization): timing scatter on the
+# realized timestamps and how far velocities spread around their neutral
+# 64 centre. 'none' applies neither.
+HUMANIZE_TIMING_US: dict[str, int] = {"light": 10_000, "expressive": 25_000}
+HUMANIZE_VELOCITY_SPAN: dict[str, float] = {"light": 1.15, "expressive": 1.35}
+PERCUSSION_TIMING_US: dict[str, int] = {"light": 5_000, "expressive": 15_000}
+
+# Percussion ghost notes: quiet extra hits that make the kit feel played
+# rather than sequenced.
+GHOST_NOTE_PROBABILITY: float = 0.08
+GHOST_NOTE_VELOCITY_RANGE: tuple[int, int] = (20, 35)
+
+# CC11 (expression) rides the dynamic arch so phrases swell and relax
+# even inside a held chord. 96 is near-full expression at the arch peak.
+EXPRESSION_BASE: int = 96
+
+
+def _build_performance_plan(
+    score: NotationScore,
+    *,
+    instrumentation: str,
+    humanization: str,
+    seed: int | None,
+) -> PerformancePlan:
     events: list[PerformanceNoteEvent] = []
     for note in score.notes:
         start_us = ticks_to_microseconds(note.tick, score.tempo.bpm, ppq=score.ppq)
@@ -715,7 +784,194 @@ def _build_performance_plan(score: NotationScore) -> PerformancePlan:
                 tie=note.tie,
             )
         )
-    return PerformancePlan.make(sample_rate=44100, notes=events)
+
+    melody_sorted_idx = sorted(
+        (i for i, e in enumerate(events) if e.voice_id == VOICE_MELODY),
+        key=lambda i: events[i].start_us,
+    )
+    has_melody = bool(melody_sorted_idx)
+
+    # Legato: sustained instruments let each melody note ring a little
+    # past the next attack so the release tail blurs into the next note.
+    # A same-pitch neighbour is capped at its start: a late note_off on
+    # the same key would re-attack or cut the line.
+    legato_extended: set[int] = set()
+    if instrumentation in SUSTAINED_INSTRUMENTS:
+        for a, b in pairwise(melody_sorted_idx):
+            prev, curr = events[a], events[b]
+            gap = curr.start_us - prev.start_us
+            limit = gap if prev.pitch_midi == curr.pitch_midi else gap + LEGATO_OVERLAP_US
+            extended = min(prev.duration_us + LEGATO_OVERLAP_US, limit)
+            if extended > prev.duration_us:
+                legato_extended.add(a)
+                events[a] = PerformanceNoteEvent(
+                    voice_id=prev.voice_id,
+                    pitch_midi=prev.pitch_midi,
+                    start_us=prev.start_us,
+                    duration_us=extended,
+                    velocity=prev.velocity,
+                    tie=prev.tie,
+                )
+
+    controllers: list[ControllerEvent] = []
+    if has_melody:
+        # Expression swells ride the same arch as the velocities, one
+        # value per bar, so phrases breathe in the controller layer too.
+        total_ticks = max(1, score.total_ticks())
+        for measure in score.measures:
+            position = measure.start_tick / total_ticks
+            value = min(127, round(EXPRESSION_BASE * _velocity_arc(position)))
+            controllers.append(
+                ControllerEvent(
+                    voice_id=VOICE_MELODY,
+                    control=11,
+                    value=value,
+                    start_us=ticks_to_microseconds(
+                        measure.start_tick, score.tempo.bpm, ppq=score.ppq
+                    ),
+                )
+            )
+        if instrumentation in PEDAL_INSTRUMENTS:
+            # Per-bar pedaling: press on the downbeat, lift just before
+            # the next one so chords do not wash across the bar line.
+            for i, measure in enumerate(score.measures):
+                press_us = ticks_to_microseconds(
+                    measure.start_tick, score.tempo.bpm, ppq=score.ppq
+                )
+                controllers.append(
+                    ControllerEvent(
+                        voice_id=VOICE_MELODY, control=64, value=127, start_us=press_us
+                    )
+                )
+                if i + 1 < len(score.measures):
+                    next_downbeat = ticks_to_microseconds(
+                        score.measures[i + 1].start_tick, score.tempo.bpm, ppq=score.ppq
+                    )
+                    controllers.append(
+                        ControllerEvent(
+                            voice_id=VOICE_MELODY,
+                            control=64,
+                            value=0,
+                            start_us=max(0, next_downbeat - PEDAL_RELEASE_LEAD_US),
+                        )
+                    )
+
+    # Humanization touches only this plan — the NotationScore (and the
+    # engraved sheet) keeps its grid-perfect timing.
+    if humanization != "none":
+        rng = random.Random(((seed or 0) * 2654435761 + 11) % (2**31))
+        timing_us = HUMANIZE_TIMING_US.get(humanization, HUMANIZE_TIMING_US["light"])
+        velocity_span = HUMANIZE_VELOCITY_SPAN.get(
+            humanization, HUMANIZE_VELOCITY_SPAN["light"]
+        )
+        perc_timing_us = PERCUSSION_TIMING_US.get(humanization, PERCUSSION_TIMING_US["light"])
+        humanized: list[PerformanceNoteEvent] = []
+        for event in events:
+            if event.voice_id == VOICE_MELODY:
+                offset = round(rng.uniform(-1.0, 1.0) * timing_us)
+                velocity = max(1, min(127, round(64 + (event.velocity - 64) * velocity_span)))
+                humanized.append(
+                    PerformanceNoteEvent(
+                        voice_id=event.voice_id,
+                        pitch_midi=event.pitch_midi,
+                        start_us=max(0, event.start_us + offset),
+                        duration_us=event.duration_us,
+                        velocity=velocity,
+                        tie=event.tie,
+                    )
+                )
+            elif event.voice_id == VOICE_PERCUSSION:
+                offset = round(rng.uniform(-1.0, 1.0) * perc_timing_us)
+                humanized.append(
+                    PerformanceNoteEvent(
+                        voice_id=event.voice_id,
+                        pitch_midi=event.pitch_midi,
+                        start_us=max(0, event.start_us + offset),
+                        duration_us=event.duration_us,
+                        velocity=event.velocity,
+                        tie=event.tie,
+                    )
+                )
+            else:
+                humanized.append(event)
+        events = humanized
+
+        # Timing scatter can push one note past its neighbour's start on
+        # back-to-back melody lines; trim the release so the line never
+        # overlaps itself. Percussion hits are left alone — a few
+        # milliseconds of overlap between drum voices is inaudible.
+        melody_idx = sorted(
+            (i for i, e in enumerate(events) if e.voice_id == VOICE_MELODY),
+            key=lambda i: events[i].start_us,
+        )
+        for a, b in pairwise(melody_idx):
+            prev, curr = events[a], events[b]
+            gap = curr.start_us - prev.start_us
+            if a not in legato_extended and 0 < gap < prev.duration_us:
+                events[a] = replace(prev, duration_us=max(1, gap))
+
+        if humanization == "expressive":
+            # Repeated melody notes shorten into a light staccato
+            # instead of two identical full-length hits.
+            melody_events = sorted(
+                (e for e in events if e.voice_id == VOICE_MELODY), key=lambda e: e.start_us
+            )
+            shortened = {
+                id(prev)
+                for prev, curr in pairwise(melody_events)
+                if prev.pitch_midi == curr.pitch_midi
+                and curr.start_us - prev.start_us < prev.duration_us * 2
+            }
+            events = [
+                (
+                    PerformanceNoteEvent(
+                        voice_id=e.voice_id,
+                        pitch_midi=e.pitch_midi,
+                        start_us=e.start_us,
+                        duration_us=round(e.duration_us * 0.8),
+                        velocity=e.velocity,
+                        tie=e.tie,
+                    )
+                    if id(e) in shortened
+                    else e
+                )
+                for e in events
+            ]
+
+        # Ghost notes: a quiet extra hit a 16th after some percussion
+        # notes, skipped when a real hit already occupies the slot.
+        percussion = [e for e in events if e.voice_id == VOICE_PERCUSSION]
+        if percussion:
+            sixteenth_us = round(60_000_000 / score.tempo.bpm / 4)
+            ghosts: list[PerformanceNoteEvent] = []
+            for event in percussion:
+                if rng.random() >= GHOST_NOTE_PROBABILITY:
+                    continue
+                ghost_start = event.start_us + sixteenth_us
+                if any(
+                    other.pitch_midi == event.pitch_midi
+                    and abs(other.start_us - ghost_start) < 20_000
+                    for other in percussion
+                ):
+                    continue
+                ghosts.append(
+                    PerformanceNoteEvent(
+                        voice_id=VOICE_PERCUSSION,
+                        pitch_midi=event.pitch_midi,
+                        start_us=ghost_start,
+                        duration_us=event.duration_us,
+                        velocity=rng.randint(*GHOST_NOTE_VELOCITY_RANGE),
+                        tie=False,
+                    )
+                )
+            events.extend(ghosts)
+
+    # Canonical order for the plan: realized time, then voice, then pitch.
+    events.sort(key=lambda e: (e.start_us, e.voice_id, e.pitch_midi))
+    controllers.sort(key=lambda c: (c.start_us, c.control, c.voice_id))
+    return PerformancePlan.make(
+        sample_rate=44100, notes=events, controllers=controllers, pitch_bends=[]
+    )
 
 
 __all__ = [

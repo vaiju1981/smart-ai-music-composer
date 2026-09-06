@@ -37,8 +37,16 @@ class TestCompositionSpec:
         assert s.key is None
         assert s.time_signature == TimeSignature.FOUR_FOUR
         assert s.instrumentation == "piano"
-        assert s.humanization == "none"
+        assert s.humanization == "light"
         assert s.request_kind.value == "mood_generation"
+
+    def test_version_1_spec_still_valid(self) -> None:
+        # Version-1 specs (humanization locked to "none") remain readable.
+        s = CompositionSpec.model_validate(
+            {"mood": "calming", "schema_version": 1, "humanization": "none"}
+        )
+        assert s.schema_version == 1
+        assert s.humanization == "none"
 
     def test_full_valid(self) -> None:
         s = CompositionSpec(

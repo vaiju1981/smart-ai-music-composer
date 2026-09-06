@@ -260,8 +260,42 @@ def build_smf(
     # we need integer ticks at PPQ=480. SMF event times are DELTAS from
     # the previous event on the track, and the plan's voices overlap, so
     # collect all events on an absolute-tick timeline and delta-encode
-    # in order (note_on before note_off at the same tick).
+    # in order (note_on before note_off at the same tick). Controller
+    # changes and pitch bends land at order -1 so a pedal press (or
+    # bend) precedes the note sounding at the same tick.
     events: list[tuple[int, int, mido.Message]] = []
+    for controller in plan.controllers:
+        controller_tick = _us_to_ticks(controller.start_us, bpm)
+        events.append(
+            (
+                controller_tick,
+                -1,
+                mido.Message(
+                    "control_change",
+                    channel=_channel_for_voice(
+                        controller.voice_id,
+                        percussion=controller.voice_id in percussion_voices,
+                    ),
+                    control=controller.control,
+                    value=controller.value,
+                ),
+            )
+        )
+    for bend in plan.pitch_bends:
+        bend_tick = _us_to_ticks(bend.start_us, bpm)
+        events.append(
+            (
+                bend_tick,
+                -1,
+                mido.Message(
+                    "pitchwheel",
+                    channel=_channel_for_voice(
+                        bend.voice_id, percussion=bend.voice_id in percussion_voices
+                    ),
+                    pitch=bend.bend,
+                ),
+            )
+        )
     for note in plan.notes:
         on_tick = _us_to_ticks(note.start_us, bpm)
         off_tick = _us_to_ticks(note.start_us + note.duration_us, bpm)
