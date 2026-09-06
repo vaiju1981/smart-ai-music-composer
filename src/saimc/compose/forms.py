@@ -223,7 +223,7 @@ def _extend_template(template: ChordTemplate, target_bars: int) -> ChordTemplate
 # Root-to-semitone mapping for major/minor keys. The key name in
 # CompositionSpec.WesternKey uses a compact form ("C", "G", "Am",
 # "F#m"); we normalize to a (root-name, mode) tuple.
-_MAJOR_KEY_ROOTS: Mapping[str, int] = {
+_KEY_ROOTS: Mapping[str, int] = {
     "C": 0,
     "G": 7,
     "D": 2,
@@ -231,11 +231,13 @@ _MAJOR_KEY_ROOTS: Mapping[str, int] = {
     "E": 4,
     "B": 11,
     "F#": 6,
+    "C#": 1,
     "F": 5,
     "Bb": 10,
     "Eb": 3,
     "Ab": 8,
     "Db": 1,
+    "G#": 8,
     "Gb": 6,  # enharmonic with F#
 }
 
@@ -254,6 +256,8 @@ def key_signature_from_spec_key(spec_key: WesternKey | None) -> KeySignature:
     else:
         root = value
         mode = "major"
+    if root not in _KEY_ROOTS:
+        raise ValueError(f"Unknown key root: {root!r}")
     mode_lit = mode if mode in ("major", "minor") else "major"
     return KeySignature(root=root, mode=mode_lit)  # type: ignore[arg-type]
 
@@ -270,7 +274,7 @@ def key_signature_from_spec(spec) -> KeySignature:  # type: ignore[no-untyped-de
 
 def key_root_midi(key: KeySignature) -> int:
     """Return the MIDI note number of the key's tonic (one octave above middle C)."""
-    base = _MAJOR_KEY_ROOTS.get(key.root)
+    base = _KEY_ROOTS.get(key.root)
     if base is None:
         raise ValueError(f"Unknown key root: {key.root!r}")
     return 60 + base  # middle C is 60

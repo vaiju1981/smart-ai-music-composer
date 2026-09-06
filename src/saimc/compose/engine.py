@@ -173,7 +173,13 @@ class EngineOutput:
 
 def compose(spec: CompositionSpec) -> EngineOutput:
     """Run the full composition pipeline against the spec."""
-    key = key_signature_from_spec(spec)
+    try:
+        key = key_signature_from_spec(spec)
+    except ValueError as exc:
+        raise CompositionEngineError(
+            code=EngineErrorCode.INVALID_SPEC,
+            message=str(exc),
+        ) from exc
     time_signature = spec.time_signature.value
 
     try:
@@ -348,14 +354,17 @@ def _generate_section(
     bar_index = 0
     for degree, dur in template.chords:
         chord_root = tonic_midi + _scale_degree_to_semitones(degree, key.mode)
-        chord_tones = _chord_tones_midi(degree, key)
+        chord_tones = _chord_intervals(degree, key)
         chord_root_tick = section_start_tick + cursor
 
         for _bar in range(dur):
             bar_tick = chord_root_tick + _bar * ticks_per_bar
             bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
             bass_root = _octave_down(chord_root, octaves=1)
-            bass_fifth = min(107, bass_root + 7)
+            # The upper voice of the open fifth follows the triad quality:
+            # a perfect fifth on major/minor chords, a diminished fifth
+            # (6 semitones) on the ii°/vii° chords the templates use.
+            bass_fifth = min(107, bass_root + chord_tones[2] - chord_tones[0])
 
             # Left hand: root on the downbeat, fifth at the midpoint.
             half = ticks_per_bar // 2
@@ -454,30 +463,33 @@ def _scale_degree_to_semitones(degree: int, mode: str) -> int:
     return minor_scale[degree % 7]
 
 
-def _chord_tones_midi(degree: int, key: KeySignature) -> tuple[int, ...]:
-    """Return the chord-tone MIDI offsets for a diatonic chord.
+def _chord_intervals(degree: int, key: KeySignature) -> tuple[int, ...]:
+    """Return the root-relative chord-tone intervals for a diatonic chord.
 
     Major key: I, ii, iii, IV, V, vi, vii -> major, minor, minor, major,
     major, minor, dim. Minor key: i, ii°, III, iv, v, VI, VII -> minor,
-    dim, major, minor, minor, major, major.
+    dim, major, minor, minor, major, major. Each entry is an interval
+    above the chord root (e.g. (0, 3, 7) is a minor triad), so callers
+    add these to the chord root — not to the scale-degree root — to get
+    absolute pitches.
     """
     major_triads = (
         (0, 4, 7),
-        (2, 5, 9),
-        (4, 7, 11),
-        (5, 9, 12),
-        (7, 11, 14),
-        (9, 12, 16),
-        (11, 14, 17),
+        (0, 3, 7),
+        (0, 3, 7),
+        (0, 4, 7),
+        (0, 4, 7),
+        (0, 3, 7),
+        (0, 3, 6),
     )
     minor_triads = (
         (0, 3, 7),
-        (2, 5, 8),
-        (3, 7, 10),
-        (5, 8, 12),
-        (7, 10, 14),
-        (8, 12, 15),
-        (10, 14, 17),
+        (0, 3, 6),
+        (0, 4, 7),
+        (0, 3, 7),
+        (0, 3, 7),
+        (0, 4, 7),
+        (0, 4, 7),
     )
     table = major_triads if key.mode == "major" else minor_triads
     return table[degree % 7]

@@ -7,12 +7,19 @@ import pytest
 from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
+    _scale_degree_to_semitones,
+    _truncate_template_for_coda,
     compose,
 )
 from saimc.compose.forms import key_root_midi
 from saimc.compose.linter import lint
-from saimc.compose.score import NotationScore, PerformancePlan, realized_duration_seconds
-from saimc.spec import CompositionSpec, Mood
+from saimc.compose.score import (
+    KeySignature,
+    NotationScore,
+    PerformancePlan,
+    realized_duration_seconds,
+)
+from saimc.spec import CompositionSpec, Mood, WesternKey
 
 
 def _spec(mood: Mood, *, duration: int = 60, seed: int | None = 42, **kw) -> CompositionSpec:
@@ -190,6 +197,139 @@ class TestMusicalShape:
     def test_tempo_bpm_constraint_is_honoured(self) -> None:
         out = compose(_spec(Mood.CALMING, duration=180, tempo_bpm=63))
         assert out.notation_score.tempo.bpm == 63
+
+
+class TestChordToneHarmony:
+    """Every sounding pitch belongs to the chord sounding in its bar.
+
+    Regression for the double-add bug: the chord-tone tables were
+    tonic-absolute but were added on top of a chord root that already
+    carried the scale-degree offset, so every non-tonic chord played
+    the wrong triad (e.g. F#m over an Am bass in C major).
+    """
+
+    # Independent oracle: diatonic triads as semitone offsets from the
+    # TONIC, degrees I..VII. Major and minor keys.
+    MAJOR_TRIADS_ABS = (
+        (0, 4, 7),
+        (2, 5, 9),
+        (4, 7, 11),
+        (5, 9, 12),
+        (7, 11, 14),
+        (9, 12, 16),
+        (11, 14, 17),
+    )
+    MINOR_TRIADS_ABS = (
+        (0, 3, 7),
+        (2, 5, 8),
+        (3, 7, 10),
+        (5, 8, 12),
+        (7, 10, 14),
+        (8, 12, 15),
+        (10, 14, 17),
+    )
+
+    def _triads(self, mode: str) -> tuple[tuple[int, int, int], ...]:
+        return self.MAJOR_TRIADS_ABS if mode == "major" else self.MINOR_TRIADS_ABS
+
+    def _bar_degrees_and_triads(
+        self, out, mood: str
+    ) -> list[tuple[int, tuple[int, int, int]]]:
+        """Mirror the engine's per-bar chord walk: (degree, tonic-relative triad)."""
+        from saimc.compose.forms import get_template_for_form
+
+        arrangement = out.arrangement
+        triads = self._triads(out.key.mode)
+
+        result: list[tuple[int, tuple[int, int, int]]] = []
+        for section in range(arrangement.repetition_count):
+            template = (
+                arrangement.template
+                if section == 0
+                else get_template_for_form(
+                    mood, arrangement.form_bars, variant_index=section
+                )
+            )
+            for degree, dur in template.chords:
+                result.extend((degree, triads[degree % 7]) for _ in range(dur))
+        if arrangement.coda_bars > 0:
+            coda = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
+            for degree, dur in coda.chords:
+                result.extend((degree, triads[degree % 7]) for _ in range(dur))
+        return result
+
+    @pytest.mark.parametrize(
+        ("mood", "duration"),
+        [(Mood.CALMING, 60), (Mood.CALMING, 45), (Mood.ELECTRIFYING, 60), (Mood.SLEEP, 60)],
+    )
+    def test_all_notes_are_chord_tones(self, mood: Mood, duration: int) -> None:
+        out = compose(_spec(mood, duration=duration, seed=42))
+        bars = self._bar_degrees_and_triads(out, mood.value)
+        assert len(bars) == out.arrangement.total_bars_with_coda
+        ticks_per_bar = out.notation_score.ppq * 4
+        tonic = key_root_midi(out.key)
+        for note in out.notation_score.notes:
+            if note.voice_id == 2:  # percussion keys are GM drum map, not pitched
+                continue
+            _degree, triad = bars[note.tick // ticks_per_bar]
+            sounding = {(tonic + offset) % 12 for offset in triad}
+            assert note.pitch_midi % 12 in sounding, (
+                f"bar {note.tick // ticks_per_bar}: pitch {note.pitch_midi} "
+                f"not in chord pcs {sounding} (triad {triad})"
+            )
+
+    def test_bass_fifth_matches_chord_quality(self) -> None:
+        """The bass upper voice is a perfect fifth on major/minor triads
+        and a diminished fifth (6 semitones) on diminished triads."""
+        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
+        bars = self._bar_degrees_and_triads(out, Mood.ELECTRIFYING.value)
+        ticks_per_bar = out.notation_score.ppq * 4
+        tonic = key_root_midi(out.key)
+        bass_by_bar: dict[int, list[int]] = {}
+        for note in out.notation_score.notes:
+            if note.voice_id == 0:
+                bass_by_bar.setdefault(note.tick // ticks_per_bar, []).append(note.pitch_midi)
+        seen_dim = False
+        for bar, (degree, triad) in enumerate(bars):
+            chord_root = tonic + _scale_degree_to_semitones(degree, out.key.mode)
+            pitches = sorted(set(bass_by_bar[bar]))
+            assert len(pitches) == 2, f"bar {bar}: expected root+fifth bass, got {pitches}"
+            expected_fifth = (chord_root - 12) + (triad[2] - triad[0])
+            assert pitches[0] == chord_root - 12, f"bar {bar}: bass root {pitches[0]}"
+            assert pitches[1] == expected_fifth, (
+                f"bar {bar}: bass fifth {pitches[1]} != {expected_fifth} (triad {triad})"
+            )
+            seen_dim = seen_dim or (triad[2] - triad[0] == 6)
+        assert seen_dim, "expected the walk to reach at least one diminished triad"
+
+
+class TestSharpMinorKeys:
+    """C#m and G#m were advertised by the spec vocabulary but crashed
+    the engine with an unstructured ValueError (missing key roots)."""
+
+    @pytest.mark.parametrize("key", [WesternKey.C_SHARP_MINOR, WesternKey.G_SHARP_MINOR])
+    def test_composes_and_lints(self, key: WesternKey) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60, key=key))
+        assert out.key.root in ("C#", "G#")
+        assert out.notation_score.notes
+        assert lint(out.notation_score).passed
+
+    def test_key_roots_resolve(self) -> None:
+        assert key_root_midi(KeySignature(root="C#", mode="minor")) == 61
+        assert key_root_midi(KeySignature(root="G#", mode="minor")) == 68
+
+    def test_unknown_key_surfaces_as_invalid_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A key that cannot resolve raises the typed engine error, not
+        a raw ValueError escaping compose()."""
+        import saimc.compose.engine as engine_mod
+
+        def boom(spec: object) -> KeySignature:
+            raise ValueError("Unknown key root: 'X'")
+
+        monkeypatch.setattr(engine_mod, "key_signature_from_spec", boom)
+        with pytest.raises(CompositionEngineError) as exc_info:
+            compose(_spec(Mood.CALMING, duration=60))
+        assert exc_info.value.code == EngineErrorCode.INVALID_SPEC
 
     def test_velocity_follows_an_arch(self) -> None:
         out = compose(_spec(Mood.CALMING, duration=60))
