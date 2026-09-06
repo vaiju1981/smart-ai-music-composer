@@ -256,7 +256,9 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - `mood: enum` — bounded Phase 1 vocabulary: `calming | electrifying | sleep`.
 - `instrumentation: Literal["piano"]` — Phase 1 is piano-only; the field is a single literal, not a list. Phase 2+ will widen this to `list[enum]`.
 - `seed: int | None` — for reproducibility; `None` means the engine chooses and reports.
-- `humanization: Literal["none"]` — only `none` is allowed in Phase 1.
+- `humanization: Literal["none", "light", "expressive"]` — the Phase 1
+  surface for timing/velocity/controller nuance; `none` remains valid
+  and stays exactly on the grid (notation is unaffected either way).
 
 **Behavior on unsupported requests:**
 - Out-of-vocabulary values → rejected by the parser with a structured error, not silently coerced.
@@ -332,7 +334,15 @@ Phase 1 is "done" only when every criterion below is met, measured by an automat
 **Composition correctness:**
 - All notes within instrument range.
 - All measures complete (no dropped beats).
-- No unresolved voice-leading collisions flagged by the theory linter.
+- Every pitched note sounds a chord tone of its bar (the engine
+  publishes per-bar chord pitch classes to the linter; the anacrusis
+  pickup may anticipate the next chord in the bar's final eighth).
+- No close-position m2/M7 collisions between simultaneously sounding
+  pitched voices — both tones belonging to the bar's chord is a
+  voicing (a maj7 spread), a rubbed second is a bug.
+- The melody breathes: no continuous span (touching or tied notes)
+  longer than `PHRASE_BARS` (4) bars, anacrusis pickups excluded.
+- The melody resolves: its final note is the tonic or its third.
 - Generated MusicXML validates against the MusicXML schema.
 - Generated MIDI is well-formed (parseable by `mido`/`music21`).
 

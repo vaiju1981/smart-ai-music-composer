@@ -50,6 +50,7 @@ from saimc.compose.duration import (
     section_seed,
 )
 from saimc.compose.forms import (
+    PHRASE_BARS,
     ChordSlot,
     ChordTemplate,
     apply_final_cadence,
@@ -119,13 +120,19 @@ class CompositionEngineError(Exception):
 
 @dataclass(frozen=True)
 class EngineOutput:
-    """The engine's output: NotationScore + PerformancePlan + arrangement metadata."""
+    """The engine's output: NotationScore + PerformancePlan + arrangement metadata.
+
+    `chord_bars` carries the chord pitch classes sounding in each bar
+    (bar order) so the release gates can re-run the linter's
+    chord-tone check without regenerating the harmony.
+    """
 
     notation_score: NotationScore
     performance_plan: PerformancePlan
     arrangement: DurationArrangement
     key: KeySignature
     time_signature: str
+    chord_bars: tuple[tuple[int, ...], ...] = ()
 
     def to_sidecar(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict for the sidecar file.
@@ -141,6 +148,7 @@ class EngineOutput:
             "arrangement": asdict(self.arrangement),
             "key": asdict(self.key),
             "time_signature": self.time_signature,
+            "chord_bars": [list(bar) for bar in self.chord_bars],
         }
 
     @classmethod
@@ -201,6 +209,7 @@ class EngineOutput:
             arrangement=arrangement,
             key=KeySignature(**payload["key"]),
             time_signature=payload["time_signature"],
+            chord_bars=tuple(tuple(bar) for bar in payload.get("chord_bars", ())),
         )
 
 
@@ -228,8 +237,8 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             message=str(exc),
         ) from exc
 
-    score = _build_score(spec, key, time_signature, arrangement)
-    lint_report = lint(score)
+    score, chord_bars = _build_score(spec, key, time_signature, arrangement)
+    lint_report = lint(score, chord_bars=chord_bars or None)
     if not lint_report.passed:
         raise CompositionEngineError(
             code=EngineErrorCode.LINT_FAILED,
@@ -250,6 +259,7 @@ def compose(spec: CompositionSpec) -> EngineOutput:
         arrangement=arrangement,
         key=key,
         time_signature=time_signature,
+        chord_bars=chord_bars,
     )
 
 
@@ -263,7 +273,7 @@ def _build_score(
     key: KeySignature,
     time_signature: str,
     arrangement: DurationArrangement,
-) -> NotationScore:
+) -> tuple[NotationScore, tuple[tuple[int, ...], ...]]:
     """Build the NotationScore from the spec + arrangement.
 
     Generates one melody voice + one bass voice per section, with
@@ -271,12 +281,17 @@ def _build_score(
     multiple repetitions. If the arrangement has a coda, an extra
     coda-length tail is appended using a coda-flavored seed so the
     variation rules from §10 #10 still apply.
+
+    Also returns the chord pitch classes sounding in each bar, in bar
+    order — the linter's chord-tone gate consumes them.
     """
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
+    chord_bars: list[tuple[int, ...]] = []
     section_starts: list[int] = []  # start_tick of each section
     cursor_tick = 0
     prev_bass: int | None = None
+    bars_since_breath = 0
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
     long_piece = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
@@ -306,7 +321,7 @@ def _build_score(
         # piece ends in the new key, so the coda (which follows it)
         # stays lifted too and the ending keeps its cadence.
         key_offset = MODULATION_OFFSET if is_final_section and long_piece else 0
-        section_notes = _generate_section(
+        section_result = _generate_section(
             key=key,
             time_signature=time_signature,
             template=section_template,
@@ -318,7 +333,10 @@ def _build_score(
             is_final_section=is_final_section,
             key_offset=key_offset,
             melody_from_bar=arrangement.intro_bars if section_idx == 0 else 0,
+            bars_since_breath=bars_since_breath,
         )
+        section_notes, section_chord_bars, bars_since_breath = section_result
+        chord_bars.extend(section_chord_bars)
         # Terraced dynamics: the section's whole dynamic sits at its
         # step of the arc rather than drifting continuously.
         velocity_scale = _section_velocity_scale(section_idx, arrangement.repetition_count)
@@ -345,7 +363,7 @@ def _build_score(
         coda_template = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
         coda_template = apply_final_cadence(coda_template, spec.mood.value)
         coda_rng = random.Random(section_seed(spec.seed, arrangement.repetition_count))
-        coda_notes = _generate_section(
+        coda_result = _generate_section(
             key=key,
             time_signature=time_signature,
             template=coda_template,
@@ -358,7 +376,13 @@ def _build_score(
             # long-piece modulation stays lifted through the ending.
             key_offset=MODULATION_OFFSET if long_piece else 0,
             melody_from_bar=1 if arrangement.coda_bars >= 2 else 0,
+            # The coda is the piece's true ending: its final bar must
+            # force the tonic resolution the way a last section does.
+            is_final_section=True,
+            bars_since_breath=bars_since_breath,
         )
+        coda_notes, coda_chord_bars, _ = coda_result
+        chord_bars.extend(coda_chord_bars)
         velocity_scale = _section_velocity_scale(
             arrangement.repetition_count, arrangement.repetition_count
         )
@@ -446,7 +470,7 @@ def _build_score(
         measures=measures,
         notes=notes,
         tempo_changes=tempo_changes,
-    )
+    ), tuple(chord_bars)
 
 
 def _generate_section(
@@ -462,7 +486,8 @@ def _generate_section(
     is_final_section: bool = False,
     key_offset: int = 0,
     melody_from_bar: int = 0,
-) -> list[NoteEvent]:
+    bars_since_breath: int = 0,
+) -> tuple[list[NoteEvent], tuple[tuple[int, ...], ...], int]:
     """Generate the bass + melody notes for one section.
 
     The left hand walks: each chord's bass lands on the chord tone
@@ -483,11 +508,26 @@ def _generate_section(
     octave-portion above the line, near the 60% mark); bars ending a
     4-bar phrase lift off early into a breath — on the dominant's root
     when the chord there is the V (a half cadence), otherwise on a
-    shortened chord tone. When `is_final_section` is set the last bar
-    resolves onto the tonic or its third, held to the bar line.
+    shortened chord tone. The breath is guaranteed, not just likely:
+    a bar whose distance from the last gap reaches `PHRASE_BARS` is
+    forced to breathe, with `bars_since_breath` carrying the previous
+    section's trailing run across the boundary. When `is_final_section`
+    is set the last bar resolves onto the tonic or its third, held to
+    the bar line.
+
+    Returns the section's notes, the chord pitch classes sounding in
+    each bar (for the linter's chord-tone gate), and the breath
+    deficit the next section inherits.
     """
     notes: list[NoteEvent] = []
     melody_notes: list[NoteEvent] = []
+    bar_pcs: list[tuple[int, ...]] = []
+    # A breath (or half cadence) at bar g means the melody runs
+    # continuously for bar g+1 onward; the deficit inherited from the
+    # previous section counts against this one's bars. A fresh section
+    # (deficit 0) starts with the virtual gap just before its first
+    # bar, so its opening run can still reach at most PHRASE_BARS.
+    last_gap_bar = -bars_since_breath - 1
     tonic_midi = key_root_midi(key)
     ticks_per_bar = bar_ticks(time_signature)
     section_ticks = template.bars * ticks_per_bar
@@ -513,6 +553,12 @@ def _generate_section(
         chord_root = tonic_midi + slot_offset + root_offset
         chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
         chords.append((chord_root, chord_tones, dur))
+        # Every bar of the slot sounds the same pitch classes; the
+        # linter checks melody and bass against this set.
+        bar_pcs.extend(
+            tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones}))
+            for _ in range(dur)
+        )
 
     cursor = 0
     bar_index = 0
@@ -619,25 +665,52 @@ def _generate_section(
             breathe = (
                 not is_final_bar and not is_half_cadence and rng.random() < 0.18
             )
+            # The breath is a guarantee, not a coin toss: when the
+            # melody has run `PHRASE_BARS` bars without a gap (counting
+            # the previous section's trailing run), this bar must lift
+            # off early. A half cadence already leaves the rest.
+            if not is_final_bar and not is_half_cadence and bar_index - last_gap_bar >= PHRASE_BARS:
+                breathe = True
+            if is_half_cadence or breathe:
+                last_gap_bar = bar_index
             anchor = _downbeat_anchor(rng, len(chord_tones))
             if is_final_bar or is_half_cadence or is_apex or breathe:
                 variant = MotifVariant(motif=motif)
             else:
                 variant = vary_motif(motif, rng)
-            # Anacrusis: when the next bar exists, its chord's root (in
-            # the melody's register) is the pickup tone. Zero-length
-            # slots (a template truncation artifact) are skipped — they
-            # never sound, so anticipating them would be wrong.
+            # Anacrusis: when the next bar exists, the pickup leads into
+            # it from the pickup chord's tones — root first, but a tone
+            # that would sound a close m2/M7 against the bar's sounding
+            # bass is skipped, and if every candidate clashes the
+            # pickup is dropped. Zero-length slots (a template
+            # truncation artifact) are skipped — they never sound, so
+            # anticipating them would be wrong.
             pickup_pitch: int | None = None
+            pickup_root: int | None = None
+            pickup_tones: tuple[int, ...] = ()
             if not is_final_bar:
                 if _bar < dur - 1:
-                    pickup_pitch = chord_root + 12
+                    pickup_root, pickup_tones = chord_root, chord_tones
                 else:
                     next_slot = next(
                         (c for c in chords[slot_index + 1 :] if c[2] > 0), None
                     )
                     if next_slot is not None:
-                        pickup_pitch = min(107, next_slot[0] + 12)
+                        pickup_root, pickup_tones = next_slot[0], next_slot[1]
+                if pickup_root is not None:
+                    pickup_pitch = next(
+                        (
+                            candidate
+                            for candidate in (
+                                min(107, pickup_root + 12 + tone) for tone in pickup_tones
+                            )
+                            if all(
+                                abs(candidate - bass) not in (1, 11)
+                                for bass in (bass_pitch, bass_fifth)
+                            )
+                        ),
+                        None,
+                    )
             melody_notes.extend(
                 _melody_bar(
                     variant=variant,
@@ -682,7 +755,18 @@ def _generate_section(
 
     # Canonical order: the bass and melody interleave within a bar, so
     # sort by (tick, voice, pitch) rather than relying on append order.
-    return sorted(notes, key=lambda n: (n.tick, n.voice_id, n.pitch_midi))
+    ordered = sorted(notes, key=lambda n: (n.tick, n.voice_id, n.pitch_midi))
+    # The breath deficit the next section inherits: one more than the
+    # trailing run of continuously sounding melody bars, so its first
+    # bar continues that run (a silence — an intro or coda pickup bar —
+    # breaks it and leaves nothing to inherit).
+    if melody_from_bar >= total_bars:
+        trailing = 0
+    elif last_gap_bar >= melody_from_bar:
+        trailing = max(0, total_bars - 1 - last_gap_bar)
+    else:
+        trailing = total_bars - melody_from_bar
+    return ordered, tuple(bar_pcs), trailing + 1
 
 
 def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> ChordTemplate:
@@ -1074,10 +1158,6 @@ TIE_PROBABILITY: dict[str, float] = {
 # step the dynamics per section instead of arching continuously.
 MODULATION_OFFSET: int = 2
 PERCUSSION_REST_SECTION: int = 1
-
-# The phrase unit for the CC11 swells: one rise-and-fall per 4 bars,
-# layered over the piece-long velocity arch.
-PHRASE_BARS: int = 4
 
 
 def _section_velocity_scale(section_idx: int, repetition_count: int) -> float:

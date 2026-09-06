@@ -189,3 +189,197 @@ class TestEndsOnTonic:
         # The check was declared but never implemented; the code is gone
         # rather than pretending a gate exists.
         assert not hasattr(LintCode, "VOICE_LEADING_COLLISION")
+
+
+def _bars(*specs: tuple[int, int]) -> list[Measure]:
+    """Measures from (start_tick, end_tick) pairs, 4/4."""
+    return [
+        Measure(index=i, start_tick=start, end_tick=end, time_signature="4/4")
+        for i, (start, end) in enumerate(specs)
+    ]
+
+
+class TestChordToneMembership:
+    """With chord_bars, every pitched note must sound its bar's chord."""
+
+    def _score(self, notes: list[NoteEvent]) -> NotationScore:
+        return _build_score(
+            measures=_bars((0, 1920), (1920, 3840)),
+            notes=notes,
+        )
+
+    def test_chord_tone_passes(self) -> None:
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=48, tick=0, duration_ticks=1920),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert report.passed
+
+    def test_non_chord_tone_fails(self) -> None:
+        # F (65) over a C-major bar is not a chord tone.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=1, pitch_midi=72, tick=1920, duration_ticks=1920),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_anacrusis_may_anticipate_the_next_chord(self) -> None:
+        # A pickup in the bar's final eighth may sound the next chord.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=1680),
+                NoteEvent(voice_id=1, pitch_midi=74, tick=1680, duration_ticks=240),
+                NoteEvent(voice_id=1, pitch_midi=72, tick=1920, duration_ticks=1920),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 2, 7)))
+        assert report.passed
+
+    def test_anticipation_does_not_extend_mid_bar(self) -> None:
+        # D (74) mid-bar over C major fails even though bar 1 holds D.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=74, tick=960, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=72, tick=1920, duration_ticks=1920),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 2, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_percussion_notes_are_exempt(self) -> None:
+        # GM kit keys are not pitches; they sound on no chord.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=1920),
+                NoteEvent(voice_id=2, pitch_midi=38, tick=0, duration_ticks=120),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert report.passed
+
+    def test_without_chord_bars_the_check_is_skipped(self) -> None:
+        score = self._score(
+            [NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=1920)]
+        )
+        report = lint(score)
+        assert not any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+
+class TestDissonantCollision:
+    """Close m2/M7 overlaps between voices are flagged unless both are chord tones."""
+
+    def _score(self, notes: list[NoteEvent]) -> NotationScore:
+        return _build_score(measures=_bars((0, 1920)), notes=notes)
+
+    def test_close_second_between_voices_fails(self) -> None:
+        # C (72) against C# (61) a major 7th below — a rubbed second.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=61, tick=0, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7),))
+        assert any(i.code == LintCode.DISSONANT_COLLISION for i in report.issues)
+
+    def test_maj7_voicing_is_exempt(self) -> None:
+        # Fmaj7: bass F (65) against melody E (76) an M7 apart — both
+        # chord tones, so the wide voicing is intended.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=76, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=65, tick=0, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((5, 9, 0, 4),))
+        assert not any(i.code == LintCode.DISSONANT_COLLISION for i in report.issues)
+
+    def test_wide_interval_is_not_a_collision(self) -> None:
+        # A m2/M7 pitch-class pair spread over an octave is voicing, not rubbing.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=77, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=53, tick=0, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((5, 9, 0, 4),))
+        assert not any(i.code == LintCode.DISSONANT_COLLISION for i in report.issues)
+
+    def test_percussion_is_exempt(self) -> None:
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=2, pitch_midi=73, tick=0, duration_ticks=120),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7),))
+        assert not any(i.code == LintCode.DISSONANT_COLLISION for i in report.issues)
+
+    def test_skipped_without_chord_bars(self) -> None:
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=61, tick=0, duration_ticks=960),
+            ]
+        )
+        report = lint(score)
+        assert not any(i.code == LintCode.DISSONANT_COLLISION for i in report.issues)
+
+
+class TestPhraseGaps:
+    """The melody may not run past PHRASE_BARS without a breath."""
+
+    def _melody(self, durations: list[int], *, pitch: int = 72) -> NotationScore:
+        """One melody note per bar with the given durations (4/4, one bar each)."""
+        notes = [
+            NoteEvent(voice_id=1, pitch_midi=pitch, tick=bar * 1920, duration_ticks=duration)
+            for bar, duration in enumerate(durations)
+        ]
+        return _build_score(
+            measures=_bars(*[(bar * 1920, (bar + 1) * 1920) for bar in range(len(durations))]),
+            notes=notes,
+        )
+
+    def test_five_continuous_bars_fail(self) -> None:
+        score = self._melody([1920] * 5)
+        report = lint(score)
+        assert any(i.code == LintCode.PHRASE_GAP_MISSING for i in report.issues)
+
+    def test_four_bars_then_a_breath_passes(self) -> None:
+        # Three full bars and a fourth that lifts off early into a
+        # rest: the run stops at a phrase's length, and the next bar
+        # starts a fresh group.
+        score = self._melody([1920, 1920, 1920, 960, 960])
+        report = lint(score)
+        assert not any(i.code == LintCode.PHRASE_GAP_MISSING for i in report.issues)
+
+    def test_pickup_does_not_extend_the_run(self) -> None:
+        # A breath on bar 3, an anacrusis pickup in its final eighth,
+        # then four full bars: the run after the breath is exactly a
+        # phrase — the pickup belongs to it but must not lengthen it.
+        notes = [
+            NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=1920, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=3840, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=5760, duration_ticks=960),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=7440, duration_ticks=240),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=7680, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=9600, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=11520, duration_ticks=1920),
+            NoteEvent(voice_id=1, pitch_midi=72, tick=13440, duration_ticks=1920),
+        ]
+        score = _build_score(measures=_bars(*[(b * 1920, (b + 1) * 1920) for b in range(8)]), notes=notes)
+        report = lint(score)
+        assert not any(i.code == LintCode.PHRASE_GAP_MISSING for i in report.issues)
+
+    def test_tied_notes_are_one_continuous_line(self) -> None:
+        # Touching notes count as continuous even when marked tied.
+        score = self._melody([1920] * 5)
+        report = lint(score)
+        assert any(i.code == LintCode.PHRASE_GAP_MISSING for i in report.issues)

@@ -174,3 +174,14 @@ def test_tempo_changes_round_trip(tmp_path: Path) -> None:
     assert back.notation_score.tempo.changes == out.notation_score.tempo.changes
     assert back.arrangement.ritardando_factor == out.arrangement.ritardando_factor
     assert back.arrangement.intro_bars == out.arrangement.intro_bars
+
+
+def test_chord_bars_round_trip(tmp_path: Path) -> None:
+    """The per-bar chord pitch classes survive the sidecar for the gates."""
+    spec = CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=45)
+    out = compose(spec)
+    assert out.chord_bars, "expected per-bar chord pcs"
+    path = tmp_path / "engine_output.json"
+    write_engine_output(path, out)
+    back = read_engine_output(path)
+    assert back.chord_bars == out.chord_bars

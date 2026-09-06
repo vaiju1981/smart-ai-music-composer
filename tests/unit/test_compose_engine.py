@@ -6,6 +6,7 @@ from itertools import pairwise
 
 import pytest
 
+from saimc.compose.duration import bar_ticks
 from saimc.compose.engine import (
     ARRANGEMENT_ARC_MIN_REPS,
     MODULATION_OFFSET,
@@ -17,9 +18,10 @@ from saimc.compose.engine import (
     _truncate_template_for_coda,
     compose,
 )
-from saimc.compose.forms import key_root_midi
-from saimc.compose.linter import lint
+from saimc.compose.forms import PHRASE_BARS, key_root_midi
+from saimc.compose.linter import LintCode, lint
 from saimc.compose.score import (
+    VOICE_MELODY,
     KeySignature,
     NotationScore,
     PerformancePlan,
@@ -954,3 +956,84 @@ class TestArrangementArc:
         out = compose(_spec(Mood.CALMING, duration=30))
         assert out.arrangement.repetition_count < ARRANGEMENT_ARC_MIN_REPS
         assert out.notation_score.tempo.changes == ()
+
+
+class TestS9Consolidation:
+    """S9: the linter's musical gates hold across the generation space."""
+
+    def test_seed_sweep_composes_without_lint_failure(self) -> None:
+        """compose() lints internally; a failure raises. The coda's
+        final bar used to resolve off-tonic (its _generate_section call
+        was missing is_final_section) and surfaced as ENDS_OFF_TONIC on
+        unlucky seeds — this sweep is the regression net.
+        """
+        for mood in Mood:
+            for duration in (30, 45, 120, 300):
+                for seed in (42, 1, 7, 99):
+                    compose(_spec(mood, duration=duration, seed=seed))
+
+    def test_chord_bars_cover_every_bar(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=120, seed=42))
+        total_bars = out.arrangement.total_bars_with_coda
+        assert len(out.chord_bars) == total_bars
+        assert all(bar for bar in out.chord_bars)
+        assert all(0 <= pc <= 11 for bar in out.chord_bars for pc in bar)
+
+    def test_melody_never_runs_past_a_phrase(self) -> None:
+        for mood in Mood:
+            for duration in (30, 120, 300):
+                out = compose(_spec(mood, duration=duration, seed=99))
+                spans = _melody_span_bars(out)
+                assert spans, "the melody should exist"
+                assert max(spans) <= PHRASE_BARS
+
+    def test_no_close_dissonant_collisions(self) -> None:
+        for mood in Mood:
+            for duration in (45, 120):
+                out = compose(_spec(mood, duration=duration, seed=1))
+                report = lint(out.notation_score, chord_bars=out.chord_bars)
+                assert not [
+                    i for i in report.issues if i.code == LintCode.DISSONANT_COLLISION
+                ]
+
+    def test_coda_piece_ends_at_home(self) -> None:
+        # The coda is the piece's true ending: its last melody note
+        # must resolve to the tonic or its third.
+        out = compose(_spec(Mood.CALMING, duration=45, seed=99))
+        assert out.arrangement.coda_bars > 0
+        melody = [n for n in out.notation_score.notes if n.voice_id == VOICE_MELODY]
+        last = max(melody, key=lambda n: (n.tick, n.pitch_midi))
+        tonic_pc = key_root_midi(out.key) % 12
+        third_pc = (tonic_pc + (4 if out.key.mode == "major" else 3)) % 12
+        assert last.pitch_midi % 12 in (tonic_pc, third_pc)
+
+
+def _melody_span_bars(out) -> list[float]:
+    """Continuous melody spans in bars, anacrusis pickups excluded."""
+    score = out.notation_score
+    ticks_per_bar = bar_ticks(out.time_signature)
+    eighth = score.ppq // 2
+    melody = sorted(
+        (
+            n
+            for n in score.notes
+            if n.voice_id == VOICE_MELODY
+            and not (
+                n.tick % ticks_per_bar == ticks_per_bar - eighth
+                and n.duration_ticks <= eighth
+            )
+        ),
+        key=lambda n: (n.tick, n.pitch_midi),
+    )
+    spans: list[float] = []
+    if len(melody) < 2:
+        return spans
+    group_start = melody[0].tick
+    prev = melody[0]
+    for note in melody[1:]:
+        if note.tick > prev.tick + prev.duration_ticks:
+            spans.append((prev.tick + prev.duration_ticks - group_start) / ticks_per_bar)
+            group_start = note.tick
+        prev = note
+    spans.append((prev.tick + prev.duration_ticks - group_start) / ticks_per_bar)
+    return spans

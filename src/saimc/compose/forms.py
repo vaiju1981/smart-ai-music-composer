@@ -30,6 +30,10 @@ from typing import NamedTuple
 from saimc.compose.score import KeySignature
 from saimc.spec import WesternKey
 
+PHRASE_BARS: int = 4
+"""The phrase unit: the melody breathes at least once per phrase, and
+the CC11 swells ride one rise-and-fall per phrase."""
+
 
 class ChordSlot(NamedTuple):
     """One chord of a template: (degree, bars) plus colour options.
@@ -452,8 +456,10 @@ def key_root_midi(key: KeySignature) -> int:
 
 __all__ = [
     "MOOD_PROFILES",
+    "PHRASE_BARS",
     "PHRASE_SIZES",
     "TEMPO_RANGE_BPM",
+    "ChordSlot",
     "ChordTemplate",
     "MoodProfile",
     "apply_final_cadence",

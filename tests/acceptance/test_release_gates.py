@@ -54,6 +54,20 @@ class TestReleaseGates:
         result = gate_composition_correctness(compose(spec))
         assert result.passed, result.detail
 
+    def test_harmony_gate_is_active_not_vacuous(self, spec: CompositionSpec) -> None:
+        """The gate receives the engine's per-bar chord context, so a
+        score that steps off the harmony actually fails it."""
+        from dataclasses import replace
+
+        output = compose(spec)
+        assert output.chord_bars, "the engine must publish per-bar chord pcs"
+        tonic_pc = output.chord_bars[0][0]
+        poisoned = replace(
+            output, chord_bars=tuple((tonic_pc,) for _ in output.chord_bars)
+        )
+        result = gate_composition_correctness(poisoned)
+        assert not result.passed, "a harmony gate without chord context would pass anything"
+
     def test_musicxml_is_structurally_valid(self, spec: CompositionSpec) -> None:
         output = compose(spec)
         result = gate_musicxml_structural(output.notation_score)
