@@ -4,7 +4,7 @@ Per `docs/roadmap.md` §8 (Composition correctness):
 
 - All notes within instrument range.
 - All measures complete (no dropped beats).
-- No unresolved voice-leading collisions flagged by the theory linter.
+- The melody resolves: its final note is the tonic or its third.
 - Generated MusicXML validates against the MusicXML schema.
 - Generated MIDI is well-formed.
 
@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from saimc.compose.duration import bar_ticks
-from saimc.compose.score import NotationScore, NoteEvent
+from saimc.compose.forms import key_root_midi
+from saimc.compose.score import VOICE_MELODY, NotationScore, NoteEvent
 
 # Phase 1 is piano-only. The piano range MIDI is 21 (A0) to 108 (C8).
 # We give a 1-note margin at each end to allow idiomatic voicings
@@ -39,11 +40,11 @@ class LintCode(StrEnum):
 
     NOTE_OUT_OF_RANGE = "note_out_of_range"
     MEASURE_INCOMPLETE = "measure_incomplete"
-    VOICE_LEADING_COLLISION = "voice_leading_collision"
     TOO_MANY_SIMULTANEOUS_NOTES = "too_many_simultaneous_notes"
     TIME_SIGNATURE_MISMATCH = "time_signature_mismatch"
     EMPTY_SCORE = "empty_score"
     DUPLICATE_NOTE_AT_TICK = "duplicate_note_at_tick"
+    ENDS_OFF_TONIC = "ends_off_tonic"
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ def lint(score: NotationScore) -> LintReport:
     issues.extend(_check_time_signature_consistency(score))
     issues.extend(_check_duplicate_notes(score))
     issues.extend(_check_nonempty(score))
+    issues.extend(_check_ends_on_tonic(score))
 
     return LintReport(
         score_hash=score.compute_hash(),
@@ -195,6 +197,37 @@ def _check_nonempty(score: NotationScore) -> list[LintIssue]:
             LintIssue(
                 code=LintCode.EMPTY_SCORE,
                 message="NotationScore has no notes",
+            )
+        ]
+    return []
+
+
+def _check_ends_on_tonic(score: NotationScore) -> list[LintIssue]:
+    """The melody's final note must resolve to the tonic or its third.
+
+    A piece that ends on an arbitrary chord tone sounds unfinished;
+    the engine's cadence lands the last note at home. The check allows
+    the third because a piece may close on the more coloursome
+    mediant; anything else (fifth included) fails.
+    """
+    melody_notes = [n for n in score.notes if n.voice_id == VOICE_MELODY]
+    if not melody_notes:
+        return []
+    last = max(melody_notes, key=lambda n: (n.tick, n.pitch_midi))
+    tonic_pc = key_root_midi(score.key) % 12
+    third_pc = (tonic_pc + (4 if score.key.mode == "major" else 3)) % 12
+    if last.pitch_midi % 12 not in (tonic_pc, third_pc):
+        return [
+            LintIssue(
+                code=LintCode.ENDS_OFF_TONIC,
+                message=(
+                    f"final melody note pitch {last.pitch_midi} at tick {last.tick} "
+                    f"does not resolve to the tonic or its third "
+                    f"(key {score.key.root} {score.key.mode})"
+                ),
+                tick=last.tick,
+                voice_id=last.voice_id,
+                pitch_midi=last.pitch_midi,
             )
         ]
     return []

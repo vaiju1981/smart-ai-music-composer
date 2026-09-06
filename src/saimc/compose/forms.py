@@ -220,6 +220,39 @@ def _extend_template(template: ChordTemplate, target_bars: int) -> ChordTemplate
     )
 
 
+# Cadential close per mood: electrifying resolves with an authentic
+# dominant cadence (V -> I); calming and sleep with a plagal one
+# (IV -> I). The final section's last two bars are rewritten to this
+# cadence, so every piece ends at home instead of on whatever chord the
+# template's tail happens to land on.
+_CADENCE_DEGREE: Mapping[str, int] = {
+    "calming": 3,  # IV
+    "electrifying": 4,  # V
+    "sleep": 3,  # IV
+}
+
+
+def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
+    """Rewrite a template's last two bars as its mood's cadence.
+
+    The bar before the final tonic becomes the dominant (V) for
+    electrifying or the subdominant (IV) for calming/sleep, giving the
+    melody a harmonic target to resolve onto. Bar count is preserved:
+    the cadence bars replace the template's last two bars, so
+    duration arithmetic is unaffected. Templates shorter than three
+    bars are returned unchanged (there is no room for a 2-bar close).
+    """
+    cadence_degree = _CADENCE_DEGREE.get(mood, 4)
+    if template.bars < 3:
+        return template
+    kept = _truncate_template(template, template.bars - 2).chords
+    return ChordTemplate(
+        name=f"{template.name}_cad",
+        bars=template.bars,
+        chords=(*kept, (cadence_degree, 1), (0, 1)),
+    )
+
+
 # Root-to-semitone mapping for major/minor keys. The key name in
 # CompositionSpec.WesternKey uses a compact form ("C", "G", "Am",
 # "F#m"); we normalize to a (root-name, mode) tuple.
@@ -286,6 +319,7 @@ __all__ = [
     "TEMPO_RANGE_BPM",
     "ChordTemplate",
     "MoodProfile",
+    "apply_final_cadence",
     "get_mood_profile",
     "get_template_for_form",
     "key_root_midi",

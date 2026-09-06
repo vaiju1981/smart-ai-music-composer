@@ -48,6 +48,7 @@ from saimc.compose.duration import (
 )
 from saimc.compose.forms import (
     ChordTemplate,
+    apply_final_cadence,
     get_template_for_form,
     key_root_midi,
     key_signature_from_spec,
@@ -255,6 +256,11 @@ def _build_score(
                 arrangement.form_bars,
                 variant_index=section_idx,
             )
+        if section_idx == arrangement.repetition_count - 1:
+            # The last repetition must land at home: rewrite its last
+            # two bars as the mood's cadence (earlier sections may end
+            # open — their V resolves into the next section's I).
+            section_template = apply_final_cadence(section_template, spec.mood.value)
         section_notes = _generate_section(
             key=key,
             time_signature=time_signature,
@@ -262,6 +268,7 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
+            is_final_section=section_idx == arrangement.repetition_count - 1,
         )
         notes.extend(section_notes)
         cursor_tick += arrangement.form_bars * bar_ticks(time_signature)
@@ -269,9 +276,11 @@ def _build_score(
     # Optional coda: append a coda-length tail using the same chord
     # template (truncated to coda_bars). The coda gets its own RNG
     # seed (a stable offset from the spec seed) so it sounds distinct
-    # from the body, per §10 #10.
+    # from the body, per §10 #10. It is also the piece's true ending,
+    # so it carries the final cadence.
     if arrangement.coda_bars > 0:
         coda_template = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
+        coda_template = apply_final_cadence(coda_template, spec.mood.value)
         coda_rng = random.Random(section_seed(spec.seed, arrangement.repetition_count))
         coda_notes = _generate_section(
             key=key,
@@ -334,6 +343,7 @@ def _generate_section(
     section_start_tick: int,
     rng: random.Random,
     seed_for_variation: int,
+    is_final_section: bool = False,
 ) -> list[NoteEvent]:
     """Generate the bass + melody notes for one section.
 
@@ -344,14 +354,24 @@ def _generate_section(
     follows an arch across the section with a slight accent on
     downbeats. Everything is derived from `seed_for_variation`, so
     repeated sections sound different but stay deterministic.
+
+    Phrase shape: one bar per section is the melodic apex (raised an
+    octave-portion above the line, near the 60% mark); bars ending a
+    4-bar phrase lift off early into a breath — on the dominant's root
+    when the chord there is the V (a half cadence), otherwise on a
+    shortened chord tone. When `is_final_section` is set the last bar
+    resolves onto the tonic or its third, held to the bar line.
     """
     notes: list[NoteEvent] = []
     tonic_midi = key_root_midi(key)
     ticks_per_bar = bar_ticks(time_signature)
     section_ticks = template.bars * ticks_per_bar
+    # The melodic apex sits near the 60% mark, never on the final bar.
+    apex_bar = min(int(template.bars * 0.6), template.bars - 2)
 
     cursor = 0
     bar_index = 0
+    total_bars = template.bars
     for degree, dur in template.chords:
         chord_root = tonic_midi + _scale_degree_to_semitones(degree, key.mode)
         chord_tones = _chord_intervals(degree, key)
@@ -400,7 +420,12 @@ def _generate_section(
             )
 
             # Melody voice: one bar of arpeggio, rhythm and starting
-            # tone re-chosen each bar.
+            # tone re-chosen each bar. The last bar of the piece
+            # resolves at home; a phrase-ending bar over the V chord
+            # is a half cadence.
+            is_final_bar = is_final_section and bar_index == total_bars - 1
+            is_apex = bar_index == apex_bar
+            is_half_cadence = degree == 4 and bar_index % 4 == 3 and not is_final_bar
             notes.extend(
                 _arpeggiate_bar(
                     chord_root=chord_root + 12,
@@ -411,6 +436,9 @@ def _generate_section(
                     position=bar_pos,
                     ticks_per_bar=ticks_per_bar,
                     seed_for_variation=seed_for_variation + bar_index * 101,
+                    is_final_bar=is_final_bar,
+                    half_cadence=is_half_cadence,
+                    apex=is_apex,
                 )
             )
             bar_index += 1
@@ -500,12 +528,6 @@ def _octave_down(midi: int, *, octaves: int) -> int:
     return max(21, midi - 12 * octaves)
 
 
-def _velocity_for_section(seed: int, *, base: int, jitter: int) -> int:
-    """Deterministically vary the velocity by ±`jitter` using `seed`."""
-    rng = random.Random(seed * 31 + 7)
-    return max(1, min(127, base + rng.randint(-jitter, jitter)))
-
-
 def _velocity_arc(position: float) -> float:
     """A gentle dynamic arch: quiet entrances and exits, fuller middle.
 
@@ -540,13 +562,27 @@ def _arpeggiate_bar(
     position: float,
     ticks_per_bar: int,
     seed_for_variation: int,
+    is_final_bar: bool = False,
+    half_cadence: bool = False,
+    apex: bool = False,
 ) -> list[NoteEvent]:
     """Generate one bar of melody arpeggio.
 
-    Rhythm (quarter vs. eighth subdivision), direction, and starting
-    tone are all re-chosen per bar from the section RNG, so a long
-    chord keeps moving instead of cycling a fixed figure. The melody
-    sits an octave above the chord root handed in by the caller.
+    Rhythm (quarter vs. eighth subdivision) and direction are re-chosen
+    per bar from the section RNG, so a long chord keeps moving instead
+    of cycling a fixed figure. The melody sits an octave above the
+    chord root handed in by the caller.
+
+    Phrase shape:
+    - the downbeat biases to the chord root, then its third, so bars
+      anchor harmonically instead of starting anywhere;
+    - an `apex` bar is transposed up an octave (capped to range) with a
+      velocity lift — the section's melodic peak;
+    - a `half_cadence` bar ends early on the dominant's root, leaving
+      a rest (the phrase breathes on the V);
+    - other bars end early into a breath with some probability;
+    - the `is_final_bar` of the piece resolves onto the tonic or its
+      third, held to the bar line.
     """
     notes: list[NoteEvent] = []
     rhythm_choices = (PPQ, PPQ // 2)  # quarter or eighth notes
@@ -555,23 +591,55 @@ def _arpeggiate_bar(
     count = bar_ticks // note_length
     if count < 1:
         count = 1
-    starting_tone_index = rng.randrange(len(chord_tones))
+    # Downbeat bias: root (50%), third (30%), fifth (20%).
+    downbeat_roll = rng.random()
+    if downbeat_roll < 0.5:
+        starting_tone_index = 0
+    elif downbeat_roll < 0.8:
+        starting_tone_index = 1
+    else:
+        starting_tone_index = 2
+    starting_tone_index %= len(chord_tones)
+
+    # A bar can lift off early into a breath (a rest before the next
+    # phrase) — never on the cadence or final bars, which carry their
+    # own ending shape.
+    breathe = (
+        not is_final_bar and not half_cadence and rng.random() < 0.18
+    )
+
     for i in range(count):
         tone_index = (starting_tone_index + step * i) % len(chord_tones)
         pitch = chord_root + chord_tones[tone_index]
+        if apex:
+            pitch += 12
         # Cap melody at piano range.
         if pitch > 107:
             pitch -= 12
         if pitch < 22:
             pitch += 12
+        duration_ticks = note_length
+        if i == count - 1:
+            if is_final_bar:
+                # The piece ends at home: tonic or its third, held.
+                pitch = chord_root if rng.random() < 0.6 else chord_root + chord_tones[1]
+                if pitch > 107:
+                    pitch -= 12
+            elif half_cadence:
+                # Half cadence: land on the dominant's root, lifted
+                # early so a rest follows.
+                pitch = chord_root
+                duration_ticks = note_length // 2
+            elif breathe:
+                duration_ticks = note_length // 2
         notes.append(
             NoteEvent(
                 voice_id=VOICE_MELODY,
                 pitch_midi=pitch,
                 tick=start_tick + i * note_length,
-                duration_ticks=note_length,
+                duration_ticks=duration_ticks,
                 velocity=_shaped_velocity(
-                    base=DEFAULT_VELOCITY + 8,
+                    base=DEFAULT_VELOCITY + 8 + (10 if apex else 0),
                     position=position,
                     tick=start_tick + i * note_length,
                     ticks_per_bar=ticks_per_bar,

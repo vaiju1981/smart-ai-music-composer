@@ -130,3 +130,62 @@ class TestLintFailsOnSimultaneous:
         report = lint(score)
         assert not report.passed
         assert any(i.code == LintCode.TOO_MANY_SIMULTANEOUS_NOTES for i in report.issues)
+
+
+class TestEndsOnTonic:
+    """The melody must resolve: its final note is the tonic or third."""
+
+    def test_final_melody_note_on_tonic_passes(self) -> None:
+        score = _build_score(
+            notes=[NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=1920)]
+        )
+        report = lint(score)
+        assert report.passed
+
+    def test_final_melody_note_on_third_passes(self) -> None:
+        # C major: third is E (64 / 76).
+        score = _build_score(
+            notes=[NoteEvent(voice_id=1, pitch_midi=76, tick=0, duration_ticks=1920)]
+        )
+        report = lint(score)
+        assert report.passed
+
+    def test_final_melody_note_off_tonic_fails(self) -> None:
+        # D (74) over C major is neither tonic nor third.
+        score = _build_score(
+            notes=[NoteEvent(voice_id=1, pitch_midi=74, tick=0, duration_ticks=1920)]
+        )
+        report = lint(score)
+        assert not report.passed
+        assert any(i.code == LintCode.ENDS_OFF_TONIC for i in report.issues)
+
+    def test_minor_key_third_is_minor_third(self) -> None:
+        # A minor: tonic A (69/81), third C (72/84).
+        score = _build_score(
+            key=KeySignature(root="A", mode="minor"),
+            notes=[NoteEvent(voice_id=1, pitch_midi=84, tick=0, duration_ticks=1920)],
+        )
+        report = lint(score)
+        assert report.passed
+
+    def test_minor_key_major_third_fails(self) -> None:
+        # C# (73) over A minor is neither tonic nor (minor) third.
+        score = _build_score(
+            key=KeySignature(root="A", mode="minor"),
+            notes=[NoteEvent(voice_id=1, pitch_midi=85, tick=0, duration_ticks=1920)],
+        )
+        report = lint(score)
+        assert any(i.code == LintCode.ENDS_OFF_TONIC for i in report.issues)
+
+    def test_score_without_melody_skips_check(self) -> None:
+        # A bass-only score has no melodic line to resolve.
+        score = _build_score(
+            notes=[NoteEvent(voice_id=0, pitch_midi=48, tick=0, duration_ticks=1920)]
+        )
+        report = lint(score)
+        assert report.passed
+
+    def test_voice_leading_collision_code_removed(self) -> None:
+        # The check was declared but never implemented; the code is gone
+        # rather than pretending a gate exists.
+        assert not hasattr(LintCode, "VOICE_LEADING_COLLISION")

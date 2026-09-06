@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
+    _chord_intervals,
     _scale_degree_to_semitones,
     _truncate_template_for_coda,
     compose,
@@ -236,7 +239,7 @@ class TestChordToneHarmony:
         self, out, mood: str
     ) -> list[tuple[int, tuple[int, int, int]]]:
         """Mirror the engine's per-bar chord walk: (degree, tonic-relative triad)."""
-        from saimc.compose.forms import get_template_for_form
+        from saimc.compose.forms import apply_final_cadence, get_template_for_form
 
         arrangement = out.arrangement
         triads = self._triads(out.key.mode)
@@ -250,10 +253,15 @@ class TestChordToneHarmony:
                     mood, arrangement.form_bars, variant_index=section
                 )
             )
+            if section == arrangement.repetition_count - 1:
+                template = apply_final_cadence(template, mood)
             for degree, dur in template.chords:
                 result.extend((degree, triads[degree % 7]) for _ in range(dur))
         if arrangement.coda_bars > 0:
-            coda = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
+            coda = apply_final_cadence(
+                _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
+                mood,
+            )
             for degree, dur in coda.chords:
                 result.extend((degree, triads[degree % 7]) for _ in range(dur))
         return result
@@ -336,3 +344,132 @@ class TestSharpMinorKeys:
         melody = [n for n in out.notation_score.notes if n.voice_id == 1]
         velocities = [n.velocity for n in melody]
         assert max(velocities) - min(velocities) >= 6  # the piece breathes
+
+
+class TestFinalCadence:
+    """Every piece ends at home: the last two bars are the mood's
+    cadence (V-I for electrifying, IV-I for calming/sleep) and the
+    melody resolves onto the tonic or its third."""
+
+    @pytest.mark.parametrize("mood", [Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP])
+    def test_final_bar_lands_on_tonic(self, mood: Mood) -> None:
+        out = compose(_spec(mood, duration=60))
+        ticks_per_bar = out.notation_score.ppq * 4
+        tonic_pc = key_root_midi(out.key) % 12
+        # The cadential chord is V (7 semitones up) for electrifying,
+        # IV (5 semitones up) for the calmer moods.
+        cadence_offset = 7 if mood == Mood.ELECTRIFYING else 5
+        melody = [n for n in out.notation_score.notes if n.voice_id == 1]
+
+        last_bar_start = (out.arrangement.total_bars_with_coda - 1) * ticks_per_bar
+        final_bass_roots = {
+            n.pitch_midi
+            for n in out.notation_score.notes
+            if n.voice_id == 0 and n.tick >= last_bar_start
+        }
+        # The final chord is the tonic: its bass root is the key root.
+        assert min(final_bass_roots) % 12 == tonic_pc
+
+        # The bar before carries the cadential pre-dominant/dominant:
+        # the dominant (V) for electrifying, the subdominant (IV) for
+        # the calmer moods.
+        prev_bar_start = last_bar_start - ticks_per_bar
+        prev_bass_roots = {
+            n.pitch_midi
+            for n in out.notation_score.notes
+            if n.voice_id == 0 and prev_bar_start <= n.tick < last_bar_start
+        }
+        assert min(prev_bass_roots) % 12 == (tonic_pc + cadence_offset) % 12
+
+        # The melody resolves onto the tonic or its third.
+        last_melody = max(melody, key=lambda n: n.tick)
+        third = 4 if out.key.mode == "major" else 3
+        assert last_melody.pitch_midi % 12 in (tonic_pc, (tonic_pc + third) % 12)
+
+    def test_coda_carries_the_cadence(self) -> None:
+        # A 45s calming piece ends with a coda; its last bar is still
+        # the tonic with IV before it.
+        out = compose(_spec(Mood.CALMING, duration=45))
+        assert out.arrangement.coda_bars > 0
+        ticks_per_bar = out.notation_score.ppq * 4
+        tonic_pc = key_root_midi(out.key) % 12
+        last_bar_start = (out.arrangement.total_bars_with_coda - 1) * ticks_per_bar
+        final_bass = {
+            n.pitch_midi
+            for n in out.notation_score.notes
+            if n.voice_id == 0 and n.tick >= last_bar_start
+        }
+        assert min(final_bass) % 12 == tonic_pc
+
+
+class TestPhraseStructure:
+    """2-bar phrase breaths, apex note, downbeat anchoring, half cadence."""
+
+    def test_melody_has_rests(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=180))
+        melody = sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+        )
+        rests = sum(
+            1
+            for prev, curr in pairwise(melody)
+            if curr.tick > prev.tick + prev.duration_ticks
+        )
+        assert rests >= 1, "expected at least one breath in the melody"
+
+    def test_downbeats_anchor_to_root_or_third(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=180))
+        ticks_per_bar = out.notation_score.ppq * 4
+        melody = [n for n in out.notation_score.notes if n.voice_id == 1]
+        downbeats = [n for n in melody if n.tick % ticks_per_bar == 0]
+        tonic = key_root_midi(out.key)
+        # Chord roots per bar come from the template walk; a downbeat
+        # anchors when it matches the chord root or third, i.e. when it
+        # is one of the chord's first two tones.
+        from saimc.compose.forms import apply_final_cadence, get_template_for_form
+
+        arrangement = out.arrangement
+        chords: list[int] = []
+        for section in range(arrangement.repetition_count):
+            template = (
+                arrangement.template
+                if section == 0
+                else get_template_for_form(
+                    "calming", arrangement.form_bars, variant_index=section
+                )
+            )
+            if section == arrangement.repetition_count - 1:
+                template = apply_final_cadence(template, "calming")
+            for degree, dur in template.chords:
+                chords.extend([degree] * dur)
+        anchored = 0
+        for note in downbeats:
+            degree = chords[note.tick // ticks_per_bar]
+            chord_root = tonic + _scale_degree_to_semitones(degree, out.key.mode)
+            chord_tones = _chord_intervals(degree, out.key)
+            candidates = {(chord_root + 12 + t) % 12 for t in chord_tones[:2]}
+            if note.pitch_midi % 12 in candidates:
+                anchored += 1
+        assert anchored / len(downbeats) >= 0.5
+
+    def test_apex_rises_after_the_first_quarter_of_each_section(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=180))
+        ticks_per_bar = out.notation_score.ppq * 4
+        melody = sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+        )
+        section_len = out.arrangement.form_bars * ticks_per_bar
+        by_section: dict[int, list] = {}
+        for note in melody:
+            by_section.setdefault(note.tick // section_len, []).append(note)
+        for section_idx, notes in by_section.items():
+            start = section_idx * section_len
+            peak = max(n.pitch_midi for n in notes)
+            # The apex bar sits at ~60% of the section, so the section's
+            # highest pitch must occur past its first quarter.
+            peak_positions = [
+                (n.tick - start) / section_len for n in notes if n.pitch_midi == peak
+            ]
+            assert any(0.25 <= p <= 0.95 for p in peak_positions), (
+                f"section {section_idx}: peak {peak} at positions {peak_positions}"
+            )
