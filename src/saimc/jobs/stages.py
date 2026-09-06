@@ -371,6 +371,7 @@ def render_audio_stage(
         artifact = render_audio(
             output.performance_plan,
             bpm=output.arrangement.tempo_bpm,
+            tempo_changes=output.notation_score.tempo.changes,
             soundfont_path=sf,
             out_dir=artifacts_dir,
             job_id=job.job_id,

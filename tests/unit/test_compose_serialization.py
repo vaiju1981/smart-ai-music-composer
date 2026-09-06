@@ -161,3 +161,16 @@ def test_sidecar_round_trips_controllers_and_pitch_bends(tmp_path: Path) -> None
     assert back == out
     assert back.performance_plan.controllers == plan_with_expression.controllers
     assert back.performance_plan.pitch_bends == plan_with_expression.pitch_bends
+
+
+def test_tempo_changes_round_trip(tmp_path: Path) -> None:
+    """The outro ritardando's tempo points survive the sidecar."""
+    spec = CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=45)
+    out = compose(spec)
+    assert out.notation_score.tempo.changes, "expected a coda ritardando"
+    path = tmp_path / "engine_output.json"
+    write_engine_output(path, out)
+    back = read_engine_output(path)
+    assert back.notation_score.tempo.changes == out.notation_score.tempo.changes
+    assert back.arrangement.ritardando_factor == out.arrangement.ritardando_factor
+    assert back.arrangement.intro_bars == out.arrangement.intro_bars

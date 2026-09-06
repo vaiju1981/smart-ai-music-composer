@@ -210,3 +210,24 @@ def test_render_sheet_reports_missing_output(tmp_path: Path) -> None:
         )
     assert exc_info.value.code == SheetRenderErrorCode.RENDER_FAILED
     assert "wrote no output" in exc_info.value.message
+
+
+def test_ritardando_engraves_as_metronome_marks() -> None:
+    """S8: each tempo-map change lands in the sheet as a MetronomeMark."""
+    from music21 import converter, tempo
+
+    from saimc.compose.engine import compose
+    from saimc.spec import CompositionSpec, Mood
+
+    spec = CompositionSpec.model_validate(
+        {"mood": Mood.CALMING.value, "duration_seconds": 45, "seed": 42}
+    )
+    out = compose(spec)
+    assert out.notation_score.tempo.changes, "expected a coda ritardando"
+    xml = notation_score_to_musicxml(out.notation_score)
+    parsed = converter.parse(xml, format="musicxml")
+    marks = list(parsed.recurse().getElementsByClass(tempo.MetronomeMark))
+    assert len(marks) == 1 + len(out.notation_score.tempo.changes)
+    assert marks[-1].number == pytest.approx(
+        round(out.notation_score.tempo.bpm * 0.85, 1)
+    )

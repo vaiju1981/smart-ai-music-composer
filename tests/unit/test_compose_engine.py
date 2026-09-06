@@ -7,6 +7,8 @@ from itertools import pairwise
 import pytest
 
 from saimc.compose.engine import (
+    ARRANGEMENT_ARC_MIN_REPS,
+    MODULATION_OFFSET,
     CompositionEngineError,
     EngineErrorCode,
     _chord_intervals,
@@ -21,10 +23,118 @@ from saimc.compose.score import (
     KeySignature,
     NotationScore,
     PerformancePlan,
+    microseconds_at_tick,
     realized_duration_seconds,
-    ticks_to_microseconds,
+    ticks_at_microsecond,
 )
 from saimc.spec import CompositionSpec, Mood, WesternKey
+
+# Independent oracle: diatonic triads and sevenths as semitone
+# offsets from the TONIC, degrees I..VII. Major and minor keys.
+MAJOR_TRIADS_ABS = (
+    (0, 4, 7),
+    (2, 5, 9),
+    (4, 7, 11),
+    (5, 9, 12),
+    (7, 11, 14),
+    (9, 12, 16),
+    (11, 14, 17),
+)
+MINOR_TRIADS_ABS = (
+    (0, 3, 7),
+    (2, 5, 8),
+    (3, 7, 10),
+    (5, 8, 12),
+    (7, 10, 14),
+    (8, 12, 15),
+    (10, 14, 17),
+)
+MAJOR_SEVENTHS_ABS = (
+    (0, 4, 7, 11),
+    (2, 5, 9, 12),
+    (4, 7, 11, 14),
+    (5, 9, 12, 16),
+    (7, 11, 14, 17),
+    (9, 12, 16, 19),
+    (11, 14, 17, 20),
+)
+MINOR_SEVENTHS_ABS = (
+    (0, 3, 7, 10),
+    (2, 5, 8, 12),
+    (3, 7, 10, 14),
+    (5, 8, 12, 15),
+    (7, 10, 14, 17),
+    (8, 12, 15, 19),
+    (10, 14, 17, 21),
+)
+
+
+def _chord_offsets(slot, mode: str) -> tuple[int, ...]:
+    """Tonic-relative chord tones for a slot (triad or seventh)."""
+    if mode == "major":
+        triads, sevenths = MAJOR_TRIADS_ABS, MAJOR_SEVENTHS_ABS
+    else:
+        triads, sevenths = MINOR_TRIADS_ABS, MINOR_SEVENTHS_ABS
+    if slot.borrowed:
+        triads, sevenths = (
+            (MINOR_TRIADS_ABS, MINOR_SEVENTHS_ABS)
+            if mode == "major"
+            else (MAJOR_TRIADS_ABS, MAJOR_SEVENTHS_ABS)
+        )
+    return sevenths[slot.degree % 7] if slot.seventh else triads[slot.degree % 7]
+
+
+def _bar_degrees_and_offsets(
+    out, mood: str
+) -> list[tuple[int, tuple[int, ...], int]]:
+    """Mirror the engine's per-bar chord walk.
+
+    Returns (degree, tonic-relative tones, key offset) per bar — the
+    offset carries the long-piece modulation lift, which exempts each
+    section's final two cadence bars.
+    """
+    from saimc.compose.forms import apply_final_cadence, get_template_for_form
+
+    arrangement = out.arrangement
+    lifted = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+
+    result: list[tuple[int, tuple[int, ...], int]] = []
+    for section in range(arrangement.repetition_count):
+        template = (
+            arrangement.template
+            if section == 0
+            else get_template_for_form(mood, arrangement.form_bars, variant_index=section)
+        )
+        section_offset = (
+            MODULATION_OFFSET if section == arrangement.repetition_count - 1 and lifted else 0
+        )
+        if section == arrangement.repetition_count - 1:
+            template = apply_final_cadence(template, mood)
+        consumed = 0
+        for slot in template.chords:
+            exempt = section_offset and consumed >= template.bars - 2
+            bar_offset = 0 if exempt else section_offset
+            result.extend(
+                (slot.degree, _chord_offsets(slot, out.key.mode), bar_offset)
+                for _ in range(slot.bars)
+            )
+            consumed += slot.bars
+    if arrangement.coda_bars > 0:
+        coda = apply_final_cadence(
+            _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
+            mood,
+        )
+        coda_offset = MODULATION_OFFSET if lifted else 0
+        consumed = 0
+        for slot in coda.chords:
+            exempt = coda_offset and consumed >= coda.bars - 2
+            bar_offset = 0 if exempt else coda_offset
+            result.extend(
+                (slot.degree, _chord_offsets(slot, out.key.mode), bar_offset)
+                for _ in range(slot.bars)
+            )
+            consumed += slot.bars
+    return result
 
 
 def _spec(mood: Mood, *, duration: int = 60, seed: int | None = 42, **kw) -> CompositionSpec:
@@ -215,104 +325,19 @@ class TestChordToneHarmony:
     the wrong triad (e.g. F#m over an Am bass in C major).
     """
 
-    # Independent oracle: diatonic triads and sevenths as semitone
-    # offsets from the TONIC, degrees I..VII. Major and minor keys.
-    MAJOR_TRIADS_ABS = (
-        (0, 4, 7),
-        (2, 5, 9),
-        (4, 7, 11),
-        (5, 9, 12),
-        (7, 11, 14),
-        (9, 12, 16),
-        (11, 14, 17),
-    )
-    MINOR_TRIADS_ABS = (
-        (0, 3, 7),
-        (2, 5, 8),
-        (3, 7, 10),
-        (5, 8, 12),
-        (7, 10, 14),
-        (8, 12, 15),
-        (10, 14, 17),
-    )
-    MAJOR_SEVENTHS_ABS = (
-        (0, 4, 7, 11),
-        (2, 5, 9, 12),
-        (4, 7, 11, 14),
-        (5, 9, 12, 16),
-        (7, 11, 14, 17),
-        (9, 12, 16, 19),
-        (11, 14, 17, 20),
-    )
-    MINOR_SEVENTHS_ABS = (
-        (0, 3, 7, 10),
-        (2, 5, 8, 12),
-        (3, 7, 10, 14),
-        (5, 8, 12, 15),
-        (7, 10, 14, 17),
-        (8, 12, 15, 19),
-        (10, 14, 17, 21),
-    )
-
-    def _chord_offsets(
-        self, slot, mode: str
-    ) -> tuple[int, ...]:
-        """Tonic-relative chord tones for a slot (triad or seventh)."""
-        if mode == "major":
-            triads, sevenths = self.MAJOR_TRIADS_ABS, self.MAJOR_SEVENTHS_ABS
-        else:
-            triads, sevenths = self.MINOR_TRIADS_ABS, self.MINOR_SEVENTHS_ABS
-        if slot.borrowed:
-            triads, sevenths = (
-                (self.MINOR_TRIADS_ABS, self.MINOR_SEVENTHS_ABS)
-                if mode == "major"
-                else (self.MAJOR_TRIADS_ABS, self.MAJOR_SEVENTHS_ABS)
-            )
-        return sevenths[slot.degree % 7] if slot.seventh else triads[slot.degree % 7]
-
-    def _bar_degrees_and_offsets(
-        self, out, mood: str
-    ) -> list[tuple[int, tuple[int, ...]]]:
-        """Mirror the engine's per-bar chord walk: (degree, tonic-relative tones)."""
-        from saimc.compose.forms import apply_final_cadence, get_template_for_form
-
-        arrangement = out.arrangement
-
-        result: list[tuple[int, tuple[int, ...]]] = []
-        for section in range(arrangement.repetition_count):
-            template = (
-                arrangement.template
-                if section == 0
-                else get_template_for_form(
-                    mood, arrangement.form_bars, variant_index=section
-                )
-            )
-            if section == arrangement.repetition_count - 1:
-                template = apply_final_cadence(template, mood)
-            for slot in template.chords:
-                result.extend(
-                    (slot.degree, self._chord_offsets(slot, out.key.mode))
-                    for _ in range(slot.bars)
-                )
-        if arrangement.coda_bars > 0:
-            coda = apply_final_cadence(
-                _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
-                mood,
-            )
-            for slot in coda.chords:
-                result.extend(
-                    (slot.degree, self._chord_offsets(slot, out.key.mode))
-                    for _ in range(slot.bars)
-                )
-        return result
-
     @pytest.mark.parametrize(
         ("mood", "duration"),
-        [(Mood.CALMING, 60), (Mood.CALMING, 45), (Mood.ELECTRIFYING, 60), (Mood.SLEEP, 60)],
+        [
+            (Mood.CALMING, 60),
+            (Mood.CALMING, 45),
+            (Mood.ELECTRIFYING, 60),
+            (Mood.SLEEP, 60),
+            (Mood.CALMING, 180),
+        ],
     )
     def test_all_notes_are_chord_tones(self, mood: Mood, duration: int) -> None:
         out = compose(_spec(mood, duration=duration, seed=42))
-        bars = self._bar_degrees_and_offsets(out, mood.value)
+        bars = _bar_degrees_and_offsets(out, mood.value)
         assert len(bars) == out.arrangement.total_bars_with_coda
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
@@ -321,12 +346,12 @@ class TestChordToneHarmony:
             if note.voice_id == 2:  # percussion keys are GM drum map, not pitched
                 continue
             bar = note.tick // ticks_per_bar
-            _degree, offsets = bars[bar]
-            sounding = {(tonic + offset) % 12 for offset in offsets}
+            _degree, offsets, key_offset = bars[bar]
+            sounding = {(tonic + key_offset + offset) % 12 for offset in offsets}
             if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
                 # An anacrusis pickup anticipates the next bar's chord.
-                _next_degree, next_offsets = bars[bar + 1]
-                sounding |= {(tonic + offset) % 12 for offset in next_offsets}
+                _next_degree, next_offsets, next_offset = bars[bar + 1]
+                sounding |= {(tonic + next_offset + offset) % 12 for offset in next_offsets}
             assert note.pitch_midi % 12 in sounding, (
                 f"bar {bar}: pitch {note.pitch_midi} "
                 f"not in chord pcs {sounding} (offsets {offsets})"
@@ -343,23 +368,23 @@ class TestChordToneHarmony:
             for slot in template.chords
         )
         out = compose(_spec(Mood.CALMING, duration=60, seed=42))
-        bars = self._bar_degrees_and_offsets(out, Mood.CALMING.value)
-        assert any(len(offsets) == 4 for _degree, offsets in bars)
+        bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
+        assert any(len(offsets) == 4 for _degree, offsets, _key_offset in bars)
 
     def test_bass_walks_and_stays_on_chord_tones(self) -> None:
         """The bass is a walking line: every note is a chord tone of its
         bar, section starts land in root position, and consecutive chord
         basses move by small intervals instead of jumping octaves."""
         out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
-        bars = self._bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
+        bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
         bass_by_bar: dict[int, list[int]] = {}
         for note in out.notation_score.notes:
             if note.voice_id == 0:
                 bass_by_bar.setdefault(note.tick // ticks_per_bar, []).append(note.pitch_midi)
-        for bar, (_degree, offsets) in enumerate(bars):
-            sounding = {(tonic + offset) % 12 for offset in offsets}
+        for bar, (_degree, offsets, key_offset) in enumerate(bars):
+            sounding = {(tonic + key_offset + offset) % 12 for offset in offsets}
             for pitch in set(bass_by_bar[bar]):
                 assert pitch % 12 in sounding, (
                     f"bar {bar}: bass {pitch} not a chord tone of {sounding}"
@@ -382,10 +407,12 @@ class TestChordToneHarmony:
         out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
         assert out.key.mode == "major"
         tonic = key_root_midi(out.key)
-        bars = self._bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
+        bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
         # Diatonic major degree 6 is (11, 14, 17); the borrowed bVII
         # takes the minor-mode table, giving (10, 14, 17).
-        borrowed_bars = [b for b, (_degree, offsets) in enumerate(bars) if offsets == (10, 14, 17)]
+        borrowed_bars = [
+            b for b, (_degree, offsets, _key_offset) in enumerate(bars) if offsets == (10, 14, 17)
+        ]
         assert borrowed_bars, "expected the bVII borrowed slot to sound"
         ticks_per_bar = out.notation_score.ppq * 4
         pitched = [n for n in out.notation_score.notes if n.voice_id != 2]
@@ -640,22 +667,14 @@ class TestExpressionModel:
         assert len(melody_plan) == len(heads)
         # The sheet stays on the grid; the plan wobbles within ±10 ms.
         for plan_event, score_note in zip(melody_plan, heads, strict=True):
-            grid_us = ticks_to_microseconds(
-                score_note.tick, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
-            )
+            grid_us = microseconds_at_tick(score_note.tick, out.notation_score.tempo)
             assert abs(plan_event.start_us - grid_us) <= 10_000
 
     def test_none_humanization_is_grid_exact(self) -> None:
-        from saimc.compose.score import microseconds_to_ticks
-
         out = compose(_spec(Mood.CALMING, duration=60, humanization="none"))
         for event in out.performance_plan.notes:
-            tick = microseconds_to_ticks(
-                event.start_us, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
-            )
-            back = ticks_to_microseconds(
-                tick, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
-            )
+            tick = ticks_at_microsecond(event.start_us, out.notation_score.tempo)
+            back = microseconds_at_tick(tick, out.notation_score.tempo)
             assert event.start_us == back
 
     def test_humanization_deterministic(self) -> None:
@@ -754,3 +773,184 @@ class TestRhythmVocabulary:
         xml = notation_score_to_musicxml(out.notation_score)
         assert '<tied type="start"' in xml
         assert '<tied type="stop"' in xml
+
+
+class TestArrangementArc:
+    """S8: long pieces open thin, breathe with terraced dynamics, lift
+    into a new key for the final repetition, and ease into the final
+    cadence with a ritardando."""
+
+    def _melody(self, out: NotationScore) -> list:
+        return sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+        )
+
+    def _bass(self, out: NotationScore) -> list:
+        return sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 0), key=lambda n: n.tick
+        )
+
+    def _section_bass_pcs(self, out: NotationScore, section: int) -> dict[int, int]:
+        """First bass note's pitch class per bar of one section."""
+        arrangement = out.arrangement
+        ticks_per_bar = out.notation_score.ppq * 4
+        start = section * arrangement.form_bars * ticks_per_bar
+        pcs: dict[int, int] = {}
+        for note in self._bass(out):
+            if start <= note.tick < start + arrangement.form_bars * ticks_per_bar:
+                pcs.setdefault((note.tick - start) // ticks_per_bar, note.pitch_midi % 12)
+        return pcs
+
+    # --- intro ---
+
+    def test_long_pieces_open_with_a_bass_alone_intro(self) -> None:
+        from saimc.compose.duration import INTRO_BARS
+
+        out = compose(_spec(Mood.CALMING, duration=120))
+        arrangement = out.arrangement
+        assert arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        assert arrangement.intro_bars == INTRO_BARS
+        intro_end = arrangement.intro_bars * out.notation_score.ppq * 4
+        assert not [n for n in self._melody(out) if n.tick < intro_end], (
+            "melody played during the intro"
+        )
+        assert [n for n in self._bass(out) if n.tick < intro_end], (
+            "the intro is not silent: bass should carry it"
+        )
+
+    def test_short_pieces_skip_the_intro(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        assert out.arrangement.repetition_count < ARRANGEMENT_ARC_MIN_REPS
+        assert out.arrangement.intro_bars == 0
+
+    # --- modulation (lift and return) ---
+
+    def test_final_repetition_is_lifted_and_returns_home(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=180))
+        arrangement = out.arrangement
+        assert arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        tonic_pc = key_root_midi(out.key) % 12
+        # The oracle mirrors the engine's walk, so use it directly: the
+        # final section's sounding chords sit a whole step above home.
+        bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
+        body_start = (arrangement.repetition_count - 1) * arrangement.form_bars
+        lifted_heard = False
+        for bar in range(body_start, body_start + arrangement.form_bars - 2):
+            _degree, offsets, key_offset = bars[bar]
+            assert key_offset == MODULATION_OFFSET, f"bar {bar} lost its lift"
+            bass_pc = self._section_bass_pcs(out, arrangement.repetition_count - 1)[
+                bar - body_start
+            ]
+            lifted_pcs = {(tonic_pc + key_offset + off) % 12 for off in offsets}
+            home_pcs = {(tonic_pc + off) % 12 for off in offsets}
+            assert bass_pc in lifted_pcs, f"bar {bar}: bass pc {bass_pc} not in {lifted_pcs}"
+            lifted_heard |= bass_pc not in home_pcs
+        assert lifted_heard, "the lift never left the home key's pitch classes"
+
+        # The lift-and-return means the piece still ends at home.
+        report = lint(out.notation_score)
+        assert report.passed, f"lint issues: {report.issues}"
+        third = 4 if out.key.mode == "major" else 3
+        tonic_pc = key_root_midi(out.key) % 12
+        last_melody = max(self._melody(out), key=lambda n: n.tick)
+        assert last_melody.pitch_midi % 12 in (tonic_pc, (tonic_pc + third) % 12)
+
+    # --- terraced dynamics ---
+
+    def test_velocity_terracing_shapes_the_sections(self) -> None:
+        from saimc.compose.engine import _section_velocity_scale
+
+        # One repetition: no terracing at all.
+        assert _section_velocity_scale(0, 1) == 1.0
+        # Four repetitions: thin opening, peak before the close, eased close.
+        assert _section_velocity_scale(0, 4) == pytest.approx(0.82)
+        assert _section_velocity_scale(1, 4) == 1.0
+        assert _section_velocity_scale(2, 4) == pytest.approx(1.12)
+        assert _section_velocity_scale(3, 4) == pytest.approx(0.95)
+
+        # Audibly: the penultimate section outplays the opening one.
+        out = compose(_spec(Mood.CALMING, duration=120))
+        arrangement = out.arrangement
+        ticks_per_bar = out.notation_score.ppq * 4
+
+        def mean_velocity(section: int) -> float:
+            start = section * arrangement.form_bars * ticks_per_bar
+            notes = [
+                n
+                for n in self._melody(out)
+                if start <= n.tick < start + arrangement.form_bars * ticks_per_bar
+            ]
+            return sum(n.velocity for n in notes) / len(notes)
+
+        assert mean_velocity(arrangement.repetition_count - 2) > mean_velocity(0)
+
+    def test_cc11_rides_the_terraced_sections(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=120))
+        arrangement = out.arrangement
+        tempo = out.notation_score.tempo
+        ticks_per_bar = out.notation_score.ppq * 4
+        cc11 = [c for c in out.performance_plan.controllers if c.control == 11]
+        assert cc11
+
+        def mean_cc(section: int) -> float:
+            start_us = microseconds_at_tick(section * arrangement.form_bars * ticks_per_bar, tempo)
+            end_us = microseconds_at_tick(
+                (section + 1) * arrangement.form_bars * ticks_per_bar, tempo
+            )
+            values = [c.value for c in cc11 if start_us <= c.start_us < end_us]
+            return sum(values) / len(values)
+
+        assert mean_cc(arrangement.repetition_count - 2) > mean_cc(0)
+
+    # --- ritardando ---
+
+    def test_coda_pieces_slow_across_the_coda(self) -> None:
+        from saimc.compose.duration import RITARDANDO_FACTOR
+        from saimc.compose.score import TempoPoint
+
+        out = compose(_spec(Mood.CALMING, duration=45))
+        arrangement = out.arrangement
+        assert arrangement.coda_bars > 0
+        assert arrangement.ritardando_factor == pytest.approx(RITARDANDO_FACTOR)
+        coda_start_tick = arrangement.repetition_count * arrangement.form_bars * 4 * 480
+        assert out.notation_score.tempo.changes == (
+            TempoPoint(
+                tick=coda_start_tick,
+                bpm=round(arrangement.tempo_bpm * RITARDANDO_FACTOR, 1),
+            ),
+        )
+        # The duration math included the slowdown, so the realised
+        # duration still honours the ±2% promise.
+        realized = realized_duration_seconds(out.performance_plan)
+        assert abs(realized - 45.0) / 45.0 <= 0.02
+
+    def test_long_pieces_ease_into_the_final_cadence(self) -> None:
+        from saimc.compose.duration import RITARDANDO_BARS, RITARDANDO_FACTOR
+        from saimc.compose.score import TempoPoint
+
+        out = compose(_spec(Mood.CALMING, duration=120))
+        arrangement = out.arrangement
+        assert arrangement.coda_bars == 0
+        assert arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        assert arrangement.ritardando_factor == pytest.approx(RITARDANDO_FACTOR)
+        change_tick = (arrangement.total_bars - RITARDANDO_BARS) * 4 * 480
+        assert out.notation_score.tempo.changes == (
+            TempoPoint(
+                tick=change_tick,
+                bpm=round(arrangement.tempo_bpm * RITARDANDO_FACTOR, 1),
+            ),
+        )
+        realized = realized_duration_seconds(out.performance_plan)
+        assert abs(realized - 120.0) / 120.0 <= 0.02
+
+    def test_pinned_tempo_keeps_a_constant_tempo(self) -> None:
+        """The spec's tempo promise outranks the decorative arc."""
+        out = compose(_spec(Mood.CALMING, duration=180, tempo_bpm=63))
+        assert out.notation_score.tempo.bpm == 63
+        assert out.notation_score.tempo.changes == ()
+        assert out.arrangement.ritardando_factor == 1.0
+
+    def test_short_pieces_keep_a_constant_tempo(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=30))
+        assert out.arrangement.repetition_count < ARRANGEMENT_ARC_MIN_REPS
+        assert out.notation_score.tempo.changes == ()

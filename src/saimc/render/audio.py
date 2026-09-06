@@ -33,6 +33,9 @@ from saimc.compose.score import (
     VOICE_BASS,
     VOICE_MELODY,
     PerformancePlan,
+    TempoMap,
+    TempoPoint,
+    ticks_at_microsecond,
 )
 from saimc.jobs.stages import SubprocessTimeoutError, safe_run
 from saimc.render.ffmpeg_audit import audit_ffmpeg
@@ -141,16 +144,20 @@ def build_smf(
     plan: PerformancePlan,
     *,
     bpm: float,
+    tempo_changes: tuple[TempoPoint, ...] = (),
     voice_instruments: Mapping[int, str] | None = None,
     soundfont_path: Path | None = None,
 ) -> MidiFile:
     """Convert a PerformancePlan into a SMF Type-0 MIDI file.
 
     `bpm` is the realised tempo of the plan (taken from the
-    NotationScore.tempo that produced the plan). The SMF uses PPQ=480,
-    matching the NotationScore's PPQ. The set_tempo meta event carries
-    the integer microseconds-per-quarter so that downstream tools
-    (FluidSynth included) get an exact tempo.
+    NotationScore.tempo that produced the plan); `tempo_changes`
+    carries any later tempo points (the outro ritardando) so the SMF
+    reproduces the plan's piecewise timing — the note ticks below are
+    converted on that same map. The SMF uses PPQ=480, matching the
+    NotationScore's PPQ. Each set_tempo meta event carries the integer
+    microseconds-per-quarter so that downstream tools (FluidSynth
+    included) get an exact tempo.
 
     `voice_instruments` maps voice_id -> instrument name; each mapped
     voice gets a General MIDI program_change on its channel so
@@ -165,14 +172,26 @@ def build_smf(
     """
     import mido
 
+    tempo = TempoMap(bpm=bpm, ppq=PPQ, changes=tempo_changes)
+
     midi = mido.MidiFile(type=0)
     midi.ticks_per_beat = PPQ
     track = mido.MidiTrack()
     midi.tracks.append(track)
 
     # Tempo: microseconds per quarter note. bpm = 60_000_000 / us_per_quarter.
+    # The tempo map's points land as set_tempo events at their ticks;
+    # they sort ahead of anything else at the same tick (order -2).
     us_per_quarter = round(60_000_000 / bpm)
     track.append(mido.MetaMessage("set_tempo", tempo=us_per_quarter, time=0))
+    events: list[tuple[int, int, mido.Message]] = [
+        (
+            point.tick,
+            -2,
+            mido.MetaMessage("set_tempo", tempo=round(60_000_000 / point.bpm)),
+        )
+        for point in tempo.changes
+    ]
 
     # Program changes up front, one per (voice, channel) that appears in
     # the plan or in voice_instruments. Channels are assigned the same
@@ -257,15 +276,16 @@ def build_smf(
 
     # Convert each PerformanceNoteEvent to a note_on / note_off pair.
     # PPQ=480 ticks per beat. The plan's start_us is in microseconds;
-    # we need integer ticks at PPQ=480. SMF event times are DELTAS from
-    # the previous event on the track, and the plan's voices overlap, so
-    # collect all events on an absolute-tick timeline and delta-encode
-    # in order (note_on before note_off at the same tick). Controller
-    # changes and pitch bends land at order -1 so a pedal press (or
-    # bend) precedes the note sounding at the same tick.
-    events: list[tuple[int, int, mido.Message]] = []
+    # we need integer ticks at PPQ=480, converted on the piecewise
+    # tempo map so a ritardando lands where the plan says it does.
+    # SMF event times are DELTAS from the previous event on the track,
+    # and the plan's voices overlap, so collect all events on an
+    # absolute-tick timeline and delta-encode in order (note_on before
+    # note_off at the same tick). Tempo changes sort at order -2 and
+    # controller changes / pitch bends at -1 so a tempo switch (or a
+    # pedal press) precedes the note sounding at the same tick.
     for controller in plan.controllers:
-        controller_tick = _us_to_ticks(controller.start_us, bpm)
+        controller_tick = ticks_at_microsecond(controller.start_us, tempo)
         events.append(
             (
                 controller_tick,
@@ -282,7 +302,7 @@ def build_smf(
             )
         )
     for bend in plan.pitch_bends:
-        bend_tick = _us_to_ticks(bend.start_us, bpm)
+        bend_tick = ticks_at_microsecond(bend.start_us, tempo)
         events.append(
             (
                 bend_tick,
@@ -297,8 +317,8 @@ def build_smf(
             )
         )
     for note in plan.notes:
-        on_tick = _us_to_ticks(note.start_us, bpm)
-        off_tick = _us_to_ticks(note.start_us + note.duration_us, bpm)
+        on_tick = ticks_at_microsecond(note.start_us, tempo)
+        off_tick = ticks_at_microsecond(note.start_us + note.duration_us, tempo)
         if off_tick <= on_tick:
             # Guard against zero-or-negative durations from the round
             # trip; the engine shouldn't produce these but we don't
@@ -336,11 +356,6 @@ def build_smf(
         track.append(message)
         prev_tick = tick
     return midi
-
-
-def _us_to_ticks(microseconds: int, bpm: float) -> int:
-    """Convert microseconds to integer ticks at PPQ=480 and the given bpm."""
-    return round(microseconds * bpm * PPQ / 60_000_000)
 
 
 def _channel_for_voice(voice_id: int, *, percussion: bool = False) -> int:
@@ -700,6 +715,7 @@ def render_audio(
     soundfont_path: Path,
     out_dir: Path,
     job_id: str,
+    tempo_changes: tuple[TempoPoint, ...] = (),
     voice_instruments: Mapping[int, str] | None = None,
     fluidsynth_bin: str | None = None,
     ffmpeg_bin: str | None = None,
@@ -710,7 +726,8 @@ def render_audio(
 
     `out_dir` is the per-job artifacts directory (the storage layer
     has already created it). `job_id` is used to construct artifact
-    file names.
+    file names. `tempo_changes` is the NotationScore's tempo map
+    (empty for constant-tempo pieces).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     smf_path = out_dir / f"{job_id}.mid"
@@ -722,6 +739,7 @@ def render_audio(
         smf = build_smf(
             plan,
             bpm=bpm,
+            tempo_changes=tempo_changes,
             voice_instruments=voice_instruments,
             soundfont_path=soundfont_path,
         )

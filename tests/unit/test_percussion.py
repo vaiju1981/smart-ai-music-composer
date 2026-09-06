@@ -177,19 +177,52 @@ class TestFillsAndDownbeats:
             and n.pitch_midi in (DRUM_HIGH_TOM, DRUM_LOW_TOM)
         ]
 
-    def test_every_section_downbeat_has_a_crash(self) -> None:
+    def test_every_sounding_section_downbeat_has_a_crash(self) -> None:
+        from saimc.compose.engine import ARRANGEMENT_ARC_MIN_REPS, PERCUSSION_REST_SECTION
         from saimc.compose.percussion import DRUM_CRASH
 
         out = compose(_drum_spec(duration_seconds=120))
         arr = out.arrangement
         ticks_per_bar = bar_ticks(out.time_signature)
         expected_bars = {s * arr.form_bars for s in range(arr.repetition_count)}
+        # Long pieces rest the kit during the intro and one mid-piece
+        # section; those downbeats are silent like the rest of them.
+        if arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS:
+            expected_bars -= {0}
+            expected_bars -= {s * arr.form_bars for s in (PERCUSSION_REST_SECTION,)}
         crash_bars = {
             n.tick // ticks_per_bar
             for n in self._drum_notes(out)
             if n.pitch_midi == DRUM_CRASH
         }
         assert crash_bars == expected_bars
+
+    def test_long_pieces_rest_the_kit_then_it_returns_with_a_crash(self) -> None:
+        from saimc.compose.engine import ARRANGEMENT_ARC_MIN_REPS, PERCUSSION_REST_SECTION
+        from saimc.compose.percussion import DRUM_CRASH
+
+        out = compose(_drum_spec(duration_seconds=120))
+        arr = out.arrangement
+        assert arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        ticks_per_bar = bar_ticks(out.time_signature)
+        hit_bars = {
+            n.tick // ticks_per_bar for n in self._drum_notes(out)
+        }
+        # The intro bars and the rest section are silent...
+        rested = set(range(arr.intro_bars)) | set(
+            range(
+                PERCUSSION_REST_SECTION * arr.form_bars,
+                (PERCUSSION_REST_SECTION + 1) * arr.form_bars,
+            )
+        )
+        assert not (hit_bars & rested), f"drums sounded in rest bars: {hit_bars & rested}"
+        # ...and the kit returns at the next section downbeat with a crash.
+        return_bar = (PERCUSSION_REST_SECTION + 1) * arr.form_bars
+        assert return_bar in hit_bars
+        assert any(
+            n.tick == return_bar * ticks_per_bar and n.pitch_midi == DRUM_CRASH
+            for n in self._drum_notes(out)
+        )
 
     def test_rotation_holds_a_then_changes_pace(self) -> None:
         from saimc.compose.percussion import rotation_index

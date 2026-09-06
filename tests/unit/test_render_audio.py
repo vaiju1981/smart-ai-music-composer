@@ -20,6 +20,10 @@ from saimc.compose.score import (
     PPQ,
     PerformanceNoteEvent,
     PerformancePlan,
+    TempoMap,
+    TempoPoint,
+    microseconds_at_tick,
+    ticks_at_microsecond,
 )
 from saimc.render.audio import (
     ACCOMPANIMENT_CC7,
@@ -33,7 +37,6 @@ from saimc.render.audio import (
     AudioRenderErrorCode,
     _hash_file,
     _loudnorm_filter,
-    _us_to_ticks,
     build_smf,
     encode_opus,
     find_ffmpeg,
@@ -160,9 +163,17 @@ class TestLoudnormFilter:
 class TestTickConversion:
     def test_known_quantities(self) -> None:
         # 1 quarter at 120bpm = 500_000 us = 480 ticks.
-        assert _us_to_ticks(500_000, 120.0) == 480
+        assert ticks_at_microsecond(500_000, TempoMap(bpm=120.0)) == 480
         # 1 second at 60bpm = 1_000_000 us = 480 ticks.
-        assert _us_to_ticks(1_000_000, 60.0) == 480
+        assert ticks_at_microsecond(1_000_000, TempoMap(bpm=60.0)) == 480
+
+    def test_tempo_change_splits_the_map(self) -> None:
+        # 1 bar (480 ticks) at 120bpm = 0.5s, then 60bpm halves the
+        # tick rate; 2 seconds of wall time therefore reaches tick
+        # 1200, and the map converts back exactly.
+        tempo = TempoMap(bpm=120.0, changes=(TempoPoint(tick=480, bpm=60.0),))
+        assert ticks_at_microsecond(2_000_000, tempo) == 1200
+        assert microseconds_at_tick(1200, tempo) == 2_000_000
 
 
 class TestSmfPercussion:
@@ -928,3 +939,49 @@ class TestSmfExpressionEvents:
             if m.type == "control_change" and m.control == 64
         )
         assert pedal_index < first_note_on
+
+
+class TestSmfTempoMap:
+    """S8: the SMF reproduces a piecewise tempo map (the outro rit)."""
+
+    def test_set_tempo_at_the_change_tick(self) -> None:
+        plan = _plan_with_notes()
+        smf = build_smf(plan, bpm=120.0, tempo_changes=(TempoPoint(tick=480, bpm=60.0),))
+        absolute = 0
+        tempos: dict[int, int] = {}
+        for msg in smf.tracks[0]:
+            absolute += msg.time
+            if msg.type == "set_tempo":
+                tempos[absolute] = msg.tempo
+        # Base tempo at tick 0, then the ritardando from tick 480.
+        assert tempos == {0: 500_000, 480: 1_000_000}
+
+    def test_note_onsets_follow_the_piecewise_map(self) -> None:
+        # Two notes: one before the change (120bpm), one an equal tick
+        # span after it (60bpm). In wall time the second onset lands
+        # twice as far out.
+        tempo = TempoMap(bpm=120.0, changes=(TempoPoint(tick=480, bpm=60.0),))
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=0,
+                    pitch_midi=60,
+                    start_us=microseconds_at_tick(tick, tempo),
+                    duration_us=100_000,
+                    velocity=64,
+                )
+                for tick in (0, 480, 960)
+            ],
+        )
+        smf = build_smf(plan, bpm=120.0, tempo_changes=tempo.changes)
+        elapsed_us = 0.0
+        us_per_tick = 500_000 / PPQ
+        onsets: list[float] = []
+        for msg in smf.tracks[0]:
+            elapsed_us += msg.time * us_per_tick
+            if msg.type == "set_tempo":
+                us_per_tick = msg.tempo / PPQ
+            elif msg.type == "note_on" and msg.velocity > 0:
+                onsets.append(elapsed_us)
+        assert onsets == [0.0, 500_000.0, 1_500_000.0]

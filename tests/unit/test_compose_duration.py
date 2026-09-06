@@ -5,8 +5,12 @@ from __future__ import annotations
 import pytest
 
 from saimc.compose.duration import (
+    ARRANGEMENT_ARC_MIN_REPS,
     DURATION_TOLERANCE,
+    INTRO_BARS,
     MAX_REPEATS,
+    RITARDANDO_BARS,
+    RITARDANDO_FACTOR,
     DurationArrangement,
     DurationUnfulfillableError,
     arrange_for_duration,
@@ -179,3 +183,51 @@ class TestSectionSeed:
     def test_none_seed_uses_index(self) -> None:
         assert section_seed(None, 0) == 0
         assert section_seed(None, 5) == 5
+
+
+class TestArrangementArc:
+    """S8: the arc's extra seconds are part of the duration math."""
+
+    def test_long_pieces_carry_the_ritardando(self) -> None:
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=120.0,
+            time_signature="4/4",
+        )
+        assert arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        assert arr.intro_bars == INTRO_BARS
+        assert arr.ritardando_factor == RITARDANDO_FACTOR
+
+    def test_short_pieces_stay_constant_tempo(self) -> None:
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=30.0,
+            time_signature="4/4",
+        )
+        assert arr.repetition_count < ARRANGEMENT_ARC_MIN_REPS
+        assert arr.intro_bars == 0
+        assert arr.ritardando_factor == 1.0
+
+    def test_pinned_tempo_disables_the_ritardando(self) -> None:
+        """The tempo promise outranks the decorative arc: a pinned
+        tempo plus the slowdown's extra seconds would leave some
+        durations unfulfillable, so a pinned piece plays straight."""
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=180.0,
+            time_signature="4/4",
+            tempo_bpm=63.0,
+        )
+        assert arr.tempo_bpm == 63.0
+        assert arr.ritardando_factor == 1.0
+
+    def test_realised_math_includes_the_ritardando(self) -> None:
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=120.0,
+            time_signature="4/4",
+        )
+        rit_ticks = RITARDANDO_BARS * bar_ticks("4/4")
+        body = (arr.total_bars * bar_ticks("4/4") - rit_ticks) / PPQ * 60.0 / arr.tempo_bpm
+        tail = rit_ticks / PPQ * 60.0 / (arr.tempo_bpm * arr.ritardando_factor)
+        assert abs(body + tail - 120.0) / 120.0 <= DURATION_TOLERANCE

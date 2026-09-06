@@ -42,6 +42,26 @@ DURATION_TOLERANCE: float = 0.02
 MAX_REPEATS: int = 8
 """Per §10 #10: maximum 8 repetitions of any source section."""
 
+ARRANGEMENT_ARC_MIN_REPS: int = 3
+"""Long pieces (>= this many repetitions) get the full arc: a
+bass-alone intro carved from the first section, a modulation on the
+final repetition, and (for the drum set) a percussion rest section."""
+
+INTRO_BARS: int = 2
+"""Bars of bass alone that open an arc'd piece (carved from section 0,
+so the total bar count and duration math are unchanged)."""
+
+RITARDANDO_FACTOR: float = 0.85
+"""The outro slows to this fraction of the piece's tempo. A coda'd
+piece slows across its whole coda; a long arc'd piece slows across
+its final `RITARDANDO_BARS`. The duration math includes the slowdown
+in both branches, so a piece that arrives at its target with a
+ritardando lands there honestly."""
+
+RITARDANDO_BARS: int = 2
+"""Bars of ritardando on a long (arc'd) piece without a coda: the
+final cadence itself eases in."""
+
 BAR_DURATIONS_TICKS: dict[str, int] = {
     "4/4": 4 * PPQ,
     "3/4": 3 * PPQ,
@@ -73,6 +93,11 @@ class DurationArrangement:
     (repetition_count, tempo) hits the target. Per §10 #1, a coda is
     "a shorter coda made only of complete measures" — appended after
     the final full-form repetition. `coda_bars=0` means no coda.
+
+    `intro_bars` is the bass-alone opening carved from the first
+    section on long pieces (>= `ARRANGEMENT_ARC_MIN_REPS` repetitions);
+    it does not add bars. `ritardando_factor` below 1.0 slows the coda
+    (the outro) for the final cadence; 1.0 keeps a constant tempo.
     """
 
     form_bars: int
@@ -81,6 +106,8 @@ class DurationArrangement:
     total_bars: int
     tempo_bpm: float
     coda_bars: int = 0
+    intro_bars: int = 0
+    ritardando_factor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.repetition_count < 1:
@@ -95,6 +122,15 @@ class DurationArrangement:
         # size, the caller should bump repetition_count instead.
         if self.coda_bars > 0 and self.coda_bars >= self.form_bars:
             raise ValueError(f"coda_bars ({self.coda_bars}) must be < form_bars ({self.form_bars})")
+        if not 0 <= self.intro_bars < self.form_bars:
+            raise ValueError(
+                f"intro_bars ({self.intro_bars}) must be in [0, form_bars) "
+                f"({self.form_bars})"
+            )
+        if not 0.0 < self.ritardando_factor <= 1.0:
+            raise ValueError(
+                f"ritardando_factor must be in (0, 1]; got {self.ritardando_factor}"
+            )
 
     @property
     def total_bars_with_coda(self) -> int:
@@ -152,6 +188,11 @@ def arrange_for_duration(
 
     best_no_coda: tuple[float, int, float, float] | None = None
 
+    # A spec-pinned tempo is honoured at a constant tempo: the tempo
+    # promise outranks the decorative arc, and the slowdown's extra
+    # seconds could make a pinned tempo unfulfillable.
+    may_ritardando = tempo_bpm is None
+
     for repetition_count in range(1, MAX_REPEATS + 1):
         total_bars = base_form_bars * repetition_count
         total_ticks = total_bars * ticks_per_bar
@@ -168,7 +209,17 @@ def arrange_for_duration(
                 low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
             )
         for bpm in bpm_candidates:
-            realised = _realised_seconds(total_ticks, bpm)
+            long_piece = repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+            # A long piece eases in over its final cadence bars; the
+            # slowed seconds are part of the math so the ±2% promise
+            # holds for the piece the listener actually hears. Short
+            # pieces sit too close to the tempo range's edges for the
+            # slowdown to be compensable there.
+            realised = (
+                _realised_rit_seconds(total_ticks, ticks_per_bar, bpm, RITARDANDO_FACTOR)
+                if long_piece and may_ritardando
+                else _realised_seconds(total_ticks, bpm)
+            )
             delta = abs(realised - target_duration_seconds) / target_duration_seconds
             if delta <= tolerance:
                 chosen = round(bpm * 2) / 2
@@ -178,6 +229,10 @@ def arrange_for_duration(
                     repetition_count=repetition_count,
                     total_bars=total_bars,
                     tempo_bpm=chosen,
+                    intro_bars=INTRO_BARS if long_piece else 0,
+                    ritardando_factor=RITARDANDO_FACTOR
+                    if long_piece and may_ritardando
+                    else 1.0,
                 )
             if best_no_coda is None or (delta, repetition_count) < (
                 best_no_coda[0],
@@ -208,7 +263,16 @@ def arrange_for_duration(
                     low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
                 )
             for bpm in coda_bpm_candidates:
-                realised = _realised_seconds(total_ticks, bpm)
+                # The coda carries the outro ritardando: its seconds are
+                # computed at the slowed tempo so the ±2% promise holds
+                # for the piece the listener actually hears.
+                realised = (
+                    _realised_coda_seconds(
+                        total_ticks_no_coda, coda_ticks, bpm, RITARDANDO_FACTOR
+                    )
+                    if may_ritardando
+                    else _realised_seconds(total_ticks_no_coda + coda_ticks, bpm)
+                )
                 delta = abs(realised - target_duration_seconds) / target_duration_seconds
                 if delta <= tolerance:
                     chosen = round(bpm * 2) / 2
@@ -219,6 +283,10 @@ def arrange_for_duration(
                         total_bars=total_bars_no_coda,
                         tempo_bpm=chosen,
                         coda_bars=coda_bars,
+                        intro_bars=INTRO_BARS
+                        if repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+                        else 0,
+                        ritardando_factor=RITARDANDO_FACTOR if may_ritardando else 1.0,
                     )
 
     # No in-tolerance arrangement exists — with or without a coda. Per
@@ -269,6 +337,25 @@ def _realised_seconds(total_ticks: int, bpm: float) -> float:
     return (total_ticks / PPQ) * (60.0 / bpm)
 
 
+def _realised_rit_seconds(
+    total_ticks: int, ticks_per_bar: int, bpm: float, ritardando_factor: float
+) -> float:
+    """Realized seconds for a piece whose final cadence bars slow down."""
+    rit_ticks = min(RITARDANDO_BARS * ticks_per_bar, total_ticks)
+    return _realised_coda_seconds(
+        total_ticks - rit_ticks, rit_ticks, bpm, ritardando_factor
+    )
+
+
+def _realised_coda_seconds(
+    body_ticks: int, coda_ticks: int, bpm: float, ritardando_factor: float
+) -> float:
+    """Realized seconds for a coda'd piece whose outro slows down."""
+    return _realised_seconds(body_ticks, bpm) + _realised_seconds(
+        coda_ticks, bpm * ritardando_factor
+    )
+
+
 def section_seed(spec_seed: int | None, section_index: int) -> int:
     """Derive a deterministic seed for one repeated section.
 
@@ -282,10 +369,14 @@ def section_seed(spec_seed: int | None, section_index: int) -> int:
 
 
 __all__ = [
+    "ARRANGEMENT_ARC_MIN_REPS",
     "BAR_DURATIONS_TICKS",
     "DURATION_TOLERANCE",
+    "INTRO_BARS",
     "MAX_REPEATS",
     "PPQ",
+    "RITARDANDO_BARS",
+    "RITARDANDO_FACTOR",
     "DurationArrangement",
     "DurationUnfulfillableError",
     "arrange_for_duration",

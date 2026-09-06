@@ -32,7 +32,7 @@ from tempfile import TemporaryDirectory
 from saimc.canonical import canonical_dumps
 from saimc.compose.engine import EngineOutput, compose
 from saimc.compose.linter import lint
-from saimc.compose.score import PPQ, NotationScore, PerformancePlan
+from saimc.compose.score import PPQ, NotationScore, PerformancePlan, TempoPoint
 from saimc.render.audio import build_smf
 from saimc.spec import CompositionSpec
 
@@ -138,20 +138,27 @@ def gate_musicxml_structural(score: NotationScore) -> GateResult:
     )
 
 
-def gate_midi_parseable_and_onsets(plan: PerformancePlan, *, bpm: float) -> GateResult:
+def gate_midi_parseable_and_onsets(
+    plan: PerformancePlan,
+    *,
+    bpm: float,
+    tempo_changes: tuple[TempoPoint, ...] = (),
+) -> GateResult:
     """The SMF parses with mido and its onsets match the plan within ±20 ms.
 
     The SMF encodes the plan's microsecond schedule as PPQ=480 ticks;
-    this gate decodes the ticks back to microseconds and bounds the
-    quantization error. The piano-roll animation draws directly from
-    the same microsecond schedule, so this bounds the §8
-    audio/animation onset tolerance end to end.
+    this gate decodes the ticks back to microseconds — following the
+    file's own set_tempo events, so a piecewise tempo map (the outro
+    ritardando) is verified too — and bounds the quantization error.
+    The piano-roll animation draws directly from the same microsecond
+    schedule, so this bounds the §8 audio/animation onset tolerance
+    end to end.
     """
     import mido
 
     with TemporaryDirectory() as tmp:
         path = Path(tmp) / "gate.mid"
-        build_smf(plan, bpm=bpm).save(str(path))
+        build_smf(plan, bpm=bpm, tempo_changes=tempo_changes).save(str(path))
         parsed = mido.MidiFile(str(path))
         if parsed.type != 0 or parsed.ticks_per_beat != PPQ:
             return GateResult(
@@ -160,16 +167,20 @@ def gate_midi_parseable_and_onsets(plan: PerformancePlan, *, bpm: float) -> Gate
                 f"type={parsed.type} ppq={parsed.ticks_per_beat}",
             )
 
-        us_per_quarter = 60_000_000 / bpm
-        us_per_tick = us_per_quarter / PPQ
+        us_per_tick = 60_000_000 / bpm / PPQ
         # Loaded track messages carry delta ticks in chronological order;
-        # accumulate to absolute onset ticks.
-        absolute_tick = 0
+        # accumulate to absolute onset ticks. A set_tempo switches the
+        # tick rate for everything after it (its own delta is still
+        # covered by the previous rate, which is exactly how the file
+        # timelines work).
         onsets_us: list[float] = []
+        elapsed_us = 0.0
         for msg in parsed.tracks[0]:
-            absolute_tick += msg.time
-            if msg.type == "note_on" and msg.velocity > 0:
-                onsets_us.append(absolute_tick * us_per_tick)
+            elapsed_us += msg.time * us_per_tick
+            if msg.type == "set_tempo":
+                us_per_tick = msg.tempo / PPQ
+            elif msg.type == "note_on" and msg.velocity > 0:
+                onsets_us.append(elapsed_us)
         if len(onsets_us) != len(plan.notes):
             return GateResult(
                 "midi_parseable_and_onsets",
@@ -259,7 +270,9 @@ def run_all_gates(specs: list[CompositionSpec]) -> list[GateResult]:
         results.append(gate_musicxml_structural(output.notation_score))
         results.append(
             gate_midi_parseable_and_onsets(
-                output.performance_plan, bpm=output.arrangement.tempo_bpm
+                output.performance_plan,
+                bpm=output.arrangement.tempo_bpm,
+                tempo_changes=output.notation_score.tempo.changes,
             )
         )
         results.append(gate_duration_tolerance(spec, output))

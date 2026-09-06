@@ -71,6 +71,69 @@ def microseconds_to_ticks(microseconds: int, bpm: float, ppq: int = PPQ) -> int:
     return round(microseconds * ppq / quarter_micros)
 
 
+def microseconds_at_tick(tick: int, tempo: TempoMap) -> int:
+    """Absolute microseconds from the piece's start to `tick` on `tempo`.
+
+    The map is piecewise: each `TempoMap.changes` point switches the
+    tempo from its tick onward. Each segment converts its local tick
+    span with the constant-bpm helper, so the result is exact at every
+    grid tick the engine generates.
+    """
+    if tick < 0:
+        raise ValueError(f"tick must be non-negative; got {tick}")
+    elapsed = 0
+    segment_start = 0
+    bpm = tempo.bpm
+    for point in tempo.changes:
+        if tick <= point.tick:
+            break
+        elapsed += ticks_to_microseconds(point.tick - segment_start, bpm, ppq=tempo.ppq)
+        segment_start = point.tick
+        bpm = point.bpm
+    return elapsed + ticks_to_microseconds(tick - segment_start, bpm, ppq=tempo.ppq)
+
+
+def ticks_at_microsecond(microseconds: int, tempo: TempoMap) -> int:
+    """The tick that sounds at `microseconds` on `tempo` (inverse of the above).
+
+    Exact round trip for any tick fed through `microseconds_at_tick`:
+    the same segment split and rounding are applied in both directions.
+    """
+    if microseconds < 0:
+        raise ValueError(f"microseconds must be non-negative; got {microseconds}")
+    segment_start = 0
+    bpm = tempo.bpm
+    consumed = 0
+    for point in tempo.changes:
+        segment_us = ticks_to_microseconds(point.tick - segment_start, bpm, ppq=tempo.ppq)
+        if microseconds < consumed + segment_us:
+            break
+        consumed += segment_us
+        segment_start = point.tick
+        bpm = point.bpm
+    return segment_start + microseconds_to_ticks(
+        microseconds - consumed, bpm, ppq=tempo.ppq
+    )
+
+
+@dataclass(frozen=True)
+class TempoPoint:
+    """One tempo change: from `tick` onward the tempo is `bpm`.
+
+    `tick` is an absolute PPQ tick into the piece (strictly positive —
+    tick 0 is always the base tempo on `TempoMap`).
+    """
+
+    tick: int
+    bpm: float
+
+    def __post_init__(self) -> None:
+        if self.tick <= 0:
+            raise ValueError(f"TempoPoint.tick must be positive; got {self.tick}")
+        if self.bpm <= 0:
+            raise ValueError(f"TempoPoint.bpm must be positive; got {self.bpm}")
+
+
 @dataclass(frozen=True)
 class NoteEvent:
     """A single note in the NotationScore.
@@ -128,12 +191,26 @@ class Measure:
 class TempoMap:
     """Realized tempo(s) for the score.
 
-    Phase 1 uses a single tempo for the whole piece; the field is a
-    list to leave room for tempo changes without changing the type.
+    `bpm` is the base tempo from tick 0; `changes` carries later
+    tempo points (e.g. the outro ritardando), each taking over from
+    its tick to the next. Empty `changes` is a constant-tempo piece.
     """
 
     bpm: float
     ppq: int = PPQ
+    changes: tuple[TempoPoint, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.bpm <= 0:
+            raise ValueError(f"bpm must be positive; got {self.bpm}")
+        previous_tick = 0
+        for point in self.changes:
+            if point.tick <= previous_tick:
+                raise ValueError(
+                    f"tempo changes must ascend strictly; "
+                    f"{point.tick} follows {previous_tick}"
+                )
+            previous_tick = point.tick
 
 
 @dataclass(frozen=True)
@@ -172,13 +249,14 @@ class NotationScore:
         tempo_bpm: float,
         measures: list[Measure],
         notes: list[NoteEvent],
+        tempo_changes: tuple[TempoPoint, ...] = (),
     ) -> NotationScore:
         return NotationScore(
             format=f"NotationScore:{CANONICAL_FORMAT_VERSION}",
             ppq=ppq,
             key=key,
             time_signature=time_signature,
-            tempo=TempoMap(bpm=tempo_bpm, ppq=ppq),
+            tempo=TempoMap(bpm=tempo_bpm, ppq=ppq, changes=tempo_changes),
             measures=tuple(measures),
             notes=tuple(notes),
         )
@@ -195,7 +273,13 @@ class NotationScore:
             "ppq": self.ppq,
             "key": {"root": self.key.root, "mode": self.key.mode},
             "time_signature": self.time_signature,
-            "tempo": {"bpm": self.tempo.bpm, "ppq": self.tempo.ppq},
+            "tempo": {
+                "bpm": self.tempo.bpm,
+                "ppq": self.tempo.ppq,
+                "changes": [
+                    {"tick": p.tick, "bpm": p.bpm} for p in self.tempo.changes
+                ],
+            },
             "measures": [
                 {
                     "index": m.index,
@@ -402,9 +486,12 @@ __all__ = [
     "PerformancePlan",
     "PitchBendEvent",
     "TempoMap",
+    "TempoPoint",
     "merge_notation_score",
     "merge_performance_plan",
+    "microseconds_at_tick",
     "microseconds_to_ticks",
     "realized_duration_seconds",
+    "ticks_at_microsecond",
     "ticks_to_microseconds",
 ]

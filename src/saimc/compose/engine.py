@@ -41,6 +41,8 @@ from itertools import pairwise
 from typing import Any
 
 from saimc.compose.duration import (
+    ARRANGEMENT_ARC_MIN_REPS,
+    RITARDANDO_BARS,
     DurationArrangement,
     DurationUnfulfillableError,
     arrange_for_duration,
@@ -89,7 +91,8 @@ from saimc.compose.score import (
     PerformancePlan,
     PitchBendEvent,
     TempoMap,
-    ticks_to_microseconds,
+    TempoPoint,
+    microseconds_at_tick,
 )
 from saimc.spec import CompositionSpec, Instrument
 
@@ -153,12 +156,17 @@ class EngineOutput:
         score_payload = payload["notation_score"]
         plan_payload = payload["performance_plan"]
         arrangement_payload = payload["arrangement"]
+        tempo_payload = score_payload["tempo"]
         score = NotationScore(
             format=score_payload["format"],
             ppq=score_payload["ppq"],
             key=KeySignature(**score_payload["key"]),
             time_signature=score_payload["time_signature"],
-            tempo=TempoMap(**score_payload["tempo"]),
+            tempo=TempoMap(
+                bpm=tempo_payload["bpm"],
+                ppq=tempo_payload["ppq"],
+                changes=tuple(TempoPoint(**c) for c in tempo_payload.get("changes", ())),
+            ),
             measures=tuple(Measure(**m) for m in score_payload["measures"]),
             notes=tuple(NoteEvent(**n) for n in score_payload["notes"]),
         )
@@ -184,6 +192,8 @@ class EngineOutput:
             total_bars=arrangement_payload["total_bars"],
             tempo_bpm=arrangement_payload["tempo_bpm"],
             coda_bars=arrangement_payload.get("coda_bars", 0),
+            intro_bars=arrangement_payload.get("intro_bars", 0),
+            ritardando_factor=arrangement_payload.get("ritardando_factor", 1.0),
         )
         return cls(
             notation_score=score,
@@ -232,6 +242,7 @@ def compose(spec: CompositionSpec) -> EngineOutput:
         instrumentation=spec.instrumentation.value,
         humanization=spec.humanization,
         seed=spec.seed,
+        arrangement=arrangement,
     )
     return EngineOutput(
         notation_score=score,
@@ -268,6 +279,7 @@ def _build_score(
     prev_bass: int | None = None
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
+    long_piece = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
 
     for section_idx in range(arrangement.repetition_count):
         section_rng = random.Random(section_seed(spec.seed, section_idx))
@@ -284,11 +296,16 @@ def _build_score(
                 arrangement.form_bars,
                 variant_index=section_idx,
             )
-        if section_idx == arrangement.repetition_count - 1:
+        is_final_section = section_idx == arrangement.repetition_count - 1
+        if is_final_section:
             # The last repetition must land at home: rewrite its last
             # two bars as the mood's cadence (earlier sections may end
             # open — their V resolves into the next section's I).
             section_template = apply_final_cadence(section_template, spec.mood.value)
+        # Long pieces lift the final repetition a whole step — the
+        # piece ends in the new key, so the coda (which follows it)
+        # stays lifted too and the ending keeps its cadence.
+        key_offset = MODULATION_OFFSET if is_final_section and long_piece else 0
         section_notes = _generate_section(
             key=key,
             time_signature=time_signature,
@@ -298,8 +315,21 @@ def _build_score(
             seed_for_variation=rng_base_seed + section_idx,
             mood=spec.mood.value,
             prev_bass=prev_bass,
-            is_final_section=section_idx == arrangement.repetition_count - 1,
+            is_final_section=is_final_section,
+            key_offset=key_offset,
+            melody_from_bar=arrangement.intro_bars if section_idx == 0 else 0,
         )
+        # Terraced dynamics: the section's whole dynamic sits at its
+        # step of the arc rather than drifting continuously.
+        velocity_scale = _section_velocity_scale(section_idx, arrangement.repetition_count)
+        if velocity_scale != 1.0:
+            section_notes = [
+                replace(
+                    note,
+                    velocity=max(1, min(127, round(note.velocity * velocity_scale))),
+                )
+                for note in section_notes
+            ]
         notes.extend(section_notes)
         bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
         if bass_notes:
@@ -324,7 +354,22 @@ def _build_score(
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
             mood=spec.mood.value,
             prev_bass=prev_bass,
+            # The outro thins out: the coda opens bass alone, and a
+            # long-piece modulation stays lifted through the ending.
+            key_offset=MODULATION_OFFSET if long_piece else 0,
+            melody_from_bar=1 if arrangement.coda_bars >= 2 else 0,
         )
+        velocity_scale = _section_velocity_scale(
+            arrangement.repetition_count, arrangement.repetition_count
+        )
+        if velocity_scale != 1.0:
+            coda_notes = [
+                replace(
+                    note,
+                    velocity=max(1, min(127, round(note.velocity * velocity_scale))),
+                )
+                for note in coda_notes
+            ]
         notes.extend(coda_notes)
         cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
 
@@ -334,7 +379,18 @@ def _build_score(
     # with A/B variants rotate across sections, matching the chord
     # templates' variation rule. Melodic meters the library does not
     # cover (5/4, 7/8) get no percussion rather than a wrong pattern.
+    # Long pieces rest the kit during the bass-alone intro bars and one
+    # mid-piece section, so the texture has a hole before it refills.
     if spec.instrumentation == Instrument.DRUM_SET:
+        rest_bars: set[int] = set()
+        if long_piece:
+            rest_bars.update(range(arrangement.intro_bars))
+            rest_bars.update(
+                range(
+                    PERCUSSION_REST_SECTION * arrangement.form_bars,
+                    (PERCUSSION_REST_SECTION + 1) * arrangement.form_bars,
+                )
+            )
         notes.extend(
             _generate_percussion(
                 mood=spec.mood.value,
@@ -343,6 +399,7 @@ def _build_score(
                 repetition_count=arrangement.repetition_count,
                 total_bars=arrangement.total_bars_with_coda,
                 seed=rng_base_seed,
+                rest_bars=frozenset(rest_bars),
             )
         )
 
@@ -360,6 +417,27 @@ def _build_score(
             )
         )
 
+    # The outro ritardando: a coda'd piece slows across its whole coda;
+    # a long piece without a coda eases in over its final cadence bars.
+    # The arrangement's duration math already included the slowdown, so
+    # the tempo map and the realised duration agree.
+    tempo_changes: tuple[TempoPoint, ...] = ()
+    if arrangement.ritardando_factor < 1.0:
+        if arrangement.coda_bars > 0:
+            change_tick = arrangement.repetition_count * arrangement.form_bars * bar_ticks(
+                time_signature
+            )
+        else:
+            change_tick = (
+                arrangement.total_bars - RITARDANDO_BARS
+            ) * bar_ticks(time_signature)
+        tempo_changes = (
+            TempoPoint(
+                tick=change_tick,
+                bpm=round(arrangement.tempo_bpm * arrangement.ritardando_factor, 1),
+            ),
+        )
+
     return NotationScore.make(
         ppq=PPQ,
         key=key,
@@ -367,6 +445,7 @@ def _build_score(
         tempo_bpm=arrangement.tempo_bpm,
         measures=measures,
         notes=notes,
+        tempo_changes=tempo_changes,
     )
 
 
@@ -381,6 +460,8 @@ def _generate_section(
     mood: str,
     prev_bass: int | None = None,
     is_final_section: bool = False,
+    key_offset: int = 0,
+    melody_from_bar: int = 0,
 ) -> list[NoteEvent]:
     """Generate the bass + melody notes for one section.
 
@@ -416,8 +497,12 @@ def _generate_section(
 
     # Pre-resolve each slot's chord so a bar can pick up into the next
     # chord's register (the anacrusis needs to know what it leads to).
+    # `key_offset` transposes the section (the modulation lift on a
+    # long piece's final repetition) but exempts the final cadence —
+    # the piece lifts and then comes home for its close.
     chords: list[tuple[int, tuple[int, ...], int]] = []
-    for slot in template.chords:
+    for slot_index, slot in enumerate(template.chords):
+        slot_offset = 0 if slot_index >= len(template.chords) - 2 else key_offset
         degree = slot.degree
         dur = slot.bars
         root_offset = _scale_degree_to_semitones(degree, key.mode)
@@ -425,7 +510,7 @@ def _generate_section(
             # bIII/bVI/bVII: the borrowed roots sit a semitone below the
             # diatonic scale degrees (Bb, not B, in C major).
             root_offset -= 1
-        chord_root = tonic_midi + root_offset
+        chord_root = tonic_midi + slot_offset + root_offset
         chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
         chords.append((chord_root, chord_tones, dur))
 
@@ -440,7 +525,9 @@ def _generate_section(
         # chord). The midpoint sounds the next chord tone above.
         if slot.bass_degree is not None:
             bass_pitch = _octave_down(
-                tonic_midi + _scale_degree_to_semitones(slot.bass_degree, key.mode),
+                tonic_midi
+                + slot_offset
+                + _scale_degree_to_semitones(slot.bass_degree, key.mode),
                 octaves=1,
             )
             prev_bass = bass_pitch
@@ -521,7 +608,11 @@ def _generate_section(
             # Melody voice: one bar derived from the section's motif.
             # The last bar of the piece resolves at home; a
             # phrase-ending bar over the V chord is a half cadence; a
-            # random bar lifts off early into a breath.
+            # random bar lifts off early into a breath. An intro
+            # (`melody_from_bar` > 0) keeps these bars bass alone.
+            if bar_index < melody_from_bar:
+                bar_index += 1
+                continue
             is_final_bar = is_final_section and bar_index == total_bars - 1
             is_apex = bar_index == apex_bar
             is_half_cadence = degree == 4 and bar_index % 4 == 3 and not is_final_bar
@@ -831,6 +922,7 @@ def _generate_percussion(
     repetition_count: int,
     total_bars: int,
     seed: int,
+    rest_bars: frozenset[int] = frozenset(),
 ) -> list[NoteEvent]:
     """Generate the percussion voice for a drum-set piece.
 
@@ -842,7 +934,9 @@ def _generate_percussion(
     and every section downbeat is marked with a crash cymbal — plus a
     kick when the pattern does not already open with one. A per-bar
     seeded jitter of a few velocity points keeps repeated bars from
-    sounding machine-stamped.
+    sounding machine-stamped. Bars in `rest_bars` (the intro and one
+    mid-piece section on long pieces) are silent, and the sections
+    that do play follow the terraced dynamic arc.
     """
     style = style_for(mood, time_signature)
     if style is None:
@@ -851,10 +945,13 @@ def _generate_percussion(
     mood_scale = MOOD_VELOCITY_SCALE.get(mood, 1.0)
     notes: list[NoteEvent] = []
     for bar in range(total_bars):
+        if bar in rest_bars:
+            continue
         in_body = bar < repetition_count * form_bars
         section_idx = bar // form_bars if in_body else repetition_count
         section_start = bar % form_bars == 0
         is_final_bar = bar == total_bars - 1
+        terrace = _section_velocity_scale(section_idx, repetition_count)
         if bar % form_bars == form_bars - 1 and not is_final_bar:
             pattern = style.fill(time_signature, section_idx)
         else:
@@ -869,7 +966,9 @@ def _generate_percussion(
         bar_start = bar * ticks_per_bar
         for hit in pattern:
             jitter = bar_rng.uniform(0.92, 1.06)
-            velocity = round(hit.velocity * style.velocity_scale * mood_scale * jitter)
+            velocity = round(
+                hit.velocity * style.velocity_scale * mood_scale * terrace * jitter
+            )
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_PERCUSSION,
@@ -882,7 +981,9 @@ def _generate_percussion(
         if section_start:
             # The section downbeat is marked: crash always, and a kick
             # underneath it when the groove does not open with one.
-            crash_velocity = round(SECTION_CRASH_VELOCITY * style.velocity_scale * mood_scale)
+            crash_velocity = round(
+                SECTION_CRASH_VELOCITY * style.velocity_scale * mood_scale * terrace
+            )
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_PERCUSSION,
@@ -967,6 +1068,45 @@ TIE_PROBABILITY: dict[str, float] = {
     "sleep": 0.35,
 }
 
+# Arrangement arc (S8): long pieces lift their final repetition a whole
+# step (the piece ends in the new key — the lift IS the ending), drop
+# the drums for one mid-piece section to give the texture a hole, and
+# step the dynamics per section instead of arching continuously.
+MODULATION_OFFSET: int = 2
+PERCUSSION_REST_SECTION: int = 1
+
+# The phrase unit for the CC11 swells: one rise-and-fall per 4 bars,
+# layered over the piece-long velocity arch.
+PHRASE_BARS: int = 4
+
+
+def _section_velocity_scale(section_idx: int, repetition_count: int) -> float:
+    """Terraced dynamics: the arc is stepped per section, not continuous.
+
+    The opening sits back, the penultimate section peaks, and the
+    final one settles slightly for the cadence home. A single-section
+    piece has nowhere to move and plays at full.
+    """
+    if repetition_count < 2:
+        return 1.0
+    if section_idx == 0:
+        return 0.82
+    if section_idx == repetition_count - 1:
+        return 0.95
+    if section_idx == repetition_count - 2:
+        return 1.12
+    return 1.0
+
+
+def _phrase_swell(position_in_phrase: float) -> float:
+    """One rise-and-fall per phrase, for the controller layer.
+
+    `position_in_phrase` is 0..1 across a `PHRASE_BARS`-bar phrase; the
+    swell spans roughly 0.85x to 1.0x so each phrase breathes once.
+    """
+    pos = min(1.0, max(0.0, position_in_phrase))
+    return 0.85 + 0.15 * math.sin(math.pi * pos)
+
 
 def _merged_tie_runs(
     notes: tuple[NoteEvent, ...] | list[NoteEvent],
@@ -1016,6 +1156,7 @@ def _build_performance_plan(
     instrumentation: str,
     humanization: str,
     seed: int | None,
+    arrangement: DurationArrangement,
 ) -> PerformancePlan:
     # Ties play as one sound: a tied note's continuation never
     # re-attacks — the predecessor rings through it. Runs are resolved
@@ -1027,10 +1168,10 @@ def _build_performance_plan(
     for idx, note in enumerate(score.notes):
         if idx in tie_skips:
             continue
-        start_us = ticks_to_microseconds(note.tick, score.tempo.bpm, ppq=score.ppq)
-        duration_us = ticks_to_microseconds(
-            tie_spans.get(idx, note.duration_ticks), score.tempo.bpm, ppq=score.ppq
-        )
+        start_us = microseconds_at_tick(note.tick, score.tempo)
+        duration_us = microseconds_at_tick(
+            tie_spans.get(idx, note.duration_ticks) + note.tick, score.tempo
+        ) - start_us
         events.append(
             PerformanceNoteEvent(
                 voice_id=note.voice_id,
@@ -1074,35 +1215,48 @@ def _build_performance_plan(
     if has_melody:
         # Expression swells ride the same arch as the velocities, one
         # value per bar, so phrases breathe in the controller layer too.
+        # On top of the piece-long arch, each 4-bar phrase swells once
+        # (rise into its middle, relax at its end) and the section
+        # terracing sits the whole step of the arc.
         total_ticks = max(1, score.total_ticks())
+        ticks_per_bar = max(1, score.measures[0].end_tick - score.measures[0].start_tick)
+        phrase_ticks = PHRASE_BARS * ticks_per_bar
         for measure in score.measures:
             position = measure.start_tick / total_ticks
-            value = min(127, round(EXPRESSION_BASE * _velocity_arc(position)))
+            phrase_position = (measure.start_tick % phrase_ticks) / phrase_ticks
+            section_idx = (measure.start_tick // (arrangement.form_bars * ticks_per_bar)) if (
+                arrangement.form_bars > 0
+            ) else 0
+            value = min(
+                127,
+                round(
+                    EXPRESSION_BASE
+                    * _velocity_arc(position)
+                    * _phrase_swell(phrase_position)
+                    * _section_velocity_scale(section_idx, arrangement.repetition_count)
+                ),
+            )
             controllers.append(
                 ControllerEvent(
                     voice_id=VOICE_MELODY,
                     control=11,
                     value=value,
-                    start_us=ticks_to_microseconds(
-                        measure.start_tick, score.tempo.bpm, ppq=score.ppq
-                    ),
+                    start_us=microseconds_at_tick(measure.start_tick, score.tempo),
                 )
             )
         if instrumentation in PEDAL_INSTRUMENTS:
             # Per-bar pedaling: press on the downbeat, lift just before
             # the next one so chords do not wash across the bar line.
             for i, measure in enumerate(score.measures):
-                press_us = ticks_to_microseconds(
-                    measure.start_tick, score.tempo.bpm, ppq=score.ppq
-                )
+                press_us = microseconds_at_tick(measure.start_tick, score.tempo)
                 controllers.append(
                     ControllerEvent(
                         voice_id=VOICE_MELODY, control=64, value=127, start_us=press_us
                     )
                 )
                 if i + 1 < len(score.measures):
-                    next_downbeat = ticks_to_microseconds(
-                        score.measures[i + 1].start_tick, score.tempo.bpm, ppq=score.ppq
+                    next_downbeat = microseconds_at_tick(
+                        score.measures[i + 1].start_tick, score.tempo
                     )
                     controllers.append(
                         ControllerEvent(

@@ -86,23 +86,44 @@ def notation_score_to_musicxml(score: NotationScore) -> str:
     time_sig = time_signatures.pop() if time_signatures else score.time_signature
 
     out = stream.Score()
+    lowest_voice = min({n.voice_id for n in score.notes})
     for voice_id in sorted({n.voice_id for n in score.notes}):
         part = stream.Part()
         part.insert(instrument.Piano())
         part.insert(m21key.Key(score.key.root, score.key.mode))
         part.insert(meter.TimeSignature(time_sig))
-        part.insert(tempo.MetronomeMark(number=score.tempo.bpm))
 
         voice_notes = sorted(
             (n for n in score.notes if n.voice_id == voice_id),
             key=lambda n: n.tick,
         )
         tie_modes = _tie_modes(voice_notes)
+        measures_by_start: dict[int, stream.Measure] = {}
         for measure in score.measures:
             m21_measure = _build_m21_measure(
                 measure, _notes_in_measure(voice_notes, measure), ppq, tie_modes
             )
             part.insert(measure.start_tick / ppq, m21_measure)
+            measures_by_start[measure.start_tick] = m21_measure
+
+        # Tempo markings live inside measures: the MusicXML exporter
+        # drops part-level marks when the part carries measures. The
+        # base tempo sits in the first bar; the outro ritardando lands
+        # in the bar it starts (its ticks are bar-aligned by
+        # construction, with the containing-measure fallback for
+        # safety). They engrave once, on the first staff.
+        if voice_id == lowest_voice:
+            measures_by_start[score.measures[0].start_tick].insert(
+                0.0, tempo.MetronomeMark(number=score.tempo.bpm)
+            )
+            for point in score.tempo.changes:
+                for measure in score.measures:
+                    if measure.start_tick <= point.tick < measure.end_tick:
+                        measures_by_start[measure.start_tick].insert(
+                            (point.tick - measure.start_tick) / ppq,
+                            tempo.MetronomeMark(number=point.bpm),
+                        )
+                        break
         out.insert(0, part)
 
     written = Path(out.write("musicxml"))
