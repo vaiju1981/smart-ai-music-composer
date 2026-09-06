@@ -20,6 +20,7 @@ soundfont (FluidR3_GM, MIT) — no dedicated drum font is needed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 from saimc.compose.score import PPQ
 
@@ -36,6 +37,19 @@ DRUM_OPEN_HIHAT: int = 46
 DRUM_CRASH: int = 49
 DRUM_HIGH_TOM: int = 50
 DRUM_RIDE: int = 51
+DRUM_MID_TOM: int = 47
+DRUM_LOW_TOM: int = 45
+
+# Bar-relative tick offsets as PPQ fractions, so a pattern reads as its
+# musical shape instead of bare tick literals (the numbers are identical
+# at PPQ=480; the names are what a reader needs).
+BEAT: int = PPQ
+EIGHTH: int = PPQ // 2
+SIXTEENTH: int = PPQ // 4
+DOTTED_BEAT: int = PPQ * 3 // 2
+DOTTED_EIGHTH: int = PPQ * 3 // 4
+BAR_3_4: int = 3 * PPQ
+BAR_4_4: int = 4 * PPQ
 
 # A drum hit renders as a short gate; a full-length note_off would
 # make no audible difference, but a uniform short duration keeps the
@@ -76,13 +90,17 @@ class DrumStyle:
 
     `variants` holds, per time signature, a list of bar templates; the
     first is the style's A pattern and later ones are B patterns the
-    engine rotates across sections. `velocity_scale` lets a style play
-    soft (sleep ballad) or hard (funk) without redefining every hit.
+    engine rotates across sections. `fills` holds, per time signature,
+    the transition bars played on a section's last bar (the groove
+    hands off to the next section through a fill). `velocity_scale`
+    lets a style play soft (sleep ballad) or hard (funk) without
+    redefining every hit.
     """
 
     name: str
     variants: dict[str, tuple[tuple[DrumHit, ...], ...]]
     velocity_scale: float = 1.0
+    fills: dict[str, tuple[tuple[DrumHit, ...], ...]] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not 0.0 < self.velocity_scale <= 1.5:
@@ -99,6 +117,17 @@ class DrumStyle:
             return None
         return variants[variant_index % len(variants)]
 
+    def fill(self, time_signature: str, variant_index: int) -> tuple[DrumHit, ...] | None:
+        """The transition bar for a meter, or None if the style has no fill.
+
+        A style without a fill plays its groove straight through the
+        section ending — the honest default.
+        """
+        fills = self.fills.get(time_signature)
+        if not fills:
+            return None
+        return fills[variant_index % len(fills)]
+
 
 def _hits(*spec: tuple[int, int, int]) -> tuple[DrumHit, ...]:
     """Shorthand: (offset_ticks, key, velocity) tuples to DrumHits."""
@@ -114,20 +143,45 @@ ROCK = DrumStyle(
             # A: kick 1+3, snare 2+4, eighths on the hats.
             _hits(
                 (0, DRUM_KICK, 92),
-                (960, DRUM_KICK, 88),
-                (480, DRUM_SNARE, 84),
-                (1440, DRUM_SNARE, 84),
-                *[(o, DRUM_CLOSED_HIHAT, 60) for o in range(0, 1920, 240)],
+                (2 * BEAT, DRUM_KICK, 88),
+                (BEAT, DRUM_SNARE, 84),
+                (3 * BEAT, DRUM_SNARE, 84),
+                *[(o, DRUM_CLOSED_HIHAT, 60) for o in range(0, BAR_4_4, EIGHTH)],
             ),
             # B: same skeleton, crash-riding with an extra push beat.
             _hits(
                 (0, DRUM_KICK, 92),
-                (960, DRUM_KICK, 88),
-                (1320, DRUM_KICK, 76),
-                (480, DRUM_SNARE, 88),
-                (1440, DRUM_SNARE, 88),
-                *[(o, DRUM_CLOSED_HIHAT, 66) for o in range(0, 1920, 240)],
-                (1920 - 240, DRUM_OPEN_HIHAT, 70),
+                (2 * BEAT, DRUM_KICK, 88),
+                (2 * BEAT + DOTTED_EIGHTH, DRUM_KICK, 76),
+                (BEAT, DRUM_SNARE, 88),
+                (3 * BEAT, DRUM_SNARE, 88),
+                *[(o, DRUM_CLOSED_HIHAT, 66) for o in range(0, BAR_4_4, EIGHTH)],
+                (BAR_4_4 - EIGHTH, DRUM_OPEN_HIHAT, 70),
+            ),
+        )
+    },
+    fills={
+        # F1: 16th snare push, then the toms descend through beats 3-4.
+        "4/4": (
+            _hits(
+                (0, DRUM_KICK, 88),
+                (BEAT, DRUM_SNARE, 76),
+                (BEAT + SIXTEENTH, DRUM_SNARE, 70),
+                (BEAT + 2 * SIXTEENTH, DRUM_SNARE, 72),
+                (BEAT + 3 * SIXTEENTH, DRUM_SNARE, 68),
+                (2 * BEAT, DRUM_HIGH_TOM, 78),
+                (2 * BEAT + EIGHTH, DRUM_MID_TOM, 74),
+                (3 * BEAT, DRUM_LOW_TOM, 76),
+                (3 * BEAT + EIGHTH, DRUM_LOW_TOM, 70),
+            ),
+            # F2: a 16th-note snare roll building into the next section.
+            _hits(
+                (0, DRUM_KICK, 88),
+                *[
+                    (BEAT + i * SIXTEENTH, DRUM_SNARE, 58 + i * 3)
+                    for i in range(12)
+                ],
+                (3 * BEAT, DRUM_HIGH_TOM, 80),
             ),
         )
     },
@@ -140,22 +194,33 @@ FUNK = DrumStyle(
             # A: syncopated kick, 16th hats, clap ghost on 4&.
             _hits(
                 (0, DRUM_KICK, 92),
-                (720, DRUM_KICK, 80),
-                (1440, DRUM_KICK, 84),
-                (480, DRUM_SNARE, 84),
-                (1680, DRUM_HAND_CLAP, 72),
-                *[(o, DRUM_CLOSED_HIHAT, 56) for o in range(0, 1920, 120)],
+                (DOTTED_BEAT, DRUM_KICK, 80),
+                (3 * BEAT, DRUM_KICK, 84),
+                (BEAT, DRUM_SNARE, 84),
+                (3 * BEAT + EIGHTH, DRUM_HAND_CLAP, 72),
+                *[(o, DRUM_CLOSED_HIHAT, 56) for o in range(0, BAR_4_4, SIXTEENTH)],
             ),
             # B: open-hihat accents on the offbeats.
             _hits(
                 (0, DRUM_KICK, 92),
-                (720, DRUM_KICK, 80),
-                (1440, DRUM_KICK, 84),
-                (480, DRUM_SNARE, 88),
-                (1680, DRUM_HAND_CLAP, 72),
-                (240, DRUM_OPEN_HIHAT, 64),
-                (1200, DRUM_OPEN_HIHAT, 64),
-                *[(o, DRUM_CLOSED_HIHAT, 56) for o in range(0, 1920, 120)],
+                (DOTTED_BEAT, DRUM_KICK, 80),
+                (3 * BEAT, DRUM_KICK, 84),
+                (BEAT, DRUM_SNARE, 88),
+                (3 * BEAT + EIGHTH, DRUM_HAND_CLAP, 72),
+                (EIGHTH, DRUM_OPEN_HIHAT, 64),
+                (2 * BEAT + EIGHTH, DRUM_OPEN_HIHAT, 64),
+                *[(o, DRUM_CLOSED_HIHAT, 56) for o in range(0, BAR_4_4, SIXTEENTH)],
+            ),
+        )
+    },
+    fills={
+        # Ghosted 16th snare build over the last two beats, landing on
+        # the open hat that hands off to the next section.
+        "4/4": (
+            _hits(
+                (0, DRUM_KICK, 88),
+                *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 54 + i * 3) for i in range(7)],
+                (BAR_4_4 - EIGHTH, DRUM_OPEN_HIHAT, 66),
             ),
         )
     },
@@ -169,23 +234,37 @@ BALLAD = DrumStyle(
             # pickup into 3.
             _hits(
                 (0, DRUM_KICK, 72),
-                (840, DRUM_KICK, 60),
-                (480, DRUM_SIDE_STICK, 62),
-                (1440, DRUM_SIDE_STICK, 62),
+                (2 * BEAT - SIXTEENTH, DRUM_KICK, 60),
+                (BEAT, DRUM_SIDE_STICK, 62),
+                (3 * BEAT, DRUM_SIDE_STICK, 62),
                 (0, DRUM_CLOSED_HIHAT, 44),
-                (480, DRUM_CLOSED_HIHAT, 40),
-                (960, DRUM_CLOSED_HIHAT, 44),
-                (1440, DRUM_CLOSED_HIHAT, 40),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_CLOSED_HIHAT, 44),
+                (3 * BEAT, DRUM_CLOSED_HIHAT, 40),
             ),
             # B: one bar in eight, dropping the pickup kick.
             _hits(
                 (0, DRUM_KICK, 72),
-                (480, DRUM_SIDE_STICK, 62),
-                (1440, DRUM_SIDE_STICK, 62),
+                (BEAT, DRUM_SIDE_STICK, 62),
+                (3 * BEAT, DRUM_SIDE_STICK, 62),
                 (0, DRUM_CLOSED_HIHAT, 44),
-                (480, DRUM_CLOSED_HIHAT, 40),
-                (960, DRUM_CLOSED_HIHAT, 44),
-                (1440, DRUM_CLOSED_HIHAT, 40),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_CLOSED_HIHAT, 44),
+                (3 * BEAT, DRUM_CLOSED_HIHAT, 40),
+            ),
+        )
+    },
+    fills={
+        # A gentle hand-off: cross-stick eighths swelling through the
+        # back half of the bar, no toms — the ballad stays soft.
+        "4/4": (
+            _hits(
+                (0, DRUM_KICK, 72),
+                (BEAT, DRUM_SIDE_STICK, 60),
+                (2 * BEAT, DRUM_SIDE_STICK, 56),
+                (2 * BEAT + EIGHTH, DRUM_SIDE_STICK, 58),
+                (3 * BEAT, DRUM_SIDE_STICK, 62),
+                (3 * BEAT + EIGHTH, DRUM_CLOSED_HIHAT, 48),
             ),
         )
     },
@@ -198,12 +277,12 @@ BOSSA = DrumStyle(
             # A: the classic bossa rim pattern over straight eighths.
             _hits(
                 (0, DRUM_KICK, 72),
-                (720, DRUM_KICK, 64),
-                (1080, DRUM_KICK, 64),
-                (240, DRUM_SIDE_STICK, 66),
-                (960, DRUM_SIDE_STICK, 66),
-                (1320, DRUM_SIDE_STICK, 60),
-                *[(o, DRUM_CLOSED_HIHAT, 48) for o in range(0, 1920, 240)],
+                (DOTTED_BEAT, DRUM_KICK, 64),
+                (2 * BEAT + SIXTEENTH, DRUM_KICK, 64),
+                (EIGHTH, DRUM_SIDE_STICK, 66),
+                (2 * BEAT, DRUM_SIDE_STICK, 66),
+                (2 * BEAT + DOTTED_EIGHTH, DRUM_SIDE_STICK, 60),
+                *[(o, DRUM_CLOSED_HIHAT, 48) for o in range(0, BAR_4_4, EIGHTH)],
             ),
         )
     },
@@ -217,9 +296,9 @@ SWING = DrumStyle(
             # eighths ride pattern belongs to a triplet grid, so the
             # quarters carry the pulse until a triplet-time slice lands.
             _hits(
-                *[(o, DRUM_RIDE, 64) for o in range(0, 1920, 480)],
+                *[(o, DRUM_RIDE, 64) for o in range(0, BAR_4_4, BEAT)],
                 (480, DRUM_PEDAL_HIHAT, 56),
-                (1440, DRUM_PEDAL_HIHAT, 56),
+                (3 * BEAT, DRUM_PEDAL_HIHAT, 56),
             ),
         )
     },
@@ -233,9 +312,21 @@ MARCH = DrumStyle(
             # A: oom-pah — kick on 1+3, snare on 2+4, no hats.
             _hits(
                 (0, DRUM_KICK, 88),
-                (960, DRUM_KICK, 84),
-                (480, DRUM_SNARE, 76),
-                (1440, DRUM_SNARE, 76),
+                (2 * BEAT, DRUM_KICK, 84),
+                (BEAT, DRUM_SNARE, 76),
+                (3 * BEAT, DRUM_SNARE, 76),
+            ),
+        )
+    },
+    fills={
+        # Military roll: 16ths on the snare through beats 1-2, tom
+        # accents answering on beats 3-4.
+        "4/4": (
+            _hits(
+                *[(BEAT + i * SIXTEENTH, DRUM_SNARE, 60 + i * 2) for i in range(8)],
+                (2 * BEAT, DRUM_HIGH_TOM, 78),
+                (2 * BEAT + BEAT, DRUM_MID_TOM, 78),
+                (3 * BEAT, DRUM_LOW_TOM, 80),
             ),
         )
     },
@@ -250,11 +341,11 @@ WALTZ = DrumStyle(
         "3/4": (
             _hits(
                 (0, DRUM_KICK, 80),
-                (480, DRUM_SNARE, 66),
-                (960, DRUM_SNARE, 66),
+                (BEAT, DRUM_SNARE, 66),
+                (2 * BEAT, DRUM_SNARE, 66),
                 (0, DRUM_CLOSED_HIHAT, 48),
-                (480, DRUM_CLOSED_HIHAT, 40),
-                (960, DRUM_CLOSED_HIHAT, 40),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_CLOSED_HIHAT, 40),
             ),
         ),
         # 6/8 has the same bar length as 3/4 (three dotted quarters),
@@ -262,11 +353,26 @@ WALTZ = DrumStyle(
         "6/8": (
             _hits(
                 (0, DRUM_KICK, 80),
-                (480, DRUM_SNARE, 66),
-                (960, DRUM_SNARE, 66),
+                (BEAT, DRUM_SNARE, 66),
+                (2 * BEAT, DRUM_SNARE, 66),
                 (0, DRUM_CLOSED_HIHAT, 48),
-                (480, DRUM_CLOSED_HIHAT, 40),
-                (960, DRUM_CLOSED_HIHAT, 40),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_CLOSED_HIHAT, 40),
+            ),
+        ),
+    },
+    fills={
+        # A short push into the next 8: snare 16ths across beat 3.
+        "3/4": (
+            _hits(
+                (0, DRUM_KICK, 80),
+                *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 54 + i * 2) for i in range(4)],
+            ),
+        ),
+        "6/8": (
+            _hits(
+                (0, DRUM_KICK, 80),
+                *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 54 + i * 2) for i in range(4)],
             ),
         ),
     },
@@ -275,28 +381,62 @@ WALTZ = DrumStyle(
 SHUFFLE = DrumStyle(
     name="shuffle",
     variants={
-        # Both meters share the 1440-tick bar: kick on 1 and the "and"
+        # Both meters share the 3-beat (1440-tick) bar: kick on 1 and the "and"
         # of 2, snare on 2 and 3, hats on the eighths.
         "3/4": (
             _hits(
                 (0, DRUM_KICK, 84),
-                (720, DRUM_KICK, 72),
-                (480, DRUM_SNARE, 72),
-                (960, DRUM_SNARE, 72),
-                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, 1440, 240)],
+                (DOTTED_BEAT, DRUM_KICK, 72),
+                (BEAT, DRUM_SNARE, 72),
+                (2 * BEAT, DRUM_SNARE, 72),
+                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
             ),
         ),
         "6/8": (
             _hits(
                 (0, DRUM_KICK, 84),
-                (720, DRUM_KICK, 72),
-                (480, DRUM_SNARE, 72),
-                (960, DRUM_SNARE, 72),
-                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, 1440, 240)],
+                (DOTTED_BEAT, DRUM_KICK, 72),
+                (BEAT, DRUM_SNARE, 72),
+                (2 * BEAT, DRUM_SNARE, 72),
+                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
+            ),
+        ),
+    },
+    fills={
+        # A push into the downbeat: snare 16ths across the last beat.
+        "3/4": (
+            _hits(
+                (0, DRUM_KICK, 84),
+                *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 56 + i * 2) for i in range(4)],
+            ),
+        ),
+        "6/8": (
+            _hits(
+                (0, DRUM_KICK, 84),
+                *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 56 + i * 2) for i in range(4)],
             ),
         ),
     },
 )
+
+# Section hand-offs: the crash + kick that mark every section downbeat,
+# and the long rotation cycle that keeps the B variant a change of pace
+# rather than the new normal.
+SECTION_CRASH_VELOCITY: int = 90
+
+_ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
+
+
+def rotation_index(section_idx: int, variant_count: int) -> int:
+    """The pattern variant for a section, on a longer cycle than A/B.
+
+    With one variant every section plays it. With more, the cycle holds
+    A for two sections, changes pace with B for one, then returns — a
+    B pattern every other section would stop feeling like a change.
+    """
+    if variant_count < 2:
+        return 0
+    return _ROTATION_CYCLE[section_idx % len(_ROTATION_CYCLE)]
 
 # --- Mood-driven selection ---------------------------------------------------
 
@@ -352,18 +492,26 @@ def style_for(mood: str, time_signature: str) -> DrumStyle | None:
 
 __all__ = [
     "BALLAD",
+    "BAR_3_4",
+    "BAR_4_4",
+    "BEAT",
     "BOSSA",
+    "DOTTED_BEAT",
+    "DOTTED_EIGHTH",
     "DRUM_CLOSED_HIHAT",
     "DRUM_CRASH",
     "DRUM_HAND_CLAP",
     "DRUM_HIGH_TOM",
     "DRUM_KICK",
+    "DRUM_LOW_TOM",
+    "DRUM_MID_TOM",
     "DRUM_OPEN_HIHAT",
     "DRUM_PEDAL_HIHAT",
     "DRUM_RIDE",
     "DRUM_SIDE_STICK",
     "DRUM_SNARE",
     "DRUM_STYLES",
+    "EIGHTH",
     "FUNK",
     "MARCH",
     "METER_STYLES",
@@ -372,10 +520,13 @@ __all__ = [
     "PERCUSSION_NOTE_TICKS",
     "PERCUSSION_VELOCITY_MAX",
     "ROCK",
+    "SECTION_CRASH_VELOCITY",
     "SHUFFLE",
+    "SIXTEENTH",
     "SWING",
     "WALTZ",
     "DrumHit",
     "DrumStyle",
+    "rotation_index",
     "style_for",
 ]

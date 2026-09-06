@@ -23,9 +23,11 @@ from dataclasses import dataclass
 from saimc.compose.score import PPQ
 
 __all__ = [
+    "BarSlot",
     "Motif",
     "MotifCell",
     "MotifVariant",
+    "apply_rhythm",
     "generate_motif",
     "vary_motif",
 ]
@@ -165,3 +167,92 @@ def vary_motif(motif: Motif, rng: random.Random) -> MotifVariant:
     ):
         return MotifVariant(motif=_truncate(motif, rng))
     return MotifVariant(motif=_ornament(motif, rng))
+
+
+# --- Bar-level rhythm vocabulary -------------------------------------------
+#
+# A motif cell is only ever a quarter or an eighth, so every bar
+# inherits the motif's straight rhythm. The rhythm library re-voices a
+# bar's slots with the mood's idiomatic figures before the notes are
+# resolved: dotted long-short pairs, 16th subdivisions, and ties that
+# hold one pitch across a beat (engraved as a tie, played as one note).
+
+BarSlot = tuple[int, int, int, int]
+"""One melody event slot: (bar_offset, duration_ticks, tone_index, tie)."""
+
+RHYTHM_WEIGHTS: dict[str, dict[str, float]] = {
+    "electrifying": {"straight": 0.30, "dotted": 0.25, "sixteenths": 0.30, "tie": 0.15},
+    "calming": {"straight": 0.35, "dotted": 0.30, "tie": 0.35},
+    "sleep": {"straight": 0.25, "dotted": 0.35, "tie": 0.40},
+}
+# Moods without their own profile fall back to a gentle mix.
+_DEFAULT_RHYTHM_WEIGHTS: dict[str, float] = {
+    "straight": 0.50,
+    "dotted": 0.25,
+    "tie": 0.25,
+}
+
+
+def _reflow(slots: list[list[int]]) -> list[BarSlot]:
+    """Rebuild contiguous offsets after an op changed slot durations."""
+    offset = 0
+    out: list[BarSlot] = []
+    for _start, duration, tone, tie in slots:
+        out.append((offset, duration, tone, tie))
+        offset += duration
+    return out
+
+
+def _op_dotted(slots: list[list[int]]) -> list[BarSlot]:
+    """Long-short: two quarters become a dotted quarter + eighth."""
+    for i in range(len(slots) - 1):
+        if slots[i][1] == PPQ and slots[i + 1][1] == PPQ:
+            slots[i][1] = PPQ + PPQ // 2
+            slots[i + 1][1] = PPQ // 2
+            break
+    return _reflow(slots)
+
+
+def _op_tie(slots: list[list[int]]) -> list[BarSlot]:
+    """Hold one pitch across a beat: mark the first of two same-tone
+    neighbours tied (both noteheads stay; the performance layer plays
+    them as one sound)."""
+    for i in range(len(slots) - 1):
+        if slots[i][2] == slots[i + 1][2]:
+            slots[i][3] = 1
+            break
+    return _reflow(slots)
+
+
+def apply_rhythm(
+    slots: list[tuple[int, int, int]],
+    *,
+    rng: random.Random,
+    mood: str,
+) -> list[BarSlot]:
+    """Re-voice a bar's motif slots through the mood's rhythm library.
+
+    The draw picks one operation for the whole bar — a bar speaks with
+    one rhythmic idea, not a new figure on every beat. `straight` keeps
+    the motif's own durations; `dotted` renders the long-short pair;
+    `sixteenths` subdivides one eighth; `tie` holds a repeated pitch
+    across its beat boundary.
+    """
+    weights = RHYTHM_WEIGHTS.get(mood, _DEFAULT_RHYTHM_WEIGHTS)
+    operation = rng.choices(tuple(weights), weights=tuple(weights.values()), k=1)[0]
+    if operation == "straight" or len(slots) < 2:
+        return [(offset, duration, tone, False) for offset, duration, tone in slots]
+    mutable = [[*slot, 0] for slot in slots]
+    if operation == "dotted":
+        return _op_dotted(mutable)
+    if operation == "sixteenths":
+        subdividable = [i for i, s in enumerate(mutable) if s[1] == PPQ // 2]
+        if subdividable:
+            i = rng.choice(subdividable)
+            half = mutable[i][1] // 2
+            mutable[i : i + 1] = [
+                [mutable[i][0], half, mutable[i][2], 0],
+                [0, half, mutable[i][2], 0],
+            ]
+        return _reflow(mutable)
+    return _op_tie(mutable)

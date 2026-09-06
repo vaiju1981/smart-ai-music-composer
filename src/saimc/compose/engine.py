@@ -57,11 +57,21 @@ from saimc.compose.forms import (
     key_signature_from_spec,
 )
 from saimc.compose.linter import LintIssue, lint
-from saimc.compose.motif import MotifVariant, generate_motif, vary_motif
+from saimc.compose.motif import (
+    BarSlot,
+    MotifVariant,
+    apply_rhythm,
+    generate_motif,
+    vary_motif,
+)
 from saimc.compose.percussion import (
+    DRUM_CRASH,
+    DRUM_KICK,
     MOOD_VELOCITY_SCALE,
     PERCUSSION_NOTE_TICKS,
     PERCUSSION_VELOCITY_MAX,
+    SECTION_CRASH_VELOCITY,
+    rotation_index,
     style_for,
 )
 from saimc.compose.score import (
@@ -286,6 +296,7 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
+            mood=spec.mood.value,
             prev_bass=prev_bass,
             is_final_section=section_idx == arrangement.repetition_count - 1,
         )
@@ -311,6 +322,7 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=coda_rng,
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
+            mood=spec.mood.value,
             prev_bass=prev_bass,
         )
         notes.extend(coda_notes)
@@ -366,6 +378,7 @@ def _generate_section(
     section_start_tick: int,
     rng: random.Random,
     seed_for_variation: int,
+    mood: str,
     prev_bass: int | None = None,
     is_final_section: bool = False,
 ) -> list[NoteEvent]:
@@ -393,6 +406,7 @@ def _generate_section(
     resolves onto the tonic or its third, held to the bar line.
     """
     notes: list[NoteEvent] = []
+    melody_notes: list[NoteEvent] = []
     tonic_midi = key_root_midi(key)
     ticks_per_bar = bar_ticks(time_signature)
     section_ticks = template.bars * ticks_per_bar
@@ -400,9 +414,9 @@ def _generate_section(
     apex_bar = min(int(template.bars * 0.6), template.bars - 2)
     motif = generate_motif(rng, bar_ticks=ticks_per_bar)
 
-    cursor = 0
-    bar_index = 0
-    total_bars = template.bars
+    # Pre-resolve each slot's chord so a bar can pick up into the next
+    # chord's register (the anacrusis needs to know what it leads to).
+    chords: list[tuple[int, tuple[int, ...], int]] = []
     for slot in template.chords:
         degree = slot.degree
         dur = slot.bars
@@ -413,7 +427,13 @@ def _generate_section(
             root_offset -= 1
         chord_root = tonic_midi + root_offset
         chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
-        chord_root_tick = section_start_tick + cursor
+        chords.append((chord_root, chord_tones, dur))
+
+    cursor = 0
+    bar_index = 0
+    total_bars = template.bars
+    for slot_index, slot in enumerate(template.chords):
+        chord_root, chord_tones, dur = chords[slot_index]
 
         # Walking bass: the pinned bass degree wins; otherwise the
         # chord tone nearest the previous bass (root on the first
@@ -459,6 +479,7 @@ def _generate_section(
         while bass_fifth - bass_pitch > 12:
             bass_fifth -= 12
 
+        chord_root_tick = section_start_tick + cursor
         for _bar in range(dur):
             bar_tick = chord_root_tick + _bar * ticks_per_bar
             bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
@@ -512,7 +533,21 @@ def _generate_section(
                 variant = MotifVariant(motif=motif)
             else:
                 variant = vary_motif(motif, rng)
-            notes.extend(
+            # Anacrusis: when the next bar exists, its chord's root (in
+            # the melody's register) is the pickup tone. Zero-length
+            # slots (a template truncation artifact) are skipped — they
+            # never sound, so anticipating them would be wrong.
+            pickup_pitch: int | None = None
+            if not is_final_bar:
+                if _bar < dur - 1:
+                    pickup_pitch = chord_root + 12
+                else:
+                    next_slot = next(
+                        (c for c in chords[slot_index + 1 :] if c[2] > 0), None
+                    )
+                    if next_slot is not None:
+                        pickup_pitch = min(107, next_slot[0] + 12)
+            melody_notes.extend(
                 _melody_bar(
                     variant=variant,
                     chord_root=chord_root + 12,
@@ -524,10 +559,12 @@ def _generate_section(
                     position=bar_pos,
                     ticks_per_bar=ticks_per_bar,
                     seed_for_variation=seed_for_variation + bar_index * 101,
+                    mood=mood,
                     is_final_bar=is_final_bar,
                     half_cadence=is_half_cadence,
                     apex=is_apex,
                     breathe=breathe,
+                    pickup_pitch=pickup_pitch,
                 )
             )
             bar_index += 1
@@ -535,6 +572,22 @@ def _generate_section(
         if slot.bass_degree is None:
             prev_bass = bass_pitch
         cursor += dur * ticks_per_bar
+
+    # Ties hold a repeated pitch across a bar line: when a bar's last
+    # melody note and the next bar's first share the pitch and touch,
+    # the first is marked tied (the performance layer plays them as one
+    # sound; the engraving shows the tie).
+    tie_probability = TIE_PROBABILITY.get(mood, 0.25)
+    for index, (a, b) in enumerate(pairwise(melody_notes)):
+        if (
+            not a.tie
+            and a.pitch_midi == b.pitch_midi
+            and a.tick + a.duration_ticks == b.tick
+            and rng.random() < tie_probability
+        ):
+            melody_notes[index] = replace(a, tie=True)
+
+    notes.extend(melody_notes)
 
     # Canonical order: the bass and melody interleave within a bar, so
     # sort by (tick, voice, pitch) rather than relying on append order.
@@ -648,17 +701,21 @@ def _melody_bar(
     position: float,
     ticks_per_bar: int,
     seed_for_variation: int,
+    mood: str,
     is_final_bar: bool = False,
     half_cadence: bool = False,
     apex: bool = False,
     breathe: bool = False,
+    pickup_pitch: int | None = None,
 ) -> list[NoteEvent]:
     """Render one bar of melody from a motif variant.
 
     The motif is walked in chord-tone index space starting at `anchor`,
     so the same shape lands correctly on every chord. When `repeat` is
     set (the sequence operation) the motif keeps replaying from the top
-    — anchor advancing one tone per cycle — until the bar is full.
+    — anchor advancing one tone per cycle — until the bar is full. The
+    bar's slots are then re-voiced through the mood's rhythm library
+    (`motif.apply_rhythm`): dotted figures, 16th subdivisions, ties.
 
     Phrase shape (carried over from the arpeggio walk):
     - an `apex` bar is lifted an octave (capped to range) with a
@@ -667,7 +724,10 @@ def _melody_bar(
       rest (the phrase breathes on the V);
     - a breathing bar shortens its last note into a rest;
     - the `is_final_bar` of the piece resolves onto the tonic or its
-      third, held to the bar line.
+      third, held to the bar line;
+    - when the bar leaves at least an eighth of space at its end and
+      `pickup_pitch` is given (the next bar's anchor tone), an anacrusis
+      pickup note sounds on the last eighth, leading into the next bar.
     """
     # Collect (offset, duration, tone_index) slots first, then resolve
     # pitches — the bar's last note can be replaced wholesale by the
@@ -687,23 +747,31 @@ def _melody_bar(
         if not variant.repeat:
             break
         cycle_anchor += 1
+    rhythm_slots: list[BarSlot]
+    if is_final_bar:
+        # The closing bar keeps the motif's own rhythm: the resolution
+        # is the one event that should not be dressed up.
+        rhythm_slots = [(o, d, t, False) for o, d, t in slots]
+    else:
+        rhythm_slots = apply_rhythm(slots, rng=rng, mood=mood)
 
     notes: list[NoteEvent] = []
-    for slot_index, (bar_offset, duration, tone_index) in enumerate(slots):
+    for slot_index, slot in enumerate(rhythm_slots):
+        bar_offset, duration, tone_index, tie = slot
         tick = start_tick + bar_offset
-        if slot_index == len(slots) - 1 and is_final_bar:
+        if slot_index == len(rhythm_slots) - 1 and is_final_bar:
             # The piece ends at home: tonic or its third, held to the
             # bar line.
             pitch = chord_root if rng.random() < 0.6 else chord_root + chord_tones[1]
             duration = bar_ticks - bar_offset
         else:
             pitch = chord_root + chord_tones[tone_index % len(chord_tones)]
-            if slot_index == len(slots) - 1 and half_cadence:
+            if slot_index == len(rhythm_slots) - 1 and half_cadence:
                 # Land on the chord's root, lifted early so a rest
                 # follows.
                 pitch = chord_root + chord_tones[0]
                 duration = duration // 2
-            elif slot_index == len(slots) - 1 and breathe:
+            elif slot_index == len(rhythm_slots) - 1 and breathe:
                 duration = duration // 2
             if apex:
                 pitch += 12
@@ -725,6 +793,31 @@ def _melody_bar(
                     ticks_per_bar=ticks_per_bar,
                     rng_seed=seed_for_variation + tick,
                 ),
+                tie=bool(tie),
+            )
+        )
+
+    # Anacrusis: the bar left room at its end, so an eighth-note pickup
+    # on the next chord's anchor tone leads into the next downbeat.
+    if (
+        pickup_pitch is not None
+        and not is_final_bar
+        and notes
+        and notes[-1].tick + notes[-1].duration_ticks <= start_tick + bar_ticks - PPQ // 2
+    ):
+        notes.append(
+            NoteEvent(
+                voice_id=VOICE_MELODY,
+                pitch_midi=pickup_pitch,
+                tick=start_tick + bar_ticks - PPQ // 2,
+                duration_ticks=PPQ // 2,
+                velocity=max(1, _shaped_velocity(
+                    base=DEFAULT_VELOCITY + 8,
+                    position=position,
+                    tick=start_tick + bar_ticks - PPQ // 2,
+                    ticks_per_bar=ticks_per_bar,
+                    rng_seed=seed_for_variation + start_tick,
+                ) - 8),
             )
         )
     return notes
@@ -742,9 +835,14 @@ def _generate_percussion(
     """Generate the percussion voice for a drum-set piece.
 
     The style comes from the mood + meter (`style_for`); its variants
-    rotate across sections the way the chord templates do, with the
-    coda treated as one more section. A per-bar seeded jitter of a few
-    velocity points keeps repeated bars from sounding machine-stamped.
+    rotate across sections on a longer cycle than plain A/B
+    (`percussion.rotation_index`), with the coda treated as one more
+    section. A section's last bar hands off to the next through the
+    style's fill (never on the piece's final bar, which must resolve),
+    and every section downbeat is marked with a crash cymbal — plus a
+    kick when the pattern does not already open with one. A per-bar
+    seeded jitter of a few velocity points keeps repeated bars from
+    sounding machine-stamped.
     """
     style = style_for(mood, time_signature)
     if style is None:
@@ -755,7 +853,16 @@ def _generate_percussion(
     for bar in range(total_bars):
         in_body = bar < repetition_count * form_bars
         section_idx = bar // form_bars if in_body else repetition_count
-        pattern = style.pattern(time_signature, section_idx)
+        section_start = bar % form_bars == 0
+        is_final_bar = bar == total_bars - 1
+        if bar % form_bars == form_bars - 1 and not is_final_bar:
+            pattern = style.fill(time_signature, section_idx)
+        else:
+            pattern = None
+        if pattern is None:
+            pattern = style.pattern(
+                time_signature, rotation_index(section_idx, len(style.variants.get(time_signature, ())))
+            )
         if pattern is None:
             continue
         bar_rng = random.Random(seed + bar)
@@ -772,6 +879,29 @@ def _generate_percussion(
                     velocity=min(PERCUSSION_VELOCITY_MAX, max(1, velocity)),
                 )
             )
+        if section_start:
+            # The section downbeat is marked: crash always, and a kick
+            # underneath it when the groove does not open with one.
+            crash_velocity = round(SECTION_CRASH_VELOCITY * style.velocity_scale * mood_scale)
+            notes.append(
+                NoteEvent(
+                    voice_id=VOICE_PERCUSSION,
+                    pitch_midi=DRUM_CRASH,
+                    tick=bar_start,
+                    duration_ticks=PERCUSSION_NOTE_TICKS,
+                    velocity=min(PERCUSSION_VELOCITY_MAX, max(1, crash_velocity)),
+                )
+            )
+            if not any(h.offset_ticks == 0 and h.key == DRUM_KICK for h in pattern):
+                notes.append(
+                    NoteEvent(
+                        voice_id=VOICE_PERCUSSION,
+                        pitch_midi=DRUM_KICK,
+                        tick=bar_start,
+                        duration_ticks=PERCUSSION_NOTE_TICKS,
+                        velocity=min(PERCUSSION_VELOCITY_MAX, max(1, round(84 * mood_scale))),
+                    )
+                )
     return notes
 
 
@@ -828,6 +958,57 @@ GHOST_NOTE_VELOCITY_RANGE: tuple[int, int] = (20, 35)
 # even inside a held chord. 96 is near-full expression at the arch peak.
 EXPRESSION_BASE: int = 96
 
+# Cross-bar ties: when two adjacent bars share a pitch at the boundary,
+# the first is marked tied with this probability (calmer moods hold
+# more; electrifying keeps its attacks).
+TIE_PROBABILITY: dict[str, float] = {
+    "electrifying": 0.18,
+    "calming": 0.28,
+    "sleep": 0.35,
+}
+
+
+def _merged_tie_runs(
+    notes: tuple[NoteEvent, ...] | list[NoteEvent],
+) -> tuple[set[int], dict[int, int]]:
+    """Which tied notes fold into their predecessor, and the merged spans.
+
+    A note with `tie=True` connects to the next same-voice, same-pitch,
+    contiguous note — and that continuation may itself be tied onward,
+    so a run of tied noteheads collapses into one sounded note. Returned
+    as (indices to skip, duration in ticks per surviving index). The
+    walk stays on the tick grid, where contiguity is exact.
+    """
+    by_voice: dict[int, list[int]] = {}
+    for idx, note in enumerate(notes):
+        by_voice.setdefault(note.voice_id, []).append(idx)
+
+    skip: set[int] = set()
+    durations: dict[int, int] = {}
+    for voice_indices in by_voice.values():
+        k = 0
+        while k < len(voice_indices):
+            head = voice_indices[k]
+            if head in skip:
+                k += 1
+                continue
+            span = notes[head].duration_ticks
+            cur = head
+            j = k + 1
+            while (
+                j < len(voice_indices)
+                and notes[cur].tie
+                and notes[voice_indices[j]].pitch_midi == notes[cur].pitch_midi
+                and notes[cur].tick + notes[cur].duration_ticks == notes[voice_indices[j]].tick
+            ):
+                span += notes[voice_indices[j]].duration_ticks
+                skip.add(voice_indices[j])
+                cur = voice_indices[j]
+                j += 1
+            durations[head] = span
+            k = j
+    return skip, durations
+
 
 def _build_performance_plan(
     score: NotationScore,
@@ -836,10 +1017,20 @@ def _build_performance_plan(
     humanization: str,
     seed: int | None,
 ) -> PerformancePlan:
+    # Ties play as one sound: a tied note's continuation never
+    # re-attacks — the predecessor rings through it. Runs are resolved
+    # on the notation grid first (contiguity in ticks is exact, and a
+    # chain of tied noteheads collapses into a single sounded note);
+    # humanization then scatters the surviving events freely.
+    tie_skips, tie_spans = _merged_tie_runs(score.notes)
     events: list[PerformanceNoteEvent] = []
-    for note in score.notes:
+    for idx, note in enumerate(score.notes):
+        if idx in tie_skips:
+            continue
         start_us = ticks_to_microseconds(note.tick, score.tempo.bpm, ppq=score.ppq)
-        duration_us = ticks_to_microseconds(note.duration_ticks, score.tempo.bpm, ppq=score.ppq)
+        duration_us = ticks_to_microseconds(
+            tie_spans.get(idx, note.duration_ticks), score.tempo.bpm, ppq=score.ppq
+        )
         events.append(
             PerformanceNoteEvent(
                 voice_id=note.voice_id,

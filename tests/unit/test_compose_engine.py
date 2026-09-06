@@ -10,6 +10,7 @@ from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
     _chord_intervals,
+    _merged_tie_runs,
     _scale_degree_to_semitones,
     _truncate_template_for_coda,
     compose,
@@ -315,13 +316,19 @@ class TestChordToneHarmony:
         assert len(bars) == out.arrangement.total_bars_with_coda
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
+        anticipation_zone = ticks_per_bar - out.notation_score.ppq // 2
         for note in out.notation_score.notes:
             if note.voice_id == 2:  # percussion keys are GM drum map, not pitched
                 continue
-            _degree, offsets = bars[note.tick // ticks_per_bar]
+            bar = note.tick // ticks_per_bar
+            _degree, offsets = bars[bar]
             sounding = {(tonic + offset) % 12 for offset in offsets}
+            if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
+                # An anacrusis pickup anticipates the next bar's chord.
+                _next_degree, next_offsets = bars[bar + 1]
+                sounding |= {(tonic + offset) % 12 for offset in next_offsets}
             assert note.pitch_midi % 12 in sounding, (
-                f"bar {note.tick // ticks_per_bar}: pitch {note.pitch_midi} "
+                f"bar {bar}: pitch {note.pitch_midi} "
                 f"not in chord pcs {sounding} (offsets {offsets})"
             )
 
@@ -626,8 +633,13 @@ class TestExpressionModel:
         melody_score = sorted(
             (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
         )
+        # The plan folds tied noteheads into one sounded event, so it
+        # pairs with the surviving heads — the continuations drop out.
+        tie_skips, _ = _merged_tie_runs(melody_score)
+        heads = [n for idx, n in enumerate(melody_score) if idx not in tie_skips]
+        assert len(melody_plan) == len(heads)
         # The sheet stays on the grid; the plan wobbles within ±10 ms.
-        for plan_event, score_note in zip(melody_plan, melody_score, strict=False):
+        for plan_event, score_note in zip(melody_plan, heads, strict=True):
             grid_us = ticks_to_microseconds(
                 score_note.tick, out.notation_score.tempo.bpm, ppq=out.notation_score.ppq
             )
@@ -673,3 +685,72 @@ class TestExpressionModel:
             if e.voice_id == 2 and (e.start_us % (quarter_us / 4)) > 1
         ]
         assert off_grid, "expected percussion timing offsets off the 16th grid"
+
+
+class TestRhythmVocabulary:
+    """S7: the melody speaks in dotted figures, 16ths, ties and pickups."""
+
+    def _melody(self, out: NotationScore) -> list:
+        return sorted(
+            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+        )
+
+    def test_dotted_figures_appear(self) -> None:
+        # Dotted quarters (3*PPQ/2, e.g. 720 @ PPQ=480) come only from
+        # the rhythm library's dotted op — motif cells are quarters/eighths.
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING):
+            out = compose(_spec(mood, duration=60))
+            assert 3 * out.notation_score.ppq // 2 in {
+                n.duration_ticks for n in self._melody(out)
+            }, f"{mood}: no dotted rhythm rendered"
+
+    def test_sixteenths_appear_in_high_energy_moods(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60))
+        ppq = out.notation_score.ppq
+        sixteenths = [n for n in self._melody(out) if n.duration_ticks == ppq // 4]
+        assert sixteenths, "electrifying melody never rendered a 16th"
+
+    def test_ties_present_and_folded_into_the_plan(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        melody = self._melody(out)
+        tied_heads = [n for n in melody if n.tie]
+        assert tied_heads, "calming melody never tied two noteheads"
+        tie_skips, tie_spans = _merged_tie_runs(melody)
+        plan_melody = [e for e in out.performance_plan.notes if e.voice_id == 1]
+        # One sounded event per surviving head; continuations drop out.
+        assert len(plan_melody) == len(melody) - len(tie_skips)
+        # Every merged span covers its full run, not just the head.
+        for idx, note in enumerate(melody):
+            if idx in tie_skips or note.tick not in {m.tick for m in tied_heads}:
+                continue
+            span = tie_spans.get(idx)
+            if span is not None:
+                assert span >= note.duration_ticks
+
+    def test_anacrusis_pickups_lead_into_the_bar(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60))
+        ppq = out.notation_score.ppq
+        ticks_per_bar = 4 * ppq
+        # True pickups are the appended half-bar notes at the last
+        # eighth slot; 16th-op notes can land at the same tick, so the
+        # duration is what distinguishes them.
+        pickups = [
+            n
+            for n in self._melody(out)
+            if n.tick % ticks_per_bar == ticks_per_bar - ppq // 2
+            and n.duration_ticks == ppq // 2
+        ]
+        assert pickups, "no eighth-note pickups rendered"
+        assert len(pickups) >= 10
+
+    def test_sheet_engraves_ties(self) -> None:
+        from saimc.render.sheet import _tie_modes, notation_score_to_musicxml
+
+        out = compose(_spec(Mood.CALMING, duration=60))
+        melody = self._melody(out)
+        tie_modes = _tie_modes(melody)
+        assert "start" in tie_modes.values(), "tied heads should start a tie"
+        assert "stop" in tie_modes.values(), "continuations should stop a tie"
+        xml = notation_score_to_musicxml(out.notation_score)
+        assert '<tied type="start"' in xml
+        assert '<tied type="stop"' in xml

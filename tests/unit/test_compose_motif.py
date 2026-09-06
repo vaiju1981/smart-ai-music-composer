@@ -160,30 +160,37 @@ class TestMotifMelody:
         assert contours.most_common(1)[0][1] >= 2, "the motif contour never recurs"
 
     def test_bars_stay_chord_tone_anchored(self) -> None:
-        # The downbeat bias survives the motif rewrite: at least half
-        # of all melody downbeats sit on the chord root or third. The
-        # bass voice plays the chord root on each downbeat, so the
-        # interval above it identifies the melody's tone: 0 = root,
-        # 3/4 = third (6/7 would be the fifth).
-        spec = CompositionSpec.model_validate(
-            {"mood": Mood.CALMING.value, "duration_seconds": 60, "seed": 42}
-        )
-        out = compose(spec)
-        score = out.notation_score
-        bass = sorted((n for n in score.notes if n.voice_id == 0), key=lambda n: n.tick)
-        mel = _melody(out)
-        bar_ticks = 4 * PPQ
-        anchored = 0
-        for note in mel:
-            if note.tick % bar_ticks != 0:
-                continue
-            bar_root = next(
-                b for b in bass if b.tick <= note.tick < b.tick + b.duration_ticks
+        # Every note a motif bar renders is a chord tone of that bar's
+        # chord, whatever the rhythm library did to the durations. (The
+        # integration-level oracle lives in test_compose_engine; the
+        # S6 walking bass made "interval above the bass note" a wrong
+        # oracle here, since the bass now plays inversions too.)
+        from saimc.compose.engine import _melody_bar
+        from saimc.compose.motif import MotifVariant
+
+        chord_root = 60
+        chord_tones = (0, 4, 7, 11)  # Cmaj7
+        for seed in range(20):
+            rng = random.Random(seed)
+            motif = generate_motif(rng, bar_ticks=4 * PPQ)
+            notes = _melody_bar(
+                variant=MotifVariant(motif=motif),
+                chord_root=chord_root,
+                chord_tones=chord_tones,
+                anchor=0,
+                start_tick=0,
+                bar_ticks=4 * PPQ,
+                rng=rng,
+                position=0.5,
+                ticks_per_bar=4 * PPQ,
+                seed_for_variation=seed,
+                mood="calming",
             )
-            interval = (note.pitch_midi - bar_root.pitch_midi) % 12
-            if interval in (0, 3, 4):
-                anchored += 1
-        assert anchored / len([n for n in mel if n.tick % bar_ticks == 0]) >= 0.5
+            assert notes
+            for note in notes:
+                assert (note.pitch_midi - chord_root) % 12 in chord_tones, (
+                    f"seed {seed}: pitch {note.pitch_midi} not a chord tone"
+                )
 
     def test_deterministic_across_seeds(self) -> None:
         spec = CompositionSpec.model_validate(

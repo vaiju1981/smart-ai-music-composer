@@ -97,8 +97,11 @@ def notation_score_to_musicxml(score: NotationScore) -> str:
             (n for n in score.notes if n.voice_id == voice_id),
             key=lambda n: n.tick,
         )
+        tie_modes = _tie_modes(voice_notes)
         for measure in score.measures:
-            m21_measure = _build_m21_measure(measure, _notes_in_measure(voice_notes, measure), ppq)
+            m21_measure = _build_m21_measure(
+                measure, _notes_in_measure(voice_notes, measure), ppq, tie_modes
+            )
             part.insert(measure.start_tick / ppq, m21_measure)
         out.insert(0, part)
 
@@ -110,12 +113,44 @@ def _notes_in_measure(notes: list[NoteEvent], measure: Measure) -> list[NoteEven
     return [n for n in notes if measure.start_tick <= n.tick < measure.end_tick]
 
 
-def _build_m21_measure(measure: Measure, voice_notes: list[NoteEvent], ppq: int) -> M21Measure:
+def _tie_modes(voice_notes: list[NoteEvent]) -> dict[int, str]:
+    """Tick -> music21 tie mode for a voice's tied notes.
+
+    `NoteEvent.tie` says a note connects to the next same-voice,
+    same-pitch event; the continuation note's marker is inferred from
+    that link, so one boolean is enough to engrave start/continue/stop.
+    """
+    modes: dict[int, str] = {}
+    prev: NoteEvent | None = None
+    for note in voice_notes:
+        linked_from_prev = (
+            prev is not None
+            and prev.tie
+            and prev.pitch_midi == note.pitch_midi
+            and prev.tick + prev.duration_ticks == note.tick
+        )
+        if linked_from_prev and note.tie:
+            modes[note.tick] = "continue"
+        elif linked_from_prev:
+            modes[note.tick] = "stop"
+        elif note.tie:
+            modes[note.tick] = "start"
+        prev = note
+    return modes
+
+
+def _build_m21_measure(
+    measure: Measure,
+    voice_notes: list[NoteEvent],
+    ppq: int,
+    tie_modes: dict[int, str] | None = None,
+) -> M21Measure:
     """Build one music21 measure, collapsing same-tick notes into chords."""
     from music21 import chord as m21chord
     from music21 import note as m21note
     from music21 import pitch as m21pitch
     from music21 import stream
+    from music21 import tie as m21tie
 
     m21_measure = stream.Measure(number=measure.index + 1)
     grouped: dict[int, list[NoteEvent]] = defaultdict(list)
@@ -138,6 +173,9 @@ def _build_m21_measure(measure: Measure, voice_notes: list[NoteEvent], ppq: int)
                 [m21pitch.Pitch(midi=p) for p in pitches], quarterLength=quarter_length
             )
         element.volume.velocity = at_tick[0].velocity
+        mode = None if tie_modes is None else tie_modes.get(tick)
+        if mode is not None:
+            element.tie = m21tie.Tie(mode)
         m21_measure.insert(offset, element)
     return m21_measure
 

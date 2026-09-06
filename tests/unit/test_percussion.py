@@ -142,6 +142,67 @@ class TestEnginePercussionVoice:
                 assert n.duration_ticks == PERCUSSION_NOTE_TICKS
 
 
+class TestFillsAndDownbeats:
+    """S7 rhythm vocabulary: sections hand off through a fill, and
+    every section downbeat is marked with a crash."""
+
+    def _drum_notes(self, out):
+        return [n for n in out.notation_score.notes if n.voice_id == VOICE_PERCUSSION]
+
+    def test_last_bar_of_each_section_is_a_fill(self) -> None:
+        from saimc.compose.percussion import DRUM_HIGH_TOM, DRUM_LOW_TOM
+
+        out = compose(_drum_spec(duration_seconds=120))
+        arr = out.arrangement
+        ticks_per_bar = bar_ticks(out.time_signature)
+        section_end_bars = {s * arr.form_bars - 1 for s in range(1, arr.repetition_count)}
+        fill_hits = [
+            n
+            for n in self._drum_notes(out)
+            if n.tick // ticks_per_bar in section_end_bars
+            and n.pitch_midi in (DRUM_HIGH_TOM, DRUM_LOW_TOM)
+        ]
+        assert fill_hits, "each section's last bar should carry the tom fill"
+
+    def test_final_bar_never_carries_a_fill(self) -> None:
+        from saimc.compose.percussion import DRUM_HIGH_TOM, DRUM_LOW_TOM
+
+        out = compose(_drum_spec(duration_seconds=120))
+        ticks_per_bar = bar_ticks(out.time_signature)
+        final_bar = out.arrangement.total_bars_with_coda - 1
+        assert not [
+            n
+            for n in self._drum_notes(out)
+            if n.tick // ticks_per_bar == final_bar
+            and n.pitch_midi in (DRUM_HIGH_TOM, DRUM_LOW_TOM)
+        ]
+
+    def test_every_section_downbeat_has_a_crash(self) -> None:
+        from saimc.compose.percussion import DRUM_CRASH
+
+        out = compose(_drum_spec(duration_seconds=120))
+        arr = out.arrangement
+        ticks_per_bar = bar_ticks(out.time_signature)
+        expected_bars = {s * arr.form_bars for s in range(arr.repetition_count)}
+        crash_bars = {
+            n.tick // ticks_per_bar
+            for n in self._drum_notes(out)
+            if n.pitch_midi == DRUM_CRASH
+        }
+        assert crash_bars == expected_bars
+
+    def test_rotation_holds_a_then_changes_pace(self) -> None:
+        from saimc.compose.percussion import rotation_index
+
+        rock = DRUM_STYLES["rock"]
+        assert rock.pattern("4/4", rotation_index(0, 2)) == rock.pattern("4/4", 0)
+        assert rock.pattern("4/4", rotation_index(1, 2)) == rock.pattern("4/4", 0)
+        assert rock.pattern("4/4", rotation_index(2, 2)) == rock.pattern("4/4", 1)
+        assert rock.pattern("4/4", rotation_index(3, 2)) == rock.pattern("4/4", 0)
+        # A single-variant style always plays it.
+        assert rotation_index(5, 1) == 0
+
+
 def _drum_spec(**kw):
     from saimc.spec import CompositionSpec, Instrument
 
