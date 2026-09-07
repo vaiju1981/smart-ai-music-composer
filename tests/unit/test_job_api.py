@@ -242,6 +242,21 @@ class TestMeta:
         assert "piano" in meta["instruments"]
         assert meta["duration_seconds"] == {"min": 30, "max": 600, "default": 180}
 
+    def test_meta_lists_ensemble_vocabulary(self, client: TestClient) -> None:
+        """Roles, default ensembles, and font-only instruments surface
+        for the UI to advertise what a spec's instrumentation accepts."""
+        from saimc.compose.ensemble import SCALAR_BASS, SCALAR_HARMONY
+        from saimc.render.instruments import FONT_ONLY_INSTRUMENTS
+        from saimc.spec import ROLE_ORDER
+
+        meta = client.get("/meta").json()
+        assert meta["roles"] == [r.value for r in ROLE_ORDER]
+        assert meta["default_ensembles"] == {
+            mood: {"harmony": SCALAR_HARMONY[mood], "bass": SCALAR_BASS[mood]}
+            for mood in SCALAR_HARMONY
+        }
+        assert meta["dedicated_font_only"] == sorted(FONT_ONLY_INSTRUMENTS)
+
     def test_meta_instruments_come_from_the_registry(self, client: TestClient) -> None:
         """Adding an instrument to SUPPORTED_INSTRUMENTS surfaces it in /meta."""
         from saimc.render.instruments import SUPPORTED_INSTRUMENTS

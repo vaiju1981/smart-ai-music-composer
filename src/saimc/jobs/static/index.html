@@ -232,14 +232,14 @@
       <label class="field-label" for="prompt">Your prompt</label>
       <div class="prompt-row">
         <input id="prompt" type="text" maxlength="4096" required autocomplete="off"
-               placeholder="e.g. build me a 30 second calming piano piece">
+               placeholder="e.g. build me a 30 second calming piece with piano and strings">
         <button id="compose" class="primary" type="submit">Compose</button>
         <button id="cancel" class="ghost" type="button" hidden>Cancel</button>
       </div>
       <div class="examples">
         <span class="try">Try:</span>
         <button type="button" class="chip">calming piano music</button>
-        <button type="button" class="chip">build me a 5 min electrifying piano piece</button>
+        <button type="button" class="chip">build me a 5 min electrifying piece with lots of instruments</button>
         <button type="button" class="chip">sleepy lullaby, ten minutes</button>
       </div>
       <p class="alert" id="form-error" role="alert"></p>
@@ -315,7 +315,7 @@
     queued: "Waiting for a free worker…",
     parsing: "Understanding your prompt…",
     composing: "Composing the score…",
-    rendering_audio: "Recording the piano audio…",
+    rendering_audio: "Recording the ensemble…",
     rendering_sheet: "Engraving the sheet music…",
     rendering_animation: "Rendering the animation — the slowest step, hang tight…",
     complete: "Everything is ready.",
@@ -340,7 +340,7 @@
     llm_invalid_response: "The language model returned something we couldn’t read. Trying again usually fixes it.",
     schema_invalid: "The language model produced an invalid request. It gets up to two automatic fixes; if this persists, try rephrasing.",
     duration_unfulfillable: "That combination of mood and length can’t be composed within tolerance. Try a duration between 30 and 600 seconds.",
-    soundfont_missing: "The piano soundfont is not installed on the server (assets/Salamander.sf2).",
+    soundfont_missing: "A soundfont needed by this ensemble is not installed on the server.",
     fluidsynth_missing: "FluidSynth is not installed on the server.",
     ffmpeg_missing: "The FFmpeg binary is not configured on the server.",
     worker_interrupted: "The server restarted mid-job and the job made no progress. Submit it again.",

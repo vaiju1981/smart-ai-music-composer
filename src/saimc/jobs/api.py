@@ -205,17 +205,21 @@ def list_jobs(request: Request, limit: int = 50) -> list[JobResponse]:
 def get_meta() -> dict[str, Any]:
     """Authoring vocabulary for the UI — what Phase 1 accepts.
 
-    One source of truth: the values come straight from the spec module
-    and the instrument registry, so schema and UI can never drift. A
-    new instrument becomes visible here the moment it is added to
-    `SUPPORTED_INSTRUMENTS` (and the spec's `Instrument` enum).
+    One source of truth: the values come straight from the spec module,
+    the ensemble tables, and the instrument registry, so schema and UI
+    can never drift. `roles` is the ensemble vocabulary a spec's
+    `instrumentation` list accepts; `default_ensembles` is what a bare
+    instrument string expands to per mood; `dedicated_font_only` names
+    the instruments that render only through their dedicated soundfont.
     """
-    from saimc.render.instruments import SUPPORTED_INSTRUMENTS
+    from saimc.compose.ensemble import SCALAR_BASS, SCALAR_HARMONY
+    from saimc.render.instruments import FONT_ONLY_INSTRUMENTS, SUPPORTED_INSTRUMENTS
     from saimc.spec import (
         DURATION_SECONDS_DEFAULT,
         DURATION_SECONDS_MAX,
         DURATION_SECONDS_MIN,
         Mood,
+        ROLE_ORDER,
         TimeSignature,
     )
 
@@ -223,6 +227,12 @@ def get_meta() -> dict[str, Any]:
         "moods": [m.value for m in Mood],
         "time_signatures": [t.value for t in TimeSignature],
         "instruments": sorted(SUPPORTED_INSTRUMENTS),
+        "roles": [r.value for r in ROLE_ORDER],
+        "default_ensembles": {
+            mood: {"harmony": SCALAR_HARMONY[mood], "bass": SCALAR_BASS[mood]}
+            for mood in SCALAR_HARMONY
+        },
+        "dedicated_font_only": sorted(FONT_ONLY_INSTRUMENTS),
         "duration_seconds": {
             "min": DURATION_SECONDS_MIN,
             "max": DURATION_SECONDS_MAX,
