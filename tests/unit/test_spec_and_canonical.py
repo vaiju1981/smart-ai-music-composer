@@ -21,9 +21,12 @@ from saimc.spec import (
     TEMPO_BPM_MAX,
     TEMPO_BPM_MIN,
     CompositionSpec,
+    Instrument,
+    InstrumentationEntry,
     Mood,
     SpecError,
     TimeSignature,
+    VoiceRole,
     WesternKey,
 )
 
@@ -36,7 +39,12 @@ class TestCompositionSpec:
         assert s.tempo_bpm is None
         assert s.key is None
         assert s.time_signature == TimeSignature.FOUR_FOUR
-        assert s.instrumentation == "piano"
+        # The omitted instrumentation field defaults to the mood's piano-led ensemble.
+        assert s.instrumentation == [
+            InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO),
+            InstrumentationEntry(role=VoiceRole.HARMONY, instrument=Instrument.PIZZICATO_STRINGS),
+            InstrumentationEntry(role=VoiceRole.BASS, instrument=Instrument.CELLO),
+        ]
         assert s.humanization == "light"
         assert s.request_kind.value == "mood_generation"
 

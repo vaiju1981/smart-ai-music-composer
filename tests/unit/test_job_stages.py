@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +17,7 @@ from saimc.jobs.stages import (
 from saimc.jobs.state import IllegalTransitionError, JobState
 from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult
-from saimc.spec import CompositionSpec, Instrument, Mood
+from saimc.spec import CompositionSpec, Instrument, Mood, VoiceRole
 
 
 @pytest.fixture
@@ -222,7 +223,10 @@ class TestComposeStage:
         """An unregistered instrumentation names what IS supported."""
         job = store.create("p")
         spec = CompositionSpec(mood=Mood.CALMING)
-        object.__setattr__(spec, "instrumentation", "string_orchestra")
+        # Bypass validation: a value the Instrument enum would never build.
+        forged = SimpleNamespace(value="string_orchestra")
+        entry = SimpleNamespace(role=VoiceRole.MELODY, instrument=forged)
+        object.__setattr__(spec, "instrumentation", [entry])
         job.input_spec = spec
         result = compose_stage(job, store)
         assert result.next_state == JobState.FAILED

@@ -219,8 +219,11 @@ def compose_stage(
         )
 
     if engine is None:
+        from saimc.compose.ensemble import resolve_ensemble
+
         try:
-            engine = _composer_for_instrumentation(job.input_spec.instrumentation)
+            # The registry is keyed by the ensemble's melody instrument.
+            engine = _composer_for_instrumentation(resolve_ensemble(job.input_spec).melody)
         except LookupError as exc:
             return StageResult(
                 job=job,
@@ -343,23 +346,25 @@ def render_audio_stage(
 
     output = read_engine_output(sidecar_path)
 
-    # Phase 1's spec carries one instrumentation for the whole piece;
-    # the melody voice plays it and the accompaniment voice gets its
-    # complementary patch (per-voice orchestration arrives in Phase 2).
-    # Dedicated-font instruments keep their own preset on both voices —
-    # only one font loads per job — and separate via channel gain/pan.
-    # A drum-set piece is the other exception: the piano stays as the
+    # The spec's instrumentation is a role-tagged ensemble; until the
+    # engine emits per-voice instruments in its sidecar, rendering keeps
+    # the Phase 1 two/three-voice layout keyed off the ensemble's melody
+    # role. A drum-set piece is the exception: the piano stays as the
     # accompaniment and the engine's percussion voice (voice 2, GM
     # channel-10 keys) carries the kit — its notes sound as drums
     # precisely because they go to channel 10.
-    instrumentation = job.input_spec.instrumentation
-    if instrumentation == "drum_set":
+    from saimc.compose.ensemble import resolve_ensemble
+
+    ensemble = resolve_ensemble(job.input_spec)
+    if ensemble.percussion == "drum_set":
+        instrumentation = "drum_set"
         voice_instruments = {
             VOICE_BASS: "piano",
             VOICE_MELODY: "piano",
             VOICE_PERCUSSION: instrumentation,
         }
     else:
+        instrumentation = ensemble.melody
         voice_instruments = {
             VOICE_BASS: accompaniment_for(instrumentation),
             VOICE_MELODY: instrumentation,

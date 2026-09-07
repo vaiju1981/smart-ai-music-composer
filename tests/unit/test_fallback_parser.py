@@ -16,6 +16,15 @@ from saimc.spec import (
 )
 
 
+# The ensemble a scalar piano spec expands to, per mood
+# (`SCALAR_HARMONY`/`SCALAR_BASS` in saimc.compose.ensemble).
+_SCALAR_PIANO_ENSEMBLE = {
+    "electrifying": ("strings", "contrabass"),
+    "calming": ("pizzicato_strings", "cello"),
+    "sleep": ("celesta", "cello"),
+}
+
+
 class TestParseFallbackAccepts:
     @pytest.mark.parametrize(
         ("prompt", "expected_mood", "expected_duration"),
@@ -37,7 +46,13 @@ class TestParseFallbackAccepts:
         assert isinstance(out, CompositionSpec)
         assert out.mood.value == expected_mood
         assert out.duration_seconds == expected_duration
-        assert out.instrumentation == "piano"
+        # Scalar piano coerces to the mood's default ensemble.
+        expected_harmony, expected_bass = _SCALAR_PIANO_ENSEMBLE[expected_mood]
+        assert [(e.role.value, e.instrument.value) for e in out.instrumentation] == [
+            ("melody", "piano"),
+            ("harmony", expected_harmony),
+            ("bass", expected_bass),
+        ]
         assert out.humanization == "light"
         assert out.schema_version == SPEC_SCHEMA_VERSION
         assert out.request_kind.value == "mood_generation"

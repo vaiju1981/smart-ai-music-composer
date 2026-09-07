@@ -13,7 +13,7 @@ from saimc.jobs.storage import (
     JobStorage,
     UnsupportedSpecVersionError,
 )
-from saimc.spec import CompositionSpec, Mood
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, Mood
 
 
 @pytest.fixture
@@ -158,7 +158,7 @@ class TestSchemaVersionGuard:
         with pytest.raises(UnsupportedSpecVersionError) as exc_info:
             store.get(job.job_id)
         assert "999" in str(exc_info.value)
-        assert "1" in str(exc_info.value)
+        assert str(SPEC_SCHEMA_VERSION) in str(exc_info.value)
 
     def test_current_spec_version_loads_normally(self, store) -> None:
         job = store.create("p")

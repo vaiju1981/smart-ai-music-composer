@@ -4,27 +4,30 @@ This is the canonical, versioned schema that the prompt parser (LLM +
 fallback) must produce. Every downstream component consumes and emits
 artifacts shaped against this schema. See `docs/roadmap.md` §6.
 
-The schema is intentionally narrow in Phase 1: three moods, one
-instrument per piece, no famous-piece catalog. `instrumentation` was
-widened from piano-only to the `Instrument` enum for Phase 2 — that is
-an additive change (every previously-valid spec value is still valid),
-so `SPEC_SCHEMA_VERSION` stayed at 1. Version 2 widens `humanization`
-beyond "none" (the default moves to "light"); version-1 specs remain
-readable — every value they could carry is still valid.
+The schema is intentionally narrow in Phase 1: three moods, no
+famous-piece catalog. `instrumentation` was widened from piano-only to
+the `Instrument` enum for Phase 2 — an additive change (every
+previously-valid spec value is still valid), so `SPEC_SCHEMA_VERSION`
+stayed at 1. Version 2 widens `humanization` beyond "none" (the default
+moves to "light"). Version 3 turns `instrumentation` from a single
+instrument into a role-tagged ensemble list (`VoiceRole` + `Instrument`
+entries): a scalar instrument value remains valid input and coerces to
+the mood's default ensemble, so version-1/2 specs stay readable — every
+value they could carry is still valid.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt
-
-SPEC_SCHEMA_VERSION: int = 2
-"""Bump on any breaking change to CompositionSpec."""
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
 # Type-level companion of SPEC_SCHEMA_VERSION so Pydantic / mypy accept the Literal.
-SchemaVersion = Literal[1, 2]
+SchemaVersion = Literal[1, 2, 3]
+
+SPEC_SCHEMA_VERSION: SchemaVersion = 3
+"""Bump on any breaking change to CompositionSpec."""
 
 DURATION_SECONDS_MIN: int = 30
 DURATION_SECONDS_MAX: int = 600
@@ -187,6 +190,64 @@ class TimeSignature(StrEnum):
     SEVEN_EIGHT = "7/8"
 
 
+class VoiceRole(StrEnum):
+    """What an instrument does in the ensemble. One role per engine voice."""
+
+    MELODY = "melody"
+    HARMONY = "harmony"
+    BASS = "bass"
+    PERCUSSION = "percussion"
+
+
+# Canonical entry order for the `instrumentation` list. The spec's
+# validator re-sorts entries into this order so dumps, corpus labels,
+# and canonical hashes are independent of the order the parser emitted.
+ROLE_ORDER: tuple[VoiceRole, ...] = (
+    VoiceRole.MELODY,
+    VoiceRole.HARMONY,
+    VoiceRole.BASS,
+    VoiceRole.PERCUSSION,
+)
+
+# Ensemble size ceiling: 1 melody + <=2 harmony + <=1 bass + <=1
+# percussion. Also the MIDI-channel budget: the render stage maps each
+# voice to its own channel, and melodic voices must stay off channel 10.
+ENSEMBLE_MAX_VOICES: int = 5
+
+
+class InstrumentationEntry(BaseModel):
+    """One instrument in the ensemble, tagged with its role."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+    role: VoiceRole = Field(description="What this instrument does in the ensemble.")
+    instrument: Instrument = Field(description="Which instrument plays the role.")
+
+
+# Instruments with a dedicated soundfont in `FONT_PRESETS`
+# (`saimc.render.instruments` — a drift-guard test keeps the enum and
+# the font table honest). Only one dedicated font can load per job, so
+# ensemble rules treat them specially: such a melody's accompaniment
+# stays inside its own font (harmony doubles the melody instrument,
+# separated by channel gain/pan at render time), and duplicate
+# instruments are only tolerated among these.
+DEDICATED_FONT_INSTRUMENTS: frozenset[Instrument] = frozenset(
+    {
+        Instrument.SITAR,
+        Instrument.KOTO,
+        Instrument.SHAMISEN,
+        Instrument.HARMONIUM,
+        Instrument.BANSURI,
+        Instrument.SARANGI,
+        Instrument.RUDRA_VEENA,
+        Instrument.SARASVATI_VEENA,
+        Instrument.QANOON,
+        Instrument.UD,
+        Instrument.KORA,
+    }
+)
+
+
 class CompositionSpec(BaseModel):
     """The Phase 1 parser contract.
 
@@ -203,10 +264,11 @@ class CompositionSpec(BaseModel):
     )
 
     schema_version: SchemaVersion = Field(
-        default=2,
+        default=SPEC_SCHEMA_VERSION,
         description=(
-            "Schema version of this CompositionSpec. Version 1 specs remain "
-            "valid input; new specs are written as version 2."
+            "Schema version of this CompositionSpec. Older-version specs "
+            "remain valid input; new specs are written as the current "
+            "version."
         ),
     )
     request_kind: Literal[RequestKind.MOOD_GENERATION] = Field(
@@ -238,11 +300,17 @@ class CompositionSpec(BaseModel):
     mood: Mood = Field(
         description="Phase 1 mood vocabulary: calming | electrifying | sleep.",
     )
-    instrumentation: Instrument = Field(
-        default=Instrument.PIANO,
+    instrumentation: list[InstrumentationEntry] = Field(
+        default_factory=lambda: [InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO)],
+        min_length=1,
+        max_length=ENSEMBLE_MAX_VOICES,
         description=(
-            "The instrument the piece is written for. One instrument per "
-            "piece in Phase 2; per-voice orchestration arrives later."
+            "The ensemble the piece is written for: role-tagged entries "
+            "sorted melody-first. Exactly one melody; at most one bass, "
+            "one percussion (drum_set only), and two harmony voices; "
+            "instruments must be distinct. A bare instrument string is "
+            "accepted for backwards compatibility and expands to the "
+            "mood's default ensemble."
         ),
     )
     seed: int | None = Field(
@@ -260,6 +328,74 @@ class CompositionSpec(BaseModel):
             "shortens repeated notes into staccato."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_and_normalize_instrumentation(cls, data: Any) -> Any:
+        """Coerce legacy scalar instrumentation into a normalized ensemble.
+
+        A bare instrument string (the version-1/2 shape) expands to the
+        mood's default ensemble; a missing field becomes the default
+        ensemble for the spec's mood; explicit entry lists get missing
+        harmony/bass roles filled and all entries sorted into
+        `ROLE_ORDER` — so dumps, corpus labels, and canonical hashes are
+        independent of what the parser emitted. Malformed shapes (a list
+        of bare strings, unknown roles) are left for field validation to
+        reject with pydantic's own message, except the bare-string list
+        which gets a targeted, repairable error. The mood's tables live
+        in `saimc.compose.ensemble` — imported lazily because that
+        module imports this one.
+        """
+        if not isinstance(data, dict):
+            return data
+        mood = data.get("mood")
+        raw = data.get("instrumentation")
+        from saimc.compose.ensemble import normalize_instrumentation
+
+        data["instrumentation"] = normalize_instrumentation(raw, mood)
+        return data
+
+    @model_validator(mode="after")
+    def _validate_ensemble(self) -> CompositionSpec:
+        """Enforce ensemble shape that field-level constraints cannot express."""
+        entries = self.instrumentation
+        roles = [entry.role for entry in entries]
+        if roles.count(VoiceRole.MELODY) != 1:
+            raise ValueError(
+                "ensemble must have exactly one melody role; got "
+                f"{roles.count(VoiceRole.MELODY)}"
+            )
+        if roles.count(VoiceRole.BASS) > 1:
+            raise ValueError("ensemble supports at most one bass entry")
+        if roles.count(VoiceRole.PERCUSSION) > 1:
+            raise ValueError("ensemble supports at most one percussion entry")
+        for entry in entries:
+            if entry.role == VoiceRole.PERCUSSION and entry.instrument != Instrument.DRUM_SET:
+                raise ValueError(
+                    "percussion role requires the drum_set instrument; "
+                    f"got {entry.instrument.value}"
+                )
+        harmony = roles.count(VoiceRole.HARMONY)
+        if harmony > 2:
+            raise ValueError(f"ensemble supports at most two harmony entries; got {harmony}")
+        instruments = [entry.instrument for entry in entries]
+        duplicates = {i for i in instruments if instruments.count(i) > 1}
+        if duplicates:
+            font_only_ok = duplicates <= DEDICATED_FONT_INSTRUMENTS
+            # The drum-set layout is the other exception: its melody
+            # and accompaniment are both the piano (one Salamander
+            # voice under the kit), exactly as the Phase 2 drum-set
+            # branch composed it.
+            drum_set_ok = (
+                duplicates == {Instrument.PIANO}
+                and roles == [VoiceRole.MELODY, VoiceRole.BASS, VoiceRole.PERCUSSION]
+            )
+            if not (font_only_ok or drum_set_ok):
+                names = ", ".join(sorted(i.value for i in duplicates))
+                raise ValueError(
+                    f"each instrument may appear at most once in an ensemble: {names}"
+                )
+        return self
 
 
 class SpecError(BaseModel):
@@ -284,10 +420,15 @@ __all__ = [
     "TEMPO_BPM_MAX",
     "TEMPO_BPM_MIN",
     "CompositionSpec",
+    "DEDICATED_FONT_INSTRUMENTS",
+    "ENSEMBLE_MAX_VOICES",
     "Instrument",
+    "InstrumentationEntry",
     "Mood",
     "RequestKind",
+    "ROLE_ORDER",
     "SpecError",
+    "VoiceRole",
     "TimeSignature",
     "WesternKey",
 ]

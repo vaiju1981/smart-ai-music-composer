@@ -95,6 +95,7 @@ from saimc.compose.score import (
     TempoPoint,
     microseconds_at_tick,
 )
+from saimc.compose.ensemble import Ensemble, resolve_ensemble
 from saimc.spec import CompositionSpec, Instrument
 
 
@@ -237,7 +238,8 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             message=str(exc),
         ) from exc
 
-    score, chord_bars = _build_score(spec, key, time_signature, arrangement)
+    ensemble = resolve_ensemble(spec)
+    score, chord_bars = _build_score(spec, key, time_signature, arrangement, ensemble)
     lint_report = lint(score, chord_bars=chord_bars or None)
     if not lint_report.passed:
         raise CompositionEngineError(
@@ -246,9 +248,18 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             lint_issues=lint_report.issues,
         )
 
+    # The performance plan still treats the piece as one lead instrument
+    # (per-voice legato/pedal/humanization arrives with the harmony
+    # voice). A drum-set piece keeps its legacy marker so the plan
+    # matches the drum-kit branch exactly.
+    performance_instrumentation = (
+        "drum_set"
+        if ensemble.percussion == "drum_set" and ensemble.melody == "piano"
+        else ensemble.melody
+    )
     performance = _build_performance_plan(
         score,
-        instrumentation=spec.instrumentation.value,
+        instrumentation=performance_instrumentation,
         humanization=spec.humanization,
         seed=spec.seed,
         arrangement=arrangement,
@@ -273,6 +284,7 @@ def _build_score(
     key: KeySignature,
     time_signature: str,
     arrangement: DurationArrangement,
+    ensemble: Ensemble,
 ) -> tuple[NotationScore, tuple[tuple[int, ...], ...]]:
     """Build the NotationScore from the spec + arrangement.
 
@@ -405,7 +417,7 @@ def _build_score(
     # cover (5/4, 7/8) get no percussion rather than a wrong pattern.
     # Long pieces rest the kit during the bass-alone intro bars and one
     # mid-piece section, so the texture has a hole before it refills.
-    if spec.instrumentation == Instrument.DRUM_SET:
+    if ensemble.percussion == "drum_set":
         rest_bars: set[int] = set()
         if long_piece:
             rest_bars.update(range(arrangement.intro_bars))

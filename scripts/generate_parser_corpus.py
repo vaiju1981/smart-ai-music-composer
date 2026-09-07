@@ -29,6 +29,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec
+
 DEFAULT_OUT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "parser_benchmark.jsonl"
 
 CALMING = "calming"
@@ -36,23 +38,34 @@ ELECTRIFYING = "electrifying"
 SLEEP = "sleep"
 
 DEFAULT_SPEC: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": SPEC_SCHEMA_VERSION,
     "request_kind": "mood_generation",
     "duration_seconds": 180,
     "tempo_bpm": None,
     "key": None,
     "time_signature": "4/4",
     "mood": CALMING,
+    # Raw scalar input; `_spec` canonicalizes it through the real model,
+    # so labels carry the schema's own coerced, role-tagged ensemble —
+    # including the mood-specific harmony/bass fills — exactly as a
+    # validated parse would dump them.
     "instrumentation": "piano",
     "seed": None,
-    "humanization": "none",
+    "humanization": "light",
 }
 
 
 def _spec(**overrides: Any) -> dict[str, Any]:
-    spec = dict(DEFAULT_SPEC)
-    spec.update(overrides)
-    return spec
+    """One corpus label: DEFAULT_SPEC + overrides, dumped by the real model.
+
+    Going through `CompositionSpec.model_validate(...).model_dump()` keeps
+    the labels canonical: scalar instrumentation coerces to the mood's
+    role-tagged ensemble and every field the model emits is present, so
+    the benchmark's exact key-set comparison holds.
+    """
+    payload = dict(DEFAULT_SPEC)
+    payload.update(overrides)
+    return CompositionSpec.model_validate(payload).model_dump(mode="json")
 
 
 def _rec(
@@ -117,12 +130,27 @@ def _supported_paraphrases() -> list[dict[str, Any]]:
         "I want a quiet lullaby for sleeping", SLEEP, 180, "lullaby -> sleep (closer to sleeping)."
     )
     _supported("give me a mellow track for studying", CALMING, 180, "mellow -> calming.")
-    _supported("tranquil piano, please", CALMING, 180, "tranquil -> calming.")
+    _supported(
+        "tranquil bansuri, please",
+        CALMING,
+        180,
+        "tranquil -> calming. Scalar bansuri (dedicated-font instrument) coerces to [melody bansuri, harmony bansuri] — accompaniment stays inside the bansuri font.",
+    )
     _supported(
         "soothing music for yoga, 10 min", CALMING, 600, "soothing -> calming; max boundary."
     )
-    _supported("serene piano piece, 6 minutes", CALMING, 360, "serene -> calming.")
-    _supported("relaxing piano music, 3 minutes", CALMING, 180, "relaxing -> calming.")
+    _supported(
+        "serene cello piece, 6 minutes",
+        CALMING,
+        360,
+        "serene -> calming. Scalar cello coerces to [melody cello, harmony pizzicato_strings] — the calming bass pick IS cello, so the melody voice covers bass and no duplicate entry is emitted.",
+    )
+    _supported(
+        "relaxing sitar music, 3 minutes",
+        CALMING,
+        180,
+        "relaxing -> calming. Scalar sitar (dedicated-font instrument) coerces to [melody sitar, harmony sitar].",
+    )
     _supported(
         "calming background piano", CALMING, 180, "calming keyword + background = calming mood."
     )
@@ -152,8 +180,18 @@ def _supported_paraphrases() -> list[dict[str, Any]]:
         180,
         "dynamic + powerful both -> electrifying.",
     )
-    _supported("an upbeat piano number", ELECTRIFYING, 180, "upbeat -> electrifying.")
-    _supported("vibrant piano piece, 3 minutes", ELECTRIFYING, 180, "vibrant -> electrifying.")
+    _supported(
+        "an upbeat brass number, 3 minutes",
+        ELECTRIFYING,
+        180,
+        "upbeat -> electrifying. Scalar brass_section coerces to [melody brass_section, harmony strings, bass contrabass].",
+    )
+    _supported(
+        "vibrant strings piece, 3 minutes",
+        ELECTRIFYING,
+        180,
+        "vibrant -> electrifying. Scalar strings coerces to [melody strings, bass contrabass] — the electrifying harmony pick IS strings, so the melody voice covers harmony.",
+    )
     _supported(
         "a powerful piano concert opener, 5 min", ELECTRIFYING, 300, "powerful -> electrifying."
     )
@@ -166,12 +204,22 @@ def _supported_paraphrases() -> list[dict[str, Any]]:
         300,
         "Tie-break: calming wins by iteration order (deterministic fallback). NOTE: LLM should prefer 'sleep' as closer-to-keyword mood; this record tests the fallback path specifically.",
     )
-    _supported("sleepy piano music", SLEEP, 180, "sleepy -> sleep.")
+    _supported(
+        "sleepy choir music",
+        SLEEP,
+        180,
+        "sleepy -> sleep. Scalar choir coerces to [melody choir, harmony celesta, bass cello].",
+    )
     _supported("a dreamy piano piece, 7 minutes", SLEEP, 420, "dreamy -> sleep.")
     _supported("ambient music for sleeping, 10 min", SLEEP, 600, "ambient -> sleep; max boundary.")
     _supported("meditation piano, 5 min", SLEEP, 300, "meditation -> sleep.")
     _supported("restful piano music", SLEEP, 180, "restful -> sleep.")
-    _supported("nighttime piano music, 4 minutes", SLEEP, 240, "nighttime -> sleep.")
+    _supported(
+        "nighttime flute music, 4 minutes",
+        SLEEP,
+        240,
+        "nighttime -> sleep. Scalar flute coerces to [melody flute, harmony celesta, bass cello].",
+    )
     _supported("bedtime piano lullaby", SLEEP, 180, "bedtime + lullaby -> sleep.")
     _supported("something to fall asleep to", SLEEP, 180, "fall asleep -> sleep.")
     _supported("ambient soundscape, 8 min", SLEEP, 480, "ambient -> sleep.")
@@ -380,13 +428,13 @@ def _boundary_cases() -> list[dict[str, Any]]:
         "calming guitar music",
         "rejected",
         error="out_of_vocabulary",
-        label="Phase 1 is piano-only.",
+        label="'guitar' is not in the instrument vocabulary (nylon_guitar/steel_guitar are, plain 'guitar' is not).",
     )
     _b(
         "calming piano with synth",
         "rejected",
         error="out_of_vocabulary",
-        label="Phase 1 is piano-only; synth is unsupported.",
+        label="'synth' is not in the instrument vocabulary.",
     )
 
     # Compound / ambiguous durations.
@@ -510,18 +558,26 @@ def _unsupported_cases() -> list[dict[str, Any]]:
     )
     _u("a hopeful piano piece", "out_of_vocabulary", "'hopeful' is out of Phase 1 vocabulary.")
 
-    # Unsupported instruments / Phase 3 territory.
+    # Unsupported instruments / facets.
     _u(
         "a sad violin solo",
         "out_of_vocabulary",
-        "Two unsupported facets: 'sad' mood + 'violin' instrument.",
+        "'sad' is out of the mood vocabulary; violin itself is supported.",
     )
-    _u("flute and tabla fusion", "out_of_vocabulary", "Indian classical instruments — Phase 3.")
-    _u("a sitar piece, 5 min", "out_of_vocabulary", "Indian classical instrument.")
     _u(
-        "bansuri and piano",
+        "flute and tabla fusion",
         "out_of_vocabulary",
-        "Mixed Indian classical + piano; instrument out of Phase 1.",
+        "'tabla' is not in the instrument vocabulary (flute is supported).",
+    )
+    _u(
+        "a theremin piece, 5 min",
+        "out_of_vocabulary",
+        "'theremin' is not in the instrument vocabulary.",
+    )
+    _u(
+        "a harmonium and tabla piece",
+        "out_of_vocabulary",
+        "'tabla' is not in the instrument vocabulary (harmonium is supported).",
     )
 
     return records
