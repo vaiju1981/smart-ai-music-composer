@@ -51,7 +51,7 @@ def _stub_engine_returns(spec: CompositionSpec) -> tuple[object, object]:
     """
     from saimc.compose.duration import DurationArrangement
     from saimc.compose.engine import EngineOutput
-    from saimc.compose.forms import ChordTemplate
+    from saimc.compose.forms import ChordSlot, ChordTemplate
     from saimc.compose.score import (
         KeySignature,
         Measure,
@@ -81,7 +81,7 @@ def _stub_engine_returns(spec: CompositionSpec) -> tuple[object, object]:
     performance = PerformancePlan.make(sample_rate=44100, notes=[perf_note])
     arrangement = DurationArrangement(
         form_bars=1,
-        template=ChordTemplate(name="stub_1bar", bars=1, chords=((0, 1),)),
+        template=ChordTemplate(name="stub_1bar", bars=1, chords=(ChordSlot(0, 1),)),
         repetition_count=1,
         total_bars=1,
         tempo_bpm=80.0,

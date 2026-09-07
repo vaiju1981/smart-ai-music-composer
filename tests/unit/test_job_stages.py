@@ -138,7 +138,7 @@ class TestComposeStage:
         """A stub engine that returns a valid EngineOutput advances."""
         from saimc.compose.duration import DurationArrangement
         from saimc.compose.engine import EngineOutput
-        from saimc.compose.forms import ChordTemplate
+        from saimc.compose.forms import ChordSlot, ChordTemplate
         from saimc.compose.score import (
             KeySignature,
             Measure,
@@ -179,7 +179,7 @@ class TestComposeStage:
                 template=ChordTemplate(
                     name="stub_1bar",
                     bars=1,
-                    chords=((0, 1),),
+                    chords=(ChordSlot(0, 1),),
                 ),
                 repetition_count=1,
                 total_bars=1,

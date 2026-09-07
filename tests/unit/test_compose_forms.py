@@ -8,6 +8,7 @@ from saimc.compose.forms import (
     MOOD_PROFILES,
     PHRASE_SIZES,
     TEMPO_RANGE_BPM,
+    ChordSlot,
     ChordTemplate,
     get_mood_profile,
     get_template_for_form,
@@ -20,9 +21,20 @@ from saimc.spec import WesternKey
 
 class TestChordTemplate:
     def test_valid_template(self) -> None:
-        t = ChordTemplate(name="test", bars=8, chords=((0, 2), (5, 2), (3, 2), (4, 2)))
+        t = ChordTemplate(
+            name="test",
+            bars=8,
+            chords=(ChordSlot(0, 2), ChordSlot(5, 2), ChordSlot(3, 2), ChordSlot(4, 2)),
+        )
         assert t.bars == 8
-        assert sum(d for _, d in t.chords) == 8
+        assert sum(slot.bars for slot in t.chords) == 8
+
+    def test_slot_bars_must_sum_to_template_bars(self) -> None:
+        # The engine advances one `bars`-length block per section; a
+        # template whose slots overflow it desynchronises every later
+        # section's chord map.
+        with pytest.raises(ValueError, match="sum to 6"):
+            ChordTemplate(name="drift", bars=8, chords=(ChordSlot(0, 2), ChordSlot(5, 4)))
 
 
 class TestGetTemplateForForm:

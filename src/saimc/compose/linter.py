@@ -158,10 +158,18 @@ def _check_measures_complete(score: NotationScore) -> list[LintIssue]:
 
 
 def _check_simultaneous_notes(score: NotationScore) -> list[LintIssue]:
-    """Flag measures where more than MAX_SIMULTANEOUS_NOTES start at the same tick."""
+    """Flag measures where more than MAX_SIMULTANEOUS_NOTES start at the same tick.
+
+    The cap models a pianist's two hands: it applies to the melodic
+    voices. The percussion kit is one drum machine — a crash, kick, and
+    hat can all fire on the same downbeat without straining anything —
+    so its notes don't count toward the cap.
+    """
     issues: list[LintIssue] = []
     by_tick: dict[int, list[NoteEvent]] = {}
     for note in score.notes:
+        if note.voice_id == VOICE_PERCUSSION:
+            continue
         by_tick.setdefault(note.tick, []).append(note)
     for tick, notes_at_tick in by_tick.items():
         if len(notes_at_tick) > MAX_SIMULTANEOUS_NOTES:

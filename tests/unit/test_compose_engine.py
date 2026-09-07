@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import asdict
 from itertools import pairwise
 
 import pytest
@@ -12,6 +15,7 @@ from saimc.compose.engine import (
     MODULATION_OFFSET,
     CompositionEngineError,
     EngineErrorCode,
+    EngineOutput,
     _chord_intervals,
     _merged_tie_runs,
     _scale_degree_to_semitones,
@@ -1037,3 +1041,120 @@ def _melody_span_bars(out) -> list[float]:
         prev = note
     spans.append((prev.tick + prev.duration_ticks - group_start) / ticks_per_bar)
     return spans
+
+
+class TestHarmonyVoice:
+    """P2: the harmony voice — pad for calm moods, arpeggio for energy."""
+
+    def test_harmony_voice_present_and_sidecar_named(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+        assert harmony, "the default ensemble carries a harmony voice"
+        sidecar = {v.voice_id: v.instrument for v in out.voice_instruments}
+        assert sidecar == {0: "cello", 1: "piano", 3: "pizzicato_strings"}
+
+    def test_drum_set_piece_has_no_harmony_voice(self) -> None:
+        out = compose(
+            _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
+        )
+        voices = {n.voice_id for n in out.notation_score.notes}
+        assert 3 not in voices
+        assert voices == {0, 1, 2}
+
+    @pytest.mark.parametrize("mood", [Mood.CALMING, Mood.SLEEP])
+    def test_calm_moods_get_a_sustained_pad(self, mood: Mood) -> None:
+        out = compose(_spec(mood, duration=60))
+        harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+        ticks_per_bar = bar_ticks(out.time_signature)
+        # The pad holds each note across a bar, quietly.
+        assert all(n.duration_ticks == ticks_per_bar for n in harmony)
+        assert all(30 <= n.velocity <= 60 for n in harmony)
+
+    def test_electrifying_gets_a_broken_chord_arpeggio(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60))
+        harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+        eighth = out.notation_score.ppq // 2
+        assert all(n.duration_ticks == eighth for n in harmony)
+        assert len(harmony) > 4 * out.arrangement.total_bars, (
+            "the arpeggio moves faster than one note per beat"
+        )
+
+    def test_harmony_stays_in_its_register(self) -> None:
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            out = compose(_spec(mood, duration=60))
+            harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+            assert harmony
+            assert all(48 <= n.pitch_midi <= 84 for n in harmony)
+
+    def test_harmony_never_rubs_against_the_melody(self) -> None:
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            out = compose(_spec(mood, duration=60))
+            melody = [n for n in out.notation_score.notes if n.voice_id == 1]
+            harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+            for h in harmony:
+                for m in melody:
+                    if m.tick < h.tick + h.duration_ticks and h.tick < m.tick + m.duration_ticks:
+                        assert abs(m.pitch_midi - h.pitch_midi) not in (0, 1, 2, 10, 11), (
+                            f"harmony {h.pitch_midi} crowds melody {m.pitch_midi} ({mood})"
+                        )
+
+    def test_harmony_enters_with_the_melody(self) -> None:
+        # A long calming piece opens bass alone; the pad waits for it.
+        out = compose(_spec(Mood.CALMING, duration=600))
+        assert out.arrangement.intro_bars > 0
+        intro_end = out.arrangement.intro_bars * bar_ticks(out.time_signature)
+        harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+        assert all(n.tick >= intro_end for n in harmony)
+
+    def test_harmony_cc11_only_when_sustained(self) -> None:
+        # Calming's pad is pizzicato strings — plucked, no sustain to shape.
+        out = compose(_spec(Mood.CALMING, duration=60))
+        cc11_voices = {c.voice_id for c in out.performance_plan.controllers if c.control == 11}
+        assert cc11_voices == {1}
+        # Electrifying's arpeggio rides sustained strings: it swells too.
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60))
+        cc11_voices = {c.voice_id for c in out.performance_plan.controllers if c.control == 11}
+        assert cc11_voices == {1, 3}
+
+    def test_harmony_gets_pedal_when_its_instrument_reads_one(self) -> None:
+        # A celesta pad (sleep's scalar coercion) reads a pedal.
+        out = compose(_spec(Mood.SLEEP, duration=60))
+        cc64_voices = {c.voice_id for c in out.performance_plan.controllers if c.control == 64}
+        assert cc64_voices == {1, 3}
+
+    def test_drum_set_plan_is_byte_identical_to_the_pre_ensemble_layout(self) -> None:
+        """The scalar drum-set spec's plan must not have moved.
+
+        The SHA-256 of the plan's canonical JSON, computed at the commit
+        just before the ensemble landed, pins the Phase 2 drum-kit
+        behaviour: no melody legato or pedal, kit humanization only.
+        Changing this pin on purpose means changing drum-set sound on
+        purpose.
+        """
+        out = compose(
+            _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
+        )
+        payload = json.dumps(
+            out.performance_plan, sort_keys=True, default=lambda o: asdict(o)
+        )
+        assert hashlib.sha256(payload.encode()).hexdigest() == (
+            "24dd3111f71b8a11434daf6be015873d27cebaa154970d124e220b622321d846"
+        )
+
+    def test_sidecar_round_trips_voice_instruments(self) -> None:
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="flute"))
+        payload = out.to_sidecar()
+        restored = EngineOutput.from_sidecar(payload)
+        assert restored.voice_instruments == out.voice_instruments
+        assert {v.voice_id: v.instrument for v in restored.voice_instruments} == {
+            0: "contrabass",
+            1: "flute",
+            3: "strings",
+        }
+
+    def test_from_sidecar_tolerates_missing_voice_instruments(self) -> None:
+        out = compose(_spec(Mood.CALMING, duration=60))
+        payload = out.to_sidecar()
+        del payload["voice_instruments"]
+        restored = EngineOutput.from_sidecar(payload)
+        assert restored.voice_instruments == ()

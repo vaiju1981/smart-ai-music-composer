@@ -49,10 +49,13 @@ DEFAULT_VELOCITY: int = 64
 # into voice 1; renderers key instrument choice off these. Voice 2 is
 # the percussion kit: its `pitch_midi` values are GM percussion keys
 # (kick=36, snare=38, ...) and the renderer routes the voice to MIDI
-# channel 10. Phase 2's orchestra adds more voices after these.
+# channel 10. Voice 3 is the harmony voice (pad or arpeggio under the
+# melody) — each voice maps to its own MIDI channel and instrument at
+# render time via the engine's `voice_instruments` sidecar.
 VOICE_BASS: int = 0
 VOICE_MELODY: int = 1
 VOICE_PERCUSSION: int = 2
+VOICE_HARMONY: int = 3
 
 
 def ticks_to_microseconds(ticks: int, bpm: float, ppq: int = PPQ) -> int:

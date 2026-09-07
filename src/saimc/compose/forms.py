@@ -68,6 +68,18 @@ class ChordTemplate:
     bars: int
     chords: tuple[ChordSlot, ...]
 
+    def __post_init__(self) -> None:
+        # The engine advances one `bars`-length block per section while
+        # `_generate_section` emits one chord-bar per bar of `chords`;
+        # any drift between the two desynchronises every later section
+        # (chord_bars no longer match the notes). Reject it at import.
+        total = sum(slot.bars for slot in self.chords)
+        if total != self.bars:
+            raise ValueError(
+                f"template {self.name!r} declares {self.bars} bars "
+                f"but its chord slots sum to {total}"
+            )
+
 
 @dataclass(frozen=True)
 class MoodProfile:
@@ -123,7 +135,7 @@ MOOD_PROFILES: Mapping[str, MoodProfile] = {
                     ChordSlot(0, 2, seventh=True),
                     ChordSlot(5, 2, seventh=True),
                     ChordSlot(3, 2, seventh=True, borrowed=True),  # iv, minor colour
-                    ChordSlot(1, 4, seventh=True),  # ii7 over the last phrase
+                    ChordSlot(1, 2, seventh=True),  # ii7 closes the last phrase
                 ),
             ),
         ),
