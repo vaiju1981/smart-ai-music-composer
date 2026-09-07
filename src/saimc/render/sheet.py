@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING
 from saimc.compose.score import Measure, NotationScore, NoteEvent
 
 if TYPE_CHECKING:
+    from music21.instrument import Instrument as M21Instrument
     from music21.note import Rest as M21Rest
     from music21.stream import Measure as M21Measure
 
@@ -64,18 +66,130 @@ class SheetArtifact:
     osmd_version: str
 
 
-def notation_score_to_musicxml(score: NotationScore) -> str:
+# Per-instrument music21 factory data: (music21 class name | None,
+# display name). A class name that music21 does not provide (music21
+# lags GM's list) engraves as a generic part carrying the display name,
+# which is what OSMD shows on the staff — the sound itself is decided
+# by the audio stage's MIDI program, not by this table.
+M21_INSTRUMENTS: Mapping[str, tuple[str | None, str]] = {
+    # Keys
+    "piano": ("Piano", "Piano"),
+    "harpsichord": ("Harpsichord", "Harpsichord"),
+    "celesta": ("Celesta", "Celesta"),
+    "music_box": (None, "Music Box"),
+    # Mallets and bells
+    "glockenspiel": ("Glockenspiel", "Glockenspiel"),
+    "vibraphone": ("Vibraphone", "Vibraphone"),
+    "marimba": ("Marimba", "Marimba"),
+    "xylophone": ("Xylophone", "Xylophone"),
+    "tubular_bells": ("TubularBells", "Tubular Bells"),
+    "dulcimer": ("Dulcimer", "Dulcimer"),
+    # Organs and free reeds
+    "pipe_organ": ("PipeOrgan", "Pipe Organ"),
+    "accordion": ("Accordion", "Accordion"),
+    "harmonica": ("Harmonica", "Harmonica"),
+    # Plucked strings
+    "nylon_guitar": ("AcousticGuitar", "Nylon Guitar"),
+    "steel_guitar": ("ElectricGuitar", "Steel Guitar"),
+    "banjo": ("Banjo", "Banjo"),
+    "shamisen": ("Shamisen", "Shamisen"),
+    "koto": ("Koto", "Koto"),
+    "sitar": ("Sitar", "Sitar"),
+    # Bowed strings and ensembles
+    "violin": ("Violin", "Violin"),
+    "viola": ("Viola", "Viola"),
+    "cello": ("Violoncello", "Cello"),
+    "contrabass": ("Contrabass", "Contrabass"),
+    "tremolo_strings": (None, "Tremolo Strings"),
+    "pizzicato_strings": (None, "Pizzicato Strings"),
+    "strings": (None, "Strings"),
+    "fiddle": ("Violin", "Fiddle"),
+    # Harp and timpani
+    "harp": ("Harp", "Harp"),
+    "timpani": ("Timpani", "Timpani"),
+    # Choir
+    "choir": ("Choir", "Choir"),
+    # Brass
+    "french_horn": ("Horn", "French Horn"),
+    "brass_section": (None, "Brass Section"),
+    "trumpet": ("Trumpet", "Trumpet"),
+    "muted_trumpet": ("Trumpet", "Muted Trumpet"),
+    "trombone": ("Trombone", "Trombone"),
+    "tuba": ("Tuba", "Tuba"),
+    # Woodwinds
+    "flute": ("Flute", "Flute"),
+    "piccolo": ("Piccolo", "Piccolo"),
+    "recorder": ("Recorder", "Recorder"),
+    "pan_flute": ("PanFlute", "Pan Flute"),
+    "ocarina": ("Ocarina", "Ocarina"),
+    "oboe": ("Oboe", "Oboe"),
+    "english_horn": ("EnglishHorn", "English Horn"),
+    "bassoon": ("Bassoon", "Bassoon"),
+    "clarinet": ("Clarinet", "Clarinet"),
+    # Saxophone family
+    "soprano_sax": ("SopranoSaxophone", "Soprano Sax"),
+    "alto_sax": ("AltoSaxophone", "Alto Sax"),
+    "tenor_sax": ("TenorSaxophone", "Tenor Sax"),
+    "baritone_sax": ("BaritoneSaxophone", "Baritone Sax"),
+    # World
+    "bagpipe": (None, "Bagpipes"),
+    "shakuhachi": ("Shakuhachi", "Shakuhachi"),
+    "shanai": (None, "Shanai"),
+    "kalimba": ("Kalimba", "Kalimba"),
+    "steel_drums": ("SteelDrum", "Steel Drums"),
+    "agogo": ("Agogo", "Agogo"),
+    "woodblock": ("Woodblock", "Woodblock"),
+    "taiko": ("Taiko", "Taiko"),
+    # Percussion kit: its notes are GM kit keys, not pitches
+    "drum_set": ("Percussion", "Percussion"),
+    # Dedicated-font instruments (no music21 class, no GM voice)
+    "harmonium": (None, "Harmonium"),
+    "bansuri": (None, "Bansuri"),
+    "sarangi": (None, "Sarangi"),
+    "rudra_veena": (None, "Rudra Veena"),
+    "sarasvati_veena": (None, "Sarasvati Veena"),
+    "qanoon": (None, "Qanoon"),
+    "ud": (None, "Ud"),
+    "kora": (None, "Kora"),
+}
+
+
+def _m21_instrument_for(instrument_name: str) -> "M21Instrument":
+    """Build the music21 instrument a voice's part carries.
+
+    Falls back to a named generic part for instruments music21 does not
+    model, and to a plain piano for names outside the registry — an
+    unknown name should degrade to a labelled staff, never fail the
+    sheet render.
+    """
+    from music21 import instrument as m21instrument
+
+    class_name, display = M21_INSTRUMENTS.get(instrument_name, (None, "Piano"))
+    cls = getattr(m21instrument, class_name, None) if class_name is not None else None
+    inst = cls() if cls is not None else m21instrument.Instrument()
+    # The display name is the engraved part name — music21's class
+    # names lag common usage ("Violoncello", "Horn").
+    inst.instrumentName = display
+    return inst
+
+
+def notation_score_to_musicxml(
+    score: NotationScore,
+    voice_instruments: Mapping[int, str] | None = None,
+) -> str:
     """Export the canonical `NotationScore` to a MusicXML string.
 
-    Each `voice_id` becomes its own staff part (the engine's voices are
-    the piano's hands: 0 = bass, 1 = melody), so OSMD engraves the
-    notated surface without MusicXML multi-voice machinery. Measures
-    come 1:1 from the canonical measures (empty bars get whole rests),
-    and simultaneous same-voice notes collapse into chords.
+    Each `voice_id` becomes its own staff part, carrying the instrument
+    its entry in `voice_instruments` names (bass = 0, melody = 1,
+    percussion kit = 2, harmony = 3; unmapped voices stay pianos), so
+    OSMD engraves real part names instead of four "Piano" staves.
+    Measures come 1:1 from the canonical measures (empty bars get whole
+    rests), and simultaneous same-voice notes collapse into chords.
     """
-    from music21 import instrument, meter, stream, tempo
+    from music21 import meter, stream, tempo
     from music21 import key as m21key
 
+    instruments = dict(voice_instruments or {})
     ppq = score.ppq
     time_signatures = {m.time_signature for m in score.measures}
     if len(time_signatures) > 1:
@@ -89,7 +203,7 @@ def notation_score_to_musicxml(score: NotationScore) -> str:
     lowest_voice = min({n.voice_id for n in score.notes})
     for voice_id in sorted({n.voice_id for n in score.notes}):
         part = stream.Part()
-        part.insert(instrument.Piano())
+        part.insert(_m21_instrument_for(instruments.get(voice_id, "piano")))
         part.insert(m21key.Key(score.key.root, score.key.mode))
         part.insert(meter.TimeSignature(time_sig))
 
@@ -297,6 +411,7 @@ def _osmd_version(service_dir: Path) -> str:
 
 __all__ = [
     "DEFAULT_RENDER_SERVICE_DIR",
+    "M21_INSTRUMENTS",
     "RENDER_TIMEOUT_SECONDS",
     "SheetArtifact",
     "SheetRenderError",

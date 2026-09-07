@@ -157,3 +157,90 @@ def test_audio_error_returns_failed(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert result.error is not None
     assert result.error.error_code == AudioRenderErrorCode.SOUNDFONT_MISSING
     assert result.error.stage == "rendering_audio"
+
+
+def test_sidecar_drives_per_voice_instruments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The stage renders with the sidecar's voice->instrument list."""
+    from saimc.compose.engine import compose
+    from saimc.compose.serialization import write_engine_output
+
+    store = JobStorage(tmp_path)
+    job = store.create("job1")
+    job.input_spec = _spec()
+    write_engine_output(store.job_dir(job.job_id) / "engine_output.json", compose(job.input_spec))
+
+    expected_wav = tmp_path / "audio.wav"
+    _write_wav(expected_wav)
+    captured: dict[str, object] = {}
+
+    def _fake_render_audio(plan, bpm, soundfont_path, out_dir, job_id, **kwargs):  # type: ignore[no-untyped-def]
+        wav_path = out_dir / "audio.wav"
+        _write_wav(wav_path)
+        captured["voice_instruments"] = kwargs["voice_instruments"]
+        captured["soundfont_path"] = soundfont_path
+
+        from saimc.render.audio import AudioArtifact
+
+        return AudioArtifact(
+            primary_path=wav_path,
+            primary_container="wav",
+            primary_codec="pcm_s16le",
+            primary_sha256=hashlib.sha256(wav_path.read_bytes()).hexdigest(),
+            primary_size_bytes=wav_path.stat().st_size,
+            ogg_path=None,
+            fluidsynth_version="stub",
+            ffmpeg_version="stub",
+        )
+
+    monkeypatch.setattr("saimc.render.audio.render_audio", _fake_render_audio)
+
+    result = render_audio_stage(job, store)
+    assert result.next_state == JobState.RENDERING_SHEET
+    # Calming piano spec: engine default ensemble cello / piano /
+    # pizzicato strings, and a mixed GM ensemble renders under the
+    # general font.
+    assert captured["voice_instruments"] == {
+        0: "cello",
+        1: "piano",
+        3: "pizzicato_strings",
+    }
+    assert captured["soundfont_path"].name == "FluidR3_GM.sf2"
+
+
+def test_mixed_dedicated_font_ensemble_fails_with_soundfont_conflict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Font-only voices in different files cannot share one font."""
+    from saimc.compose.engine import compose
+    from saimc.compose.serialization import write_engine_output
+
+    # Both dedicated fonts exist on disk, but harmonium and bansuri
+    # live in different SF2 files and only one font loads per render.
+    sf_dir = tmp_path / "assets" / "soundfonts"
+    sf_dir.mkdir(parents=True)
+    (sf_dir / "Wetthasinghe_Harmonium.sf2").write_bytes(b"RIFF")
+    (sf_dir / "MFA_Boston_1.sf2").write_bytes(b"RIFF")
+    monkeypatch.chdir(tmp_path)
+
+    store = JobStorage(tmp_path)
+    job = store.create("job1")
+    job.input_spec = CompositionSpec(
+        mood=Mood.CALMING,
+        duration_seconds=30,
+        seed=3,
+        instrumentation=[
+            {"role": "melody", "instrument": "harmonium"},
+            {"role": "harmony", "instrument": "bansuri"},
+        ],
+    )
+    write_engine_output(store.job_dir(job.job_id) / "engine_output.json", compose(job.input_spec))
+
+    result = render_audio_stage(job, store)
+    assert result.next_state == JobState.FAILED
+    assert result.error is not None
+    assert result.error.error_code == "soundfont_conflict"
+    assert result.error.stage == "rendering_audio"
+    assert "harmonium" in (result.error.message or "")
+    assert "bansuri" in (result.error.message or "")

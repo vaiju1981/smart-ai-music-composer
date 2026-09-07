@@ -47,6 +47,36 @@ def test_export_produces_score_partwise_musicxml() -> None:
     assert "<score-partwise" in musicxml
 
 
+def test_export_names_parts_after_their_instruments() -> None:
+    """The ensemble's instruments engrave as real part names."""
+    from music21 import converter
+
+    parsed = converter.parse(
+        notation_score_to_musicxml(_score(), {0: "cello", 1: "violin"}),
+        format="musicxml",
+    )
+    names = [part.partName for part in parsed.parts]
+    assert names == ["Cello", "Violin"]
+
+
+def test_export_defaults_unmapped_voices_to_piano() -> None:
+    from music21 import converter
+
+    parsed = converter.parse(notation_score_to_musicxml(_score()), format="musicxml")
+    assert [part.partName for part in parsed.parts] == ["Piano", "Piano"]
+
+
+def test_export_handles_instruments_music21_does_not_model() -> None:
+    """A generic labelled part degrades gracefully, never fails."""
+    from music21 import converter
+
+    parsed = converter.parse(
+        notation_score_to_musicxml(_score(), {0: "strings", 1: "harmonium"}),
+        format="musicxml",
+    )
+    assert [part.partName for part in parsed.parts] == ["Strings", "Harmonium"]
+
+
 def test_export_preserves_voice_structure() -> None:
     from music21 import converter
 

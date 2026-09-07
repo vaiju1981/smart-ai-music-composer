@@ -43,6 +43,7 @@ from saimc.jobs.storage import (
 )
 
 if TYPE_CHECKING:
+    from saimc.compose.ensemble import Ensemble
     from saimc.llm.base import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -165,8 +166,8 @@ def parse_stage(
     )
 
 
-def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
-    """Resolve the composer for a spec's instrumentation.
+def _composer_for_ensemble(ensemble: "Ensemble") -> Callable[[Any], Any]:
+    """Resolve the composer for a spec's ensemble.
 
     The registry is the Phase 2 seam for dedicated engines (e.g. a
     raga/tala engine for Indian classical instrumentations). Every
@@ -185,13 +186,13 @@ def _composer_for_instrumentation(instrumentation: str) -> Callable[[Any], Any]:
     registry: dict[str, Callable[[Any], Any]] = {
         # e.g. "sitar": _raga_compose — dedicated engines go here.
     }
-    composer = registry.get(instrumentation)
+    composer = registry.get(ensemble.melody)
     if composer is not None:
         return composer
-    if instrumentation in SUPPORTED_INSTRUMENTS:
+    if ensemble.melody in SUPPORTED_INSTRUMENTS:
         return _phase1_compose
     raise LookupError(
-        f"no composer registered for instrumentation {instrumentation!r}; "
+        f"no composer registered for instrumentation {ensemble.melody!r}; "
         f"known instrumentations: {', '.join(sorted(SUPPORTED_INSTRUMENTS))}"
     ) from None
 
@@ -223,7 +224,7 @@ def compose_stage(
 
         try:
             # The registry is keyed by the ensemble's melody instrument.
-            engine = _composer_for_instrumentation(resolve_ensemble(job.input_spec).melody)
+            engine = _composer_for_ensemble(resolve_ensemble(job.input_spec))
         except LookupError as exc:
             return StageResult(
                 job=job,
@@ -306,9 +307,9 @@ def render_audio_stage(
     attaches one or two `ArtifactRecord` entries to the job (WAV
     primary, OGG Opus secondary when encoding succeeded).
 
-    `soundfont_path` overrides the per-instrument resolution (handy in
-    tests); otherwise `soundfont_for_instrument()` resolves the SF2 —
-    `$SAIMC_SOUNDFONT_<INSTRUMENT>` or the Phase 1 Salamander default.
+    `soundfont_path` overrides the per-job resolution (handy in
+    tests); otherwise `resolve_job_soundfont()` resolves the single SF2
+    the whole ensemble renders under.
     `fluidsynth_bin` and `ffmpeg_bin`
     default to the env vars `$SAIMC_FLUIDSYNTH_BIN` /
     `$SAIMC_FFMPEG_BIN`, falling back to PATH lookup inside
@@ -316,10 +317,10 @@ def render_audio_stage(
 
     Module-level so tests can monkeypatch it.
     """
-    from saimc.compose.score import VOICE_BASS, VOICE_MELODY, VOICE_PERCUSSION
+    from saimc.compose.score import VOICE_BASS, VOICE_HARMONY, VOICE_MELODY, VOICE_PERCUSSION
     from saimc.compose.serialization import read_engine_output
     from saimc.render.audio import AudioRenderError, render_audio
-    from saimc.render.instruments import accompaniment_for, soundfont_for_instrument
+    from saimc.render.instruments import font_conflicts, resolve_job_soundfont
 
     if job.input_spec is None:
         return StageResult(
@@ -346,30 +347,49 @@ def render_audio_stage(
 
     output = read_engine_output(sidecar_path)
 
-    # The spec's instrumentation is a role-tagged ensemble; until the
-    # engine emits per-voice instruments in its sidecar, rendering keeps
-    # the Phase 1 two/three-voice layout keyed off the ensemble's melody
-    # role. A drum-set piece is the exception: the piano stays as the
-    # accompaniment and the engine's percussion voice (voice 2, GM
-    # channel-10 keys) carries the kit — its notes sound as drums
-    # precisely because they go to channel 10.
-    from saimc.compose.ensemble import resolve_ensemble
+    # The engine's sidecar carries each voice's instrument (voice 0
+    # bass, 1 melody, 2 percussion kit, 3 harmony). Sidecars written by
+    # an engine predating the ensemble (in-flight across a deploy) have
+    # no list — fall back to the spec's ensemble, which resolves to the
+    # same instruments the engine would have chosen.
+    voice_instruments = {vi.voice_id: vi.instrument for vi in output.voice_instruments}
+    if not voice_instruments:
+        from saimc.compose.ensemble import resolve_ensemble
 
-    ensemble = resolve_ensemble(job.input_spec)
-    if ensemble.percussion == "drum_set":
-        instrumentation = "drum_set"
+        logger.warning(
+            "engine sidecar for job %s has no voice_instruments; "
+            "resolving the ensemble from the spec instead",
+            job.job_id,
+        )
+        ensemble = resolve_ensemble(job.input_spec)
         voice_instruments = {
-            VOICE_BASS: "piano",
-            VOICE_MELODY: "piano",
-            VOICE_PERCUSSION: instrumentation,
+            VOICE_BASS: ensemble.bass or "piano",
+            VOICE_MELODY: ensemble.melody,
         }
-    else:
-        instrumentation = ensemble.melody
-        voice_instruments = {
-            VOICE_BASS: accompaniment_for(instrumentation),
-            VOICE_MELODY: instrumentation,
-        }
-    sf = soundfont_path or soundfont_for_instrument(instrumentation)
+        if ensemble.harmony is not None:
+            voice_instruments[VOICE_HARMONY] = ensemble.harmony
+        if ensemble.percussion == "drum_set":
+            voice_instruments[VOICE_PERCUSSION] = "drum_set"
+    # One font loads per job; the ensemble must agree on it. Font-only
+    # voices left outside the resolved font cannot sound, so the job
+    # fails with a structured error instead of rendering silence.
+    sf = soundfont_path or resolve_job_soundfont(voice_instruments)
+    unresolved = font_conflicts(voice_instruments, sf)
+    if unresolved:
+        listing = ", ".join(f"voice {v} ({n})" for v, n in unresolved.items())
+        return StageResult(
+            job=job,
+            next_state=JobState.FAILED,
+            error=JobError(
+                error_code="soundfont_conflict",
+                message=(
+                    f"cannot render a mixed dedicated-font ensemble: the job "
+                    f"loads {sf.name} but {listing} need their own font; "
+                    f"only one font loads per render"
+                ),
+                stage="rendering_audio",
+            ),
+        )
     artifacts_dir = storage.ensure_artifact_dir(job.job_id)
 
     try:
@@ -474,9 +494,11 @@ def render_sheet_stage(job: Job, storage: JobStorage) -> StageResult:
     artifacts_dir = storage.ensure_artifact_dir(job.job_id)
 
     musicxml_path = artifacts_dir / "score.musicxml"
+    voice_instruments = {vi.voice_id: vi.instrument for vi in output.voice_instruments}
     try:
         musicxml_path.write_text(
-            notation_score_to_musicxml(output.notation_score), encoding="utf-8"
+            notation_score_to_musicxml(output.notation_score, voice_instruments),
+            encoding="utf-8",
         )
         artifact = render_sheet(musicxml_path, artifacts_dir / "sheet.svg")
     except (SheetRenderError, ValueError, OSError) as exc:

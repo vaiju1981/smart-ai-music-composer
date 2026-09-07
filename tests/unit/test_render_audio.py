@@ -43,7 +43,13 @@ from saimc.render.audio import (
     find_fluidsynth,
     render_audio,
 )
-from saimc.render.instruments import accompaniment_for
+from saimc.render.instruments import (
+    GENERAL_SOUNDFONT,
+    PIANO_SOUNDFONT,
+    SOUNDFONT_DIR,
+    font_conflicts,
+    resolve_job_soundfont,
+)
 
 
 def _plan_with_notes() -> PerformancePlan:
@@ -576,24 +582,72 @@ class TestHashFile:
         assert _hash_file(p) == expected
 
 
-class TestAccompanimentMapping:
-    """The accompaniment voice gets a complementary patch, not the lead."""
+class TestJobSoundfontResolution:
+    """One font loads per job; the ensemble resolves it together.
 
-    def test_gm_backed_instruments_get_companions(self) -> None:
-        assert accompaniment_for("piano") == "strings"
-        assert accompaniment_for("violin") == "pizzicato_strings"
-        assert accompaniment_for("accordion") == "choir"
-        assert accompaniment_for("nylon_guitar") == "pizzicato_strings"
+    Hermetic: run in an empty cwd and build the font chain with real
+    files.
+    """
 
-    def test_dedicated_font_instruments_return_themselves(self) -> None:
-        # Only one font loads per job, so a dedicated-font lead keeps its
-        # own preset on both voices; separation comes from CC7/CC10.
-        assert accompaniment_for("harmonium") == "harmonium"
-        assert accompaniment_for("sitar") == "sitar"
-        assert accompaniment_for("bansuri") == "bansuri"
+    @pytest.fixture(autouse=True)
+    def _empty_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        self.sf_dir = tmp_path / "assets" / "soundfonts"
+        self.sf_dir.mkdir(parents=True)
 
-    def test_unknown_instrument_falls_back_to_strings(self) -> None:
-        assert accompaniment_for("theremin") == "strings"
+    def test_piano_ensemble_loads_the_salamander_grand(self) -> None:
+        (self.sf_dir.parent / "Salamander.sf2").write_bytes(b"RIFF")
+        assert resolve_job_soundfont({0: "piano", 1: "piano"}) == PIANO_SOUNDFONT
+
+    def test_piano_with_kit_still_loads_the_salamander_grand(self) -> None:
+        (self.sf_dir.parent / "Salamander.sf2").write_bytes(b"RIFF")
+        assert (
+            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
+            == PIANO_SOUNDFONT
+        )
+        assert (
+            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
+            == PIANO_SOUNDFONT
+        )
+
+    def test_mixed_gm_ensemble_loads_the_general_font(self) -> None:
+        (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
+        assert (
+            resolve_job_soundfont({0: "contrabass", 1: "piano", 3: "strings"})
+            == GENERAL_SOUNDFONT
+        )
+
+    def test_single_installed_font_only_voice_loads_its_font(self) -> None:
+        (self.sf_dir / "Wetthasinghe_Harmonium.sf2").write_bytes(b"RIFF")
+        assert (
+            resolve_job_soundfont({1: "harmonium"})
+            == SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2"
+        )
+
+    def test_mixed_font_only_files_fall_back_to_the_general_font(self) -> None:
+        # Only one font loads; harmonium and bansuri live in different
+        # files, so neither can win.
+        (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
+        assert resolve_job_soundfont({1: "harmonium", 3: "bansuri"}) == GENERAL_SOUNDFONT
+
+    def test_font_only_voice_without_its_font_falls_back(self) -> None:
+        (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
+        assert resolve_job_soundfont({1: "kora"}) == GENERAL_SOUNDFONT
+
+    def test_font_conflicts_name_the_font_only_voices(self) -> None:
+        (self.sf_dir / "Wetthasinghe_Harmonium.sf2").write_bytes(b"RIFF")
+        (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
+        voices = {0: "cello", 1: "harmonium"}
+        # Under the general font the harmonium cannot sound.
+        assert font_conflicts(voices, GENERAL_SOUNDFONT) == {1: "harmonium"}
+        # Under its own font it can.
+        assert font_conflicts(voices, SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2") == {}
+
+    def test_font_conflicts_ignore_fonts_that_are_not_installed(self) -> None:
+        (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
+        # A missing dedicated font is a deployment problem, not a
+        # per-job conflict.
+        assert font_conflicts({1: "kora"}, GENERAL_SOUNDFONT) == {}
 
 
 class TestSoundfontResolution:

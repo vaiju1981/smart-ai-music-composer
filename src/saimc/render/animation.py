@@ -61,8 +61,17 @@ PIXELS_PER_SECOND: int = 48
 PLAYHEAD_FRACTION: float = 0.25
 
 BACKGROUND_RGB = (16, 18, 24)
-NOTE_RGB = (86, 156, 214)
 PLAYHEAD_RGB = (232, 232, 232)
+
+# One roll colour per engine voice (0 bass, 1 melody, 2 percussion kit,
+# 3 harmony), so the ensemble reads as lanes of different instruments
+# instead of one blue mass. Indexed by voice_id modulo the tuple.
+VOICE_COLORS: tuple[tuple[int, int, int], ...] = (
+    (86, 156, 214),  # bass: blue
+    (231, 176, 66),  # melody: amber
+    (150, 150, 158),  # percussion: grey
+    (118, 200, 148),  # harmony: green
+)
 
 
 class AnimationRenderErrorCode:
@@ -150,7 +159,8 @@ def build_roll(
         if right <= left:
             continue
         lane = height - 20 - (note.pitch_midi - pitch_lo) * lane_height
-        draw.rectangle((left, lane, right, lane + lane_height - 2), fill=NOTE_RGB)
+        fill = VOICE_COLORS[note.voice_id % len(VOICE_COLORS)]
+        draw.rectangle((left, lane, right, lane + lane_height - 2), fill=fill)
     return img
 
 
@@ -375,6 +385,7 @@ __all__ = [
     "AnimationArtifact",
     "AnimationRenderError",
     "AnimationRenderErrorCode",
+    "VOICE_COLORS",
     "build_roll",
     "encode_webm",
     "iter_roll_frames",

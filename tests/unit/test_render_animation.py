@@ -13,6 +13,7 @@ from saimc.compose.score import PerformanceNoteEvent, PerformancePlan
 from saimc.render.animation import (
     AnimationRenderError,
     AnimationRenderErrorCode,
+    VOICE_COLORS,
     build_roll,
     encode_webm,
     iter_roll_frames,
@@ -58,6 +59,27 @@ class TestBuildRoll:
         # bottom margin) and the note spans x 320..344 at 48 px/s.
         pixel = roll.getpixel((324, 705))
         assert pixel == (86, 156, 214)
+
+    def test_each_voice_gets_its_own_colour(self) -> None:
+        """Bass/melody/kit/harmony lanes read as four instruments."""
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=voice_id,
+                    pitch_midi=60 + 12 * voice_id,
+                    start_us=0,
+                    duration_us=500_000,
+                    velocity=64,
+                )
+                for voice_id in range(len(VOICE_COLORS))
+            ],
+        )
+        roll = build_roll(plan)
+        lane_height = max(8, (720 - 40) // 37)
+        for voice_id, color in enumerate(VOICE_COLORS):
+            lane_y = 700 - 12 * voice_id * lane_height
+            assert roll.getpixel((324, lane_y + 2)) == color
 
     def test_roll_is_wide_enough_for_the_last_frame(self) -> None:
         roll = build_roll(_plan())

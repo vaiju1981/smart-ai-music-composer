@@ -38,6 +38,7 @@ needs to render it.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 # General MIDI program numbers (0-based) per instrument name. The keys
@@ -224,83 +225,67 @@ FONT_PRESETS: dict[str, tuple[str, int, int]] = {
 
 SUPPORTED_INSTRUMENTS = SUPPORTED_INSTRUMENTS | frozenset(FONT_PRESETS)
 
-# Accompaniment voicing: the spec's instrument plays the melody voice;
-# the accompaniment voice gets a complementary patch so a piece is not
-# one patch in octave unison (measured as the single-patch drone in
-# every Phase 1 render). GM-backed main instruments map to a
-# complementary GM patch. Dedicated-font instruments keep their own
-# preset for both voices — only one font loads per job, and an
-# arbitrary GM program inside a dedicated font selects an undefined
-# preset — and get their separation from per-voice CC7/CC10 instead.
-ACCOMPANIMENT_PATCH: dict[str, str] = {
-    # Keys and mallets: a warm sustained pad under the attack.
-    "piano": "strings",
-    "harpsichord": "strings",
-    "celesta": "strings",
-    "music_box": "strings",
-    "glockenspiel": "strings",
-    "vibraphone": "strings",
-    "marimba": "strings",
-    "xylophone": "strings",
-    "tubular_bells": "strings",
-    "dulcimer": "strings",
-    # Organs and free reeds: breath-like pad.
-    "pipe_organ": "choir",
-    "accordion": "choir",
-    "harmonica": "choir",
-    # Plucked strings: short articulation keeps the pad out of the way.
-    "nylon_guitar": "pizzicato_strings",
-    "steel_guitar": "pizzicato_strings",
-    "banjo": "pizzicato_strings",
-    "shamisen": "pizzicato_strings",
-    "koto": "pizzicato_strings",
-    "harp": "pizzicato_strings",
-    "kalimba": "pizzicato_strings",
-    # Bowed and ensemble strings: pizzicato under the legato line.
-    "violin": "pizzicato_strings",
-    "viola": "pizzicato_strings",
-    "cello": "pizzicato_strings",
-    "contrabass": "pizzicato_strings",
-    "fiddle": "pizzicato_strings",
-    "strings": "pizzicato_strings",
-    "tremolo_strings": "pizzicato_strings",
-    # Winds, brass, choir: sustained pad.
-    "flute": "strings",
-    "piccolo": "strings",
-    "recorder": "strings",
-    "pan_flute": "strings",
-    "ocarina": "strings",
-    "oboe": "strings",
-    "english_horn": "strings",
-    "bassoon": "strings",
-    "clarinet": "strings",
-    "soprano_sax": "strings",
-    "alto_sax": "strings",
-    "tenor_sax": "strings",
-    "baritone_sax": "strings",
-    "french_horn": "strings",
-    "brass_section": "strings",
-    "trumpet": "strings",
-    "muted_trumpet": "strings",
-    "trombone": "strings",
-    "tuba": "strings",
-    "choir": "strings",
-    "bagpipe": "strings",
-    "shakuhachi": "strings",
-    "shanai": "strings",
-}
+# Dedicated-font instruments with no GM voice at all: the only way
+# they can sound is through the font named in `FONT_PRESETS`, so a
+# mixed job either loads that font or the voice is unrenderable.
+FONT_ONLY_INSTRUMENTS: frozenset[str] = frozenset(FONT_PRESETS) - frozenset(INSTRUMENT_PROGRAMS)
+
+# GM-backed instruments whose dedicated font (when installed) beats the
+# GM patch: they can always sound, dedicated font or not.
+GM_BACKED_INSTRUMENTS: frozenset[str] = frozenset(FONT_PRESETS) & frozenset(INSTRUMENT_PROGRAMS)
 
 
-def accompaniment_for(instrument: str) -> str:
-    """Return the accompaniment-voice patch for a lead instrument.
+def resolve_job_soundfont(voice_instruments: Mapping[int, str]) -> Path:
+    """Resolve the one SF2 the job's audio render will load.
 
-    Dedicated-font instruments return themselves (same font, separated
-    by channel gain/pan); GM-backed instruments get their complementary
-    patch; anything unregistered falls back to the neutral strings pad.
+    Only one font loads per FluidSynth pass, so the ensemble must agree
+    on it. Resolution order:
+
+    1. font-only voices (harmonium, bansuri, ...): when every one of
+       them names the same installed font, that font loads — it is the
+       only way those voices can sound. Mixed font-only files cannot
+       both load, so the general font wins and `font_conflicts` names
+       the voices that will not sound (the stage rejects the job).
+    2. piano + drum-set only: the Salamander grand (best-in-class
+       piano), else the general font.
+    3. everything else (GM patches, GM-backed dedicated instruments
+       without their font): the general font, which carries the whole
+       GM palette.
     """
-    if instrument in FONT_PRESETS:
-        return instrument
-    return ACCOMPANIMENT_PATCH.get(instrument, "strings")
+    instruments = set(voice_instruments.values())
+    font_only = instruments & FONT_ONLY_INSTRUMENTS
+    if font_only:
+        fonts = {FONT_PRESETS[name][0] for name in font_only}
+        if len(fonts) == 1:
+            candidate = SOUNDFONT_DIR / next(iter(fonts))
+            if candidate.exists():
+                return candidate
+        return GENERAL_SOUNDFONT
+    if instruments <= {"piano", "drum_set"} and PIANO_SOUNDFONT.exists():
+        return PIANO_SOUNDFONT
+    return GENERAL_SOUNDFONT
+
+
+def font_conflicts(
+    voice_instruments: Mapping[int, str], soundfont_path: Path
+) -> dict[int, str]:
+    """Voices that cannot sound under the job's resolved font.
+
+    A voice conflicts when its instrument is font-only (no GM voice)
+    and its dedicated font file is installed but is NOT the font the
+    job will load — inside any other font its (bank, preset) selects
+    an arbitrary preset. A font whose file is not installed is a
+    deployment problem, not a per-job conflict, and is reported
+    elsewhere (the render logs the resolved font's name).
+    """
+    conflicts: dict[int, str] = {}
+    for voice_id, name in sorted(voice_instruments.items()):
+        if name not in FONT_ONLY_INSTRUMENTS:
+            continue
+        expected = SOUNDFONT_DIR / FONT_PRESETS[name][0]
+        if expected.exists() and soundfont_path != expected:
+            conflicts[voice_id] = name
+    return conflicts
 
 # Where downloaded fonts live. `scripts/download_soundfonts.py` fills
 # this directory with pinned-sha256 files (gitignored — re-downloadable
@@ -372,7 +357,9 @@ def preset_for_instrument(instrument: str, soundfont_path: Path) -> tuple[int, i
 
 
 __all__ = [
+    "FONT_ONLY_INSTRUMENTS",
     "FONT_PRESETS",
+    "GM_BACKED_INSTRUMENTS",
     "GENERAL_SOUNDFONT",
     "INSTRUMENT_FAMILIES",
     "INSTRUMENT_PROGRAMS",
@@ -380,6 +367,8 @@ __all__ = [
     "PIANO_SOUNDFONT",
     "SOUNDFONT_DIR",
     "SUPPORTED_INSTRUMENTS",
+    "font_conflicts",
     "preset_for_instrument",
+    "resolve_job_soundfont",
     "soundfont_for_instrument",
 ]
