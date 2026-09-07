@@ -250,7 +250,7 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - `schema_version: int` — incremented on any breaking change.
 - `request_kind: enum` — `mood_generation` (only Phase 1 value); `famous_piece` is reserved.
 - `duration_seconds: int` — bounded (30 ≤ x ≤ 600), default 180. The engine reaches this target using the Phase 1 target/arrange/fine-tune policy and reports the realized duration.
-- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value.
+- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value. A non-`None` value is honoured whenever an arrangement at that exact bpm lands within the duration tolerance; when none exists the engine derives the tempo from the mood's range instead (an exact tempo makes the realised duration a step function of the bar count, and most (tempo, duration) pairs have no step within ±2%) — the duration promise outranks the tempo request.
 - `key: enum | None` — bounded to Western keys; `None` means the engine chooses.
 - `time_signature: enum` — bounded to common signatures.
 - `mood: enum` — bounded Phase 1 vocabulary: `calming | electrifying | sleep`.

@@ -167,6 +167,55 @@ def arrange_for_duration(
        smaller than the form itself (typically form_bars // 2).
     4. If even a coda doesn't work, raise DurationUnfulfillableError.
 
+    A spec-pinned `tempo_bpm` is honoured whenever a (form,
+    repetition) combination exists whose realised duration at that
+    exact bpm lands within tolerance. When none does — an exact tempo
+    makes the realised duration a step function of the bar count, and
+    most (tempo, duration) pairs simply have no step within ±2% — the
+    duration promise (the release gate) outranks the tempo request and
+    the engine derives the tempo from the mood's range instead,
+    reporting the chosen value in the arrangement.
+    """
+    if tempo_bpm is None:
+        return _arrange_at_tempo(
+            mood=mood,
+            target_duration_seconds=target_duration_seconds,
+            time_signature=time_signature,
+            base_form_bars=base_form_bars,
+            variant_index=variant_index,
+            tempo_bpm=None,
+        )
+    try:
+        return _arrange_at_tempo(
+            mood=mood,
+            target_duration_seconds=target_duration_seconds,
+            time_signature=time_signature,
+            base_form_bars=base_form_bars,
+            variant_index=variant_index,
+            tempo_bpm=tempo_bpm,
+        )
+    except DurationUnfulfillableError:
+        return _arrange_at_tempo(
+            mood=mood,
+            target_duration_seconds=target_duration_seconds,
+            time_signature=time_signature,
+            base_form_bars=base_form_bars,
+            variant_index=variant_index,
+            tempo_bpm=None,
+        )
+
+
+def _arrange_at_tempo(
+    *,
+    mood: str,
+    target_duration_seconds: float,
+    time_signature: str,
+    base_form_bars: int | None,
+    variant_index: int,
+    tempo_bpm: float | None,
+) -> DurationArrangement:
+    """The duration search under one tempo rule: pinned bpm or derived.
+
     A `tempo_bpm` constraint (from the spec) pins the tempo: only
     (form, repetition) combinations whose realised duration at that
     exact bpm lands within tolerance are eligible.

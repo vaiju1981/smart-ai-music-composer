@@ -15,6 +15,7 @@ from saimc.compose.duration import (
     DurationUnfulfillableError,
     arrange_for_duration,
     bar_ticks,
+    get_mood_profile,
     section_seed,
 )
 from saimc.compose.score import PPQ
@@ -231,3 +232,41 @@ class TestArrangementArc:
         body = (arr.total_bars * bar_ticks("4/4") - rit_ticks) / PPQ * 60.0 / arr.tempo_bpm
         tail = rit_ticks / PPQ * 60.0 / (arr.tempo_bpm * arr.ritardando_factor)
         assert abs(body + tail - 120.0) / 120.0 <= DURATION_TOLERANCE
+
+    def test_infeasible_pin_falls_back_to_derived_tempo(self) -> None:
+        """An exact pinned tempo makes the realised duration a step
+        function of the bar count; most (tempo, duration) pairs have no
+        step within ±2%. The duration promise outranks the pin."""
+        arr = arrange_for_duration(
+            mood="electrifying",
+            target_duration_seconds=300.0,
+            time_signature="4/4",
+            tempo_bpm=144.0,
+        )
+        realised = (arr.total_bars_with_coda * bar_ticks("4/4") / PPQ) * 60.0 / arr.tempo_bpm
+        assert abs(realised - 300.0) / 300.0 <= DURATION_TOLERANCE
+        # The pin did not survive the fallback: the chosen tempo comes
+        # from the mood's range, not the request.
+        low, high = get_mood_profile("electrifying").tempo_range_bpm
+        assert low <= arr.tempo_bpm <= high
+
+    def test_out_of_range_pin_falls_back_to_derived_tempo(self) -> None:
+        """A tempo outside the mood's range no longer fails the job."""
+        arr = arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=180.0,
+            time_signature="4/4",
+            tempo_bpm=200.0,
+        )
+        realised = (arr.total_bars_with_coda * bar_ticks("4/4") / PPQ) * 60.0 / arr.tempo_bpm
+        assert abs(realised - 180.0) / 180.0 <= DURATION_TOLERANCE
+
+    def test_infeasible_unpinned_still_fails_loudly(self) -> None:
+        """Only the fallback path may soften the promise; without a pin
+        the search must still raise when nothing fits."""
+        with pytest.raises(DurationUnfulfillableError):
+            arrange_for_duration(
+                mood="calming",
+                target_duration_seconds=5_000.0,
+                time_signature="4/4",
+            )
