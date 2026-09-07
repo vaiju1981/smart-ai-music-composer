@@ -72,6 +72,21 @@ class TestStageCrashCatchAll:
         assert "corrupt sidecar" in failed.error.message
 
 
+class TestMissingJob:
+    def test_pruned_broker_entry_returns_instead_of_crashing(
+        self, storage: JobStorage
+    ) -> None:
+        """A broker entry can outlive its job directory: `run_job` must
+        report it and return rather than crash on the unbound `job` the
+        crash handler would otherwise reach for.
+        """
+        assert run_job("no-such-job-id", jobs_root=str(storage.root)) == {
+            "job_id": "no-such-job-id",
+            "state": "missing",
+            "error": "job_not_found",
+        }
+
+
 class TestCancelRace:
     def test_cancelled_persisted_job_is_not_clobbered(
         self, storage: JobStorage, monkeypatch: pytest.MonkeyPatch

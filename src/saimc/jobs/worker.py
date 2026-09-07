@@ -172,8 +172,15 @@ def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
     # Retention (roadmap §7): pruned once per job run — completed jobs
     # after 7 days, failed ones after 24h; active jobs are never touched.
     storage.prune()
+    try:
+        job = storage.get(job_id)
+    except KeyError:
+        # A broker entry can outlive its job directory (a restart
+        # replays a queue that a prune or a wiped jobs dir has already
+        # emptied). There is no job left to fail — report and move on
+        # instead of crashing the walk with an unbound `job` below.
+        return {"job_id": job_id, "state": "missing", "error": "job_not_found"}
     sm = JobStateMachine()
-    job = storage.get(job_id)
 
     try:
         _walk_stages(job, storage, sm)
