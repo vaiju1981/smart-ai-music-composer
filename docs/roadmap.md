@@ -254,7 +254,17 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - `key: enum | None` — bounded to Western keys; `None` means the engine chooses.
 - `time_signature: enum` — bounded to common signatures.
 - `mood: enum` — bounded Phase 1 vocabulary: `calming | electrifying | sleep`.
-- `instrumentation: Literal["piano"]` — Phase 1 is piano-only; the field is a single literal, not a list. Phase 2+ will widen this to `list[enum]`.
+- `instrumentation: list[InstrumentationEntry]` — the role-tagged ensemble
+  the piece is written for, one entry per engine voice: `{role: melody |
+  harmony | bass | percussion, instrument: enum}`. Exactly one melody; at
+  most one bass, one percussion (`drum_set` only), and two harmony
+  voices; five voices maximum (the MIDI-channel budget). History: Phase 1
+  shipped it as the single literal `"piano"` (`schema_version` 1/2);
+  version 3 widened it to the role-tagged list. A bare instrument string
+  remains valid input (versions 1–3 all accept it) and coerces to the
+  mood's default ensemble — the harmony/bass voices sound whether the
+  spec names them or not, and `drum_set` scalar specs keep their exact
+  pre-ensemble voice layout. Percussion is never added automatically.
 - `seed: int | None` — for reproducibility; `None` means the engine chooses and reports.
 - `humanization: Literal["none", "light", "expressive"]` — the Phase 1
   surface for timing/velocity/controller nuance; `none` remains valid

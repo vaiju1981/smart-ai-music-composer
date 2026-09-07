@@ -26,7 +26,8 @@ from saimc.spec import CompositionSpec, Mood
 
 # The §8 gate matrix: every mood at a short, a typical, and the
 # §10 #11 cap duration, plus a boundary duration that exercises the
-# duration policy's coda logic.
+# duration policy's coda logic — and a role-tagged ensemble spec, so
+# the gates cover the multi-voice shape the engine now writes.
 SPEC_MATRIX: list[CompositionSpec] = [
     CompositionSpec(mood=mood, seed=seed, duration_seconds=duration)
     for mood, seed, duration in [
@@ -35,6 +36,20 @@ SPEC_MATRIX: list[CompositionSpec] = [
         (Mood.ELECTRIFYING, 3, 300),
         (Mood.SLEEP, 11, 600),
     ]
+] + [
+    CompositionSpec.model_validate(
+        {
+            "mood": "electrifying",
+            "duration_seconds": 120,
+            "seed": 9,
+            "instrumentation": [
+                {"role": "melody", "instrument": "piano"},
+                {"role": "harmony", "instrument": "strings"},
+                {"role": "bass", "instrument": "contrabass"},
+                {"role": "percussion", "instrument": "drum_set"},
+            ],
+        }
+    )
 ]
 
 
