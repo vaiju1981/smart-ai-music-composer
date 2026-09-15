@@ -487,6 +487,26 @@ def _build_score(
         notes.extend(coda_notes)
         cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
 
+    # The bed's register is a property of the finished piece, not of the
+    # section that wrote it: the melody's floor is one number for the
+    # whole piece, so the pad is settled under it once, here. It has to
+    # wait until every section exists — the tune's floor is not known
+    # until the tune is — which is the same reason it is a post-pass at
+    # all rather than a bound inside `_generate_harmony_section`.
+    melody_floor = min(
+        (note.pitch_midi for note in notes if note.voice_id == VOICE_MELODY),
+        default=None,
+    )
+    if melody_floor is not None:
+        notes = _clear_harmony_below_melody(notes, melody_floor=melody_floor)
+        # The pass moves notes after the sections sorted them, and a moved
+        # note can land under another note of its own voice at the same
+        # tick (a pad's fifth folded below the root that stayed). The
+        # score's canonical order is what the engraving and the plan read
+        # it back by, so it is restored here rather than left to the call
+        # order of the pass.
+        notes.sort(key=lambda note: (note.tick, note.voice_id, note.pitch_midi))
+
     # Drum set: when the piece is written for the kit, the piano stays
     # as the accompaniment and a percussion voice plays the mood's
     # rhythm pattern in every bar (voice 2, GM channel-10 keys). Styles
@@ -965,9 +985,8 @@ def _generate_section(
     return ordered, tuple(bar_pcs), trailing + 1
 
 
-# The harmony voice's constants. Its bed sits between the bass and the
-# melody: low enough to stay out of the tune's register, high enough to
-# clear the bass walk.
+# The harmony voice's constants. Its bed sits under the tune and above
+# the bass's floor: `HARMONY_MELODY_CLEARANCE` is what holds it under.
 HARMONY_MIN_MIDI: int = 48
 HARMONY_MAX_MIDI: int = 84
 # A harmony note is cleared away from the melody when it sits a rubbed
@@ -975,8 +994,15 @@ HARMONY_MAX_MIDI: int = 84
 # simultaneously sounding melody note: shifted an octave or dropped.
 # These are exactly the linter's dissonant intervals plus the unison
 # (a doubled tune line is the melody's job, not the pad's).
-HARMONY_MELODY_CLEARANCE: int = 2
 HARMONY_CROWD_INTERVALS: frozenset[int] = frozenset({0, 1, 2, 10, 11})
+# How far under the melody the bed is held: its top sits this many
+# semitones below the lowest note the melody reaches anywhere in the
+# piece, so the two registers are disjoint and no bed note is ever
+# within the crowding window *above* of the tune's floor. Three, not
+# two, because two is a semitone count the crowd set itself calls a rub
+# — a bed held exactly that far under the tune's floor could be legal by
+# register and illegal by interval at the same time.
+HARMONY_MELODY_CLEARANCE: int = 3
 HARMONY_PAD_VELOCITY: int = 46
 HARMONY_ARPEGGIO_VELOCITY: int = 52
 HARMONY_STAB_VELOCITY: int = 58
@@ -1172,6 +1198,92 @@ def _clear_harmony_of_melody(
             continue
         kept.append(replace(note, pitch_midi=clear))
     return kept
+
+
+def _bed_octaves(pitch: int, ceiling: int) -> list[int]:
+    """Every octave of `pitch` the bed can hold under `ceiling`, highest first.
+
+    "The bed" is `HARMONY_MIN_MIDI` up to the lower of the ceiling and the
+    bed's own `HARMONY_MAX_MIDI`, so a returned octave is in register and
+    under the tune both. Highest first, so a note settles as close under
+    the tune as that register allows. An octave shift is the only move
+    available: it keeps the pitch class, and so the chord tone the note
+    was chosen as.
+
+    The caller passes a note the bed wrote, which `_into_harmony_register`
+    has already folded into 48-84, so only the fold down is ever needed —
+    a pitch below the bed's floor has no octave the bed can hold and comes
+    back empty.
+    """
+    top = min(ceiling, HARMONY_MAX_MIDI)
+    while pitch > top:
+        pitch -= 12
+    octaves: list[int] = []
+    while pitch >= HARMONY_MIN_MIDI:
+        octaves.append(pitch)
+        pitch -= 12
+    return octaves
+
+
+def _clear_harmony_below_melody(
+    notes: list[NoteEvent], *, melody_floor: int
+) -> list[NoteEvent]:
+    """Settle the harmony bed under the melody's register, for the piece.
+
+    The bed is written per section and folded into 48-84 without ever
+    looking at the tune, so a pad bar can put its top at 84 while the
+    melody is sounding at 64: the two voices share the middle of the
+    melody's band, which is what `tessitura_overlap_semitones` measures
+    and what a hot pot of instruments sounds like. This pass is what
+    gives `HARMONY_MELODY_CLEARANCE` its job. Every bed note above the
+    ceiling is shifted down whole octaves to the highest register that
+    clears it — and dropped, the same accepted outcome the crowding pass
+    has, only if no octave in the bed both clears it and stays clear of
+    the melody.
+
+    The bound is the piece's, not the bar's, and deliberately so. The
+    metric reads the two bands over the whole piece, so a bar-local bound
+    cannot clear it: whatever a bar's local floor is, a bar whose melody
+    sits high admits a high bed note, and that note is inside the melody's
+    band for the piece. A bar-local bound also moves one pad note by an
+    octave between two bars — a leap in a voice that never leaps, in the
+    middle of a held chord. The melody's floor is one number for the whole
+    piece, so the bed keeps one register, and its top lands below every
+    melody note that ever sounds.
+
+    It runs over the finished piece, after every section and the coda,
+    for the same reason the crowding pass runs after generation: the draws
+    must not depend on what the tune did. It changes pitches only — the
+    arpeggio's onsets, the pad's held bars and the stabs' pulses are all
+    left where they were.
+    """
+    ceiling = melody_floor - HARMONY_MELODY_CLEARANCE
+    melody = [note for note in notes if note.voice_id == VOICE_MELODY]
+    cleared: list[NoteEvent] = []
+    for note in notes:
+        if note.voice_id < VOICE_HARMONY:
+            cleared.append(note)
+            continue
+        # Already in the bed: the section's crowding pass cleared it
+        # against this same melody, and no other section's notes sound at
+        # the same time, so re-asking that question piece-wide would put
+        # the same answer to the same notes. Only a note that *moves* is
+        # asked again — an octave shift can land it a seventh under a
+        # melody note it never met where it was.
+        if note.pitch_midi <= ceiling:
+            cleared.append(note)
+            continue
+        pitch = next(
+            (
+                octave
+                for octave in _bed_octaves(note.pitch_midi, ceiling)
+                if not _crowds_melody(note, melody, octave)
+            ),
+            None,
+        )
+        if pitch is not None:
+            cleared.append(replace(note, pitch_midi=pitch))
+    return cleared
 
 
 def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> ChordTemplate:

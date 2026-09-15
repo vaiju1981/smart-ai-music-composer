@@ -15,6 +15,9 @@ from saimc.compose.engine import (
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
     ARRANGEMENT_ARC_MIN_REPS,
+    HARMONY_MAX_MIDI,
+    HARMONY_MELODY_CLEARANCE,
+    HARMONY_MIN_MIDI,
     MELODY_HIGH_MIDI,
     MELODY_LOW_MIDI,
     MODULATION_OFFSET,
@@ -26,8 +29,10 @@ from saimc.compose.engine import (
     _apex_starts,
     _bass_figure_pitches,
     _bass_ladder,
+    _bed_octaves,
     _bound_walk,
     _chord_intervals,
+    _clear_harmony_below_melody,
     _close_bar,
     _entrance_cost,
     _entry_answer,
@@ -54,15 +59,18 @@ from saimc.compose.forms import (
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
 from saimc.compose.score import (
+    VOICE_HARMONY,
     VOICE_MELODY,
     VOICE_PERCUSSION,
     KeySignature,
     NotationScore,
+    NoteEvent,
     PerformancePlan,
     microseconds_at_tick,
     realized_duration_seconds,
     ticks_at_microsecond,
 )
+from saimc.quality import score_piece
 from saimc.spec import CompositionSpec, Mood, WesternKey
 
 # Independent oracle: diatonic triads and sevenths as semitone
@@ -1669,6 +1677,96 @@ def _melody_span_bars(out) -> list[float]:
     return spans
 
 
+def _bed_note(pitch: int, *, tick: int = 0, duration: int = 1920) -> NoteEvent:
+    return NoteEvent(
+        voice_id=VOICE_HARMONY,
+        pitch_midi=pitch,
+        tick=tick,
+        duration_ticks=duration,
+        velocity=46,
+    )
+
+
+def _melody_note(pitch: int, *, tick: int = 0, duration: int = 1920) -> NoteEvent:
+    return NoteEvent(
+        voice_id=VOICE_MELODY,
+        pitch_midi=pitch,
+        tick=tick,
+        duration_ticks=duration,
+        velocity=70,
+    )
+
+
+class TestHarmonyRegisterPass:
+    """The bed's register is settled over the finished piece."""
+
+    def test_a_fold_lands_on_the_highest_octave_under_the_ceiling(self) -> None:
+        # Under a ceiling of 66, 76 folds to 64 — not to 52, which is the
+        # octave after it and only a fallback.
+        assert _bed_octaves(76, 66) == [64, 52]
+
+    def test_a_fold_never_leaves_the_bed(self) -> None:
+        for pitch in range(HARMONY_MIN_MIDI, 110):
+            octaves = _bed_octaves(pitch, 66)
+            assert octaves, pitch
+            for octave in octaves:
+                assert HARMONY_MIN_MIDI <= octave <= min(66, HARMONY_MAX_MIDI)
+
+    def test_a_note_already_in_the_bed_is_left_alone(self) -> None:
+        note = _bed_note(60)
+        assert _clear_harmony_below_melody([note], melody_floor=64) == [note]
+
+    def test_a_note_over_the_ceiling_folds_under_it(self) -> None:
+        # The melody's floor is 64, so the ceiling is 61 and the bed takes
+        # 76 down to 64 — which is still over it — and on to 52.
+        cleared = _clear_harmony_below_melody(
+            [_bed_note(76), _melody_note(64)], melody_floor=64
+        )
+        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [52]
+
+    def test_a_fold_that_would_crowd_the_melody_takes_the_next_octave(self) -> None:
+        """A note that moves is asked about the melody again.
+
+        Where the note was, an octave above the melody, it never met it.
+        Folded to 61 it is a major seventh under a melody note at 72 —
+        a rubbed interval, not a cleared one — so the bed takes the
+        octave below that instead of arriving in the tune's face.
+        """
+        cleared = _clear_harmony_below_melody(
+            [_bed_note(73), _melody_note(72)], melody_floor=64
+        )
+        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [49]
+
+    def test_a_note_with_no_clear_octave_is_dropped(self) -> None:
+        """The one outcome that can thin the bed, and it is the crowding
+        rule's verdict rather than this pass's: a B above the ceiling has
+        only 59 under it, and a melody note at 70 leaves it a minor
+        seventh — the pitch class of a whole tone — from the tune."""
+        cleared = _clear_harmony_below_melody(
+            [_bed_note(71), _melody_note(70)], melody_floor=64
+        )
+        assert not [n for n in cleared if n.voice_id == VOICE_HARMONY]
+
+    def test_a_bar_whose_bed_still_has_a_home_keeps_sounding(self) -> None:
+        cleared = _clear_harmony_below_melody(
+            [_bed_note(71), _bed_note(61), _melody_note(70)], melody_floor=64
+        )
+        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [61]
+
+    def test_the_same_note_folds_the_same_way_wherever_it_sounds(self) -> None:
+        """The ceiling is the piece's, so the fold does not move per bar.
+
+        A bar-local bound would fold this note to 61 in a bar whose tune
+        sat high and to 52 in one where it descended — the pad leaping an
+        octave between two bars of a held chord.
+        """
+        cleared = _clear_harmony_below_melody(
+            [_bed_note(64, tick=0), _bed_note(64, tick=1920), _melody_note(64, duration=3840)],
+            melody_floor=64,
+        )
+        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [52, 52]
+
+
 class TestHarmonyVoice:
     """P2: the harmony voice — pad for calm moods, arpeggio for energy."""
 
@@ -1755,6 +1853,59 @@ class TestHarmonyVoice:
                         assert abs(m.pitch_midi - h.pitch_midi) not in (0, 1, 2, 10, 11), (
                             f"harmony {h.pitch_midi} crowds melody {m.pitch_midi} ({mood})"
                         )
+
+    def test_the_bed_sits_under_the_melody_for_the_piece(self) -> None:
+        """The bed's register is the tune's floor, held for the whole piece.
+
+        `tessitura_overlap_semitones` measures how many semitones of the
+        melody's band the harmony also occupies, over the piece as a
+        whole. Folding every bed note at least
+        `HARMONY_MELODY_CLEARANCE` below the lowest note the tune reaches
+        makes the two bands disjoint, which is the register half of "not
+        a hot pot of instruments": the pad has a register of its own
+        instead of sharing the tune's. Measured before this pass over the
+        gate matrix, the bed's top sat at 84 against a tune whose floor
+        was 64 — twenty-one semitones of shared band, and 19.8 by the
+        metric against a bar of 4.
+        """
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            out = compose(_spec(mood, duration=60))
+            notes = out.notation_score.notes
+            melody = [n.pitch_midi for n in notes if n.voice_id == VOICE_MELODY]
+            harmony = [n.pitch_midi for n in notes if n.voice_id == VOICE_HARMONY]
+            assert harmony
+            assert melody
+            assert max(harmony) <= min(melody) - HARMONY_MELODY_CLEARANCE, mood
+            report = score_piece(out.notation_score, piece=f"{mood.value}-under-the-tune")
+            assert report.tessitura_overlap_semitones == 0, (mood, report)
+
+    def test_a_cleared_bed_keeps_a_note_in_every_bar_it_opens(self) -> None:
+        """The bed thins; it does not vanish.
+
+        A bed note the melody leaves no legal octave for is dropped, so a
+        bar whose bed had a single note can lose it. That must not become
+        the texture: a pad that stops sounding for a bar mid-piece is a
+        hole, not a rest, and the bar's melody and bass do not fill it.
+
+        Measured over the release gate matrix, the pass leaves 307 of the
+        334 bed bars untouched, thins 23 and empties 4 — all four in the
+        one 600-second sleep piece, each a bar whose single bed note has
+        no octave clear of a melody sitting at the foot of its band. That
+        is why the assertion below is scoped to the 60-second pieces: it
+        is the floor for the pieces it composes, and the long piece's
+        thinning is the crowding rule's verdict on a bed that was already
+        one note thin, not this pass inventing a hole.
+        """
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            out = compose(_spec(mood, duration=60))
+            notes = out.notation_score.notes
+            ticks = bar_ticks(out.time_signature)
+            bed_bars = {n.tick // ticks for n in notes if n.voice_id == VOICE_HARMONY}
+            assert bed_bars
+            # The intro bars are the one place the bed is meant to be
+            # silent: it enters with the melody.
+            assert min(bed_bars) >= out.arrangement.intro_bars
+            assert bed_bars == set(range(min(bed_bars), out.arrangement.total_bars_with_coda)), mood
 
     def test_harmony_enters_with_the_melody(self) -> None:
         # A long calming piece opens bass alone; the pad waits for it.

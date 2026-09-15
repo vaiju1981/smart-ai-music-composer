@@ -21,6 +21,7 @@ from saimc.compose.score import (
     NotationScore,
     NoteEvent,
 )
+from saimc.quality import score_corpus, score_piece
 from saimc.release import (
     gate_canonical_reproducibility,
     gate_composition_correctness,
@@ -175,39 +176,45 @@ class TestMusicalQualityGate:
         assert not result.passed
         assert "non-empty matrix" in result.detail
 
-    def test_the_generator_does_not_clear_the_bar_yet(self) -> None:
-        """Documents the current gap as a measured fact, not an aspiration.
+    def test_the_generator_clears_the_bar(self) -> None:
+        """The gap this file pinned open, closed — read and asserted.
 
-        The melody rewrite closed the melodic bars: the line moves by
-        step, answers its leaps, is held in a C4-B5 band across the whole
-        piece and repeats itself rarely, and `step_ratio`,
+        `saimc.quality` measures ten properties of the music and this gate
+        is the claim that a corpus clears every one of them. When the gate
+        landed the engine missed seven. The melody rewrite closed six: the
+        line moves by step, answers its leaps, is held in a C4-B5 band
+        across the whole piece and repeats itself rarely, so `step_ratio`,
         `leap_recovery_ratio`, `repeat_ratio`, `range_semitones`,
-        `max_leap_semitones` and `distinct_durations` all clear their
-        thresholds now.
+        `max_leap_semitones` and `distinct_durations` all clear. The
+        bass-figure library closed `bass_onset_patterns`: a bass that had
+        played one figure in every bar of every piece states a figure per
+        chord slot instead, and reads 3.0-3.2 against a bar of 3.
 
-        The bass-figure library closed the second one: `bass_onset_patterns`
-        measures a bass that played one figure in every bar of every piece,
-        and it now reads 1.0 to 3.2 over the gate matrix against a bar of
-        3, because the left hand states a figure per chord slot instead of
-        repeating one bar for the piece's whole length.
-
-        One threshold is left, and it is the harmony's.
-        `tessitura_overlap_semitones` measures the harmony crowding the
+        One threshold was left, and this test held it open on purpose.
+        `tessitura_overlap_semitones` measured the harmony crowding the
         melody's register rather than sitting under it — 19.8 over the
-        gate matrix and 12.5 over the pair below, both unchanged by the
-        bass, against a bar of 4.
+        gate matrix and 12.5 over the pair below, against a bar of 4 —
+        with the instruction that when the whole matrix cleared, the
+        assertion was to be re-read and dropped rather than let the
+        improvement arrive silently.
 
-        That one got *worse* under the melody rewrite — 8.25 to 20.25 at
-        the time — and the reason is the rewrite itself: the melody used to
-        live at 72-102 and never descend past C5, so the harmony folded
-        into 48-84 was mostly clear of it by accident, out of reach rather
-        than out of the way. Now the line descends into the register the
-        harmony occupies, which is the honest picture of two voices sharing
-        a band, and the harmony has not yet been moved out of it. Clearing
-        it for real is the harmony-clearance commit's work; this test is
-        what keeps the gap visible until then — when the whole matrix
-        clears, this assertion fails and asks to be read, rather than the
-        improvement arriving silently.
+        It cleared, in two reads. The melody rewrite made it *worse*, 8.25
+        to 20.25: the line used to live at 72-102 and never descend past
+        C5, so the harmony folded into 48-84 was clear of it by accident,
+        out of reach rather than out of the way. Bringing the tune down
+        into a singable band is what put the two voices in one register,
+        which is the honest picture of two voices sharing a band — and the
+        harmony-clearance pass is what moved the bed out of it: the bed's
+        top now sits `HARMONY_MELODY_CLEARANCE` below the lowest note the
+        piece's melody reaches, so the bands are disjoint and both corpora
+        read 0.0.
+
+        What the reading confirmed, beyond the number: the bed kept its
+        own register through the whole piece instead of following the
+        tune bar by bar, every voice kept its onsets and its rhythm, and
+        the pieces the bed thinned are the ones whose melody sits at the
+        bottom of its band — where the alternative to thinning would have
+        been the clash the crowding rule exists to prevent.
         """
         specs = [
             CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=30),
@@ -215,11 +222,28 @@ class TestMusicalQualityGate:
         ]
         scores = [compose(spec).notation_score for spec in specs]
         result = gate_musical_quality(scores)
-        assert not result.passed, (
-            "the generator now clears the quality bar — re-read this test, "
-            "confirm the music genuinely improved, and drop the assertion"
+        assert result.passed, result.detail
+
+    def test_the_release_matrix_clears_every_threshold(self) -> None:
+        """The same bar, held against the matrix the other gates run.
+
+        The pair above is the one the open loop was pinned on. This is the
+        corpus the release gates themselves measure — every mood, a short,
+        a typical and the §10 #11 cap duration, plus a role-tagged
+        ensemble — so the quality bar is held against the pieces the
+        structural gates run on rather than a pair chosen for it.
+        """
+        report = score_corpus(
+            "release matrix",
+            [
+                score_piece(
+                    compose(spec).notation_score,
+                    piece=f"{spec.mood.value}-{spec.seed}-{spec.duration_seconds}",
+                )
+                for spec in SPEC_MATRIX
+            ],
         )
-        assert "tessitura_overlap_semitones" in result.detail
+        assert report.passed, report.failure_reasons
 
 
 class TestRenderTimeBudgetGate:
