@@ -33,6 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
 
+from saimc.compose.forms import STEP_MAX_SEMITONES
 from saimc.compose.score import (
     VOICE_BASS,
     VOICE_HARMONY,
@@ -42,9 +43,9 @@ from saimc.compose.score import (
     NoteEvent,
 )
 
-# A step is a major second or less. The engine's own vocabulary keeps
-# thirds and wider as leaps.
-STEP_MAX_SEMITONES: int = 2
+# `STEP_MAX_SEMITONES` — "a step is a major second or less" — is defined
+# in `forms.py` and re-exported here so the scorecard and the linter's
+# passing-tone licence cannot disagree about what a step is.
 
 # A leap, for the "answer it with a step" rule, is a fourth or wider —
 # the interval at which a listener hears a gap that wants closing.

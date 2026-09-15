@@ -60,6 +60,7 @@ from saimc.compose.forms import (
     get_template_for_form,
     key_root_midi,
     key_signature_from_spec,
+    scale_pitch_offset,
 )
 from saimc.compose.linter import LintIssue, lint
 from saimc.compose.motif import (
@@ -1083,12 +1084,12 @@ def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> Chor
 
 
 def _scale_degree_to_semitones(degree: int, mode: str) -> int:
-    """Map a 0-based scale degree to its semitone offset from the tonic."""
-    if mode == "major":
-        major_scale = (0, 2, 4, 5, 7, 9, 11)
-        return major_scale[degree % 7]
-    minor_scale = (0, 2, 3, 5, 7, 8, 10)
-    return minor_scale[degree % 7]
+    """Map a 0-based scale degree to its semitone offset from the tonic.
+
+    Thin wrapper over `forms.scale_pitch_offset`, the single source of
+    truth for the diatonic scale tables.
+    """
+    return scale_pitch_offset(degree, mode)
 
 
 def _chord_intervals(

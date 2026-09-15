@@ -271,6 +271,178 @@ class TestChordToneMembership:
         assert not any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
 
 
+class TestPassingAndNeighbourTones:
+    """The one licence that lets a melody move by step between chord tones.
+
+    Every case is built over a C major bar (pcs 0, 4, 7) with F (65) as
+    the tone under test: F is *diatonic* to C major, so it isolates the
+    other three conditions instead of tripping the diatonic one. Each
+    test removes exactly one condition from an otherwise legal figure.
+    """
+
+    def _score(self, notes: list[NoteEvent]) -> NotationScore:
+        return _build_score(measures=_bars((0, 1920), (1920, 3840)), notes=notes)
+
+    def test_a_passing_tone_between_two_chord_tones_passes(self) -> None:
+        # G - F - E: entered by step, left by step, same direction (down).
+        # The figures here resolve onto E, the third, so the melody also
+        # satisfies the ends-on-tonic rule and each test fails for its own
+        # named reason rather than for the cadence.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=67, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert report.passed
+
+    def test_a_neighbour_tone_returns_to_its_chord_tone(self) -> None:
+        # E - F - E: entered by step, left by step, opposite direction.
+        # A rule that demanded one direction would reject this figure or
+        # the passing tone above; the licence has to admit both.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert report.passed
+
+    def test_a_rest_before_the_tone_breaks_the_figure(self) -> None:
+        # The tone is still stepwise on both sides, but it is no longer
+        # *approached*: a rest stands where its predecessor should be, so
+        # nothing prepares the dissonance.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=240),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_chromatic_tone_between_two_chord_tones_fails(self) -> None:
+        # F# (66) is a semitone from both neighbours, so every stepwise
+        # condition holds — but it is not in C major's scale, and this is
+        # the condition that stops a chromatic neighbour.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=66, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_diatonic_tone_on_the_downbeat_fails(self) -> None:
+        # Accented non-chord tone: a suspension or an appoggiatura, which
+        # the engine does not model. The neighbours are legal chord tones.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=480, duration_ticks=1440),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_long_non_chord_tone_fails(self) -> None:
+        # A held F between two chord tones: stepwise on both sides,
+        # unaccented, diatonic — but a passing tone is brief by
+        # definition, and a held dissonance is a different device.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=64, tick=240, duration_ticks=240),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=960),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=1440, duration_ticks=480),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_tone_left_by_leap_fails(self) -> None:
+        # Entered by step from E, but left by a fifth up to C an octave
+        # above: the figure never resolves to the chord tone next door.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=72, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_step_from_another_voice_is_not_a_step(self) -> None:
+        # The bass sounds E an octave below while the melody sounds F and
+        # then steps to E. The melody has nothing *before* the F, and the
+        # bass's E is in another voice: neighbours are per voice, because
+        # a step across voices prepares a dissonance from a different line.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+                NoteEvent(voice_id=0, pitch_midi=52, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=0, pitch_midi=53, tick=960, duration_ticks=960),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(
+            i.code == LintCode.CHORD_TONE_VIOLATION and i.voice_id == 1 for i in report.issues
+        )
+
+    def test_a_tie_is_not_a_step_into_the_tone(self) -> None:
+        # F tied from the bar line into the unaccented beat, then stepping
+        # down to E. The tie repeats the pitch, so the held tone is not
+        # *approached* by step — it is simply carried over the line.
+        score = self._score(
+            [
+                NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=240, tie=True),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=720, duration_ticks=1200),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
+
+    def test_a_passing_tone_is_licenced_in_any_pitched_voice(self) -> None:
+        # The rule is uniform across voices, not a melody privilege: the
+        # bass may walk by step through a passing tone too.
+        score = self._score(
+            [
+                NoteEvent(voice_id=0, pitch_midi=64, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=0, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=0, pitch_midi=67, tick=960, duration_ticks=960),
+                NoteEvent(voice_id=1, pitch_midi=72, tick=0, duration_ticks=1920),
+            ]
+        )
+        report = lint(score, chord_bars=((0, 4, 7), (0, 4, 7)))
+        assert report.passed
+
+    def test_the_scale_is_the_score_modes_not_always_major(self) -> None:
+        # F natural (65) is diatonic to A minor and chromatic to A major
+        # (which has F#), so this figure only passes if the licence reads
+        # the score's mode. A hard-coded major scale would reject it.
+        score = _build_score(
+            key=KeySignature(root="A", mode="minor"),
+            measures=_bars((0, 1920), (1920, 3840)),
+            notes=[
+                NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=65, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=64, tick=960, duration_ticks=960),
+                NoteEvent(voice_id=1, pitch_midi=69, tick=1920, duration_ticks=1920),
+            ],
+        )
+        report = lint(score, chord_bars=((9, 0, 4), (9, 0, 4)))
+        assert report.passed
+
+
 class TestDissonantCollision:
     """Close m2/M7 overlaps between voices are flagged unless both are chord tones."""
 

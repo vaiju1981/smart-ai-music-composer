@@ -466,18 +466,72 @@ def key_root_midi(key: KeySignature) -> int:
     return 60 + base  # middle C is 60
 
 
+# A step is a semitone or a whole tone. This is the shared definition of
+# conjunct motion, and it lives here rather than in either consumer: the
+# linter's passing-tone licence and the quality scorecard's `step_ratio`
+# both measure against it. If they disagreed on what a step is, a score
+# could satisfy the licence and still be scored as having no stepwise
+# motion, and the mismatch would read as a composition bug.
+STEP_MAX_SEMITONES: int = 2
+
+# Diatonic scale degrees as semitone offsets from the tonic, indexed by
+# `degree % 7`. One octave only — the octave is the caller's business
+# (`degree_to_midi` carries it, `scale_pitch_offset` deliberately does
+# not).
+_SCALE_TABLES: Mapping[str, tuple[int, ...]] = {
+    "major": (0, 2, 4, 5, 7, 9, 11),
+    "minor": (0, 2, 3, 5, 7, 8, 10),
+}
+
+
+def scale_semitones(mode: str) -> tuple[int, ...]:
+    """The mode's scale as semitone offsets from the tonic, one octave."""
+    return _SCALE_TABLES[mode]
+
+
+def scale_pitch_offset(degree: int, mode: str) -> int:
+    """A scale degree's semitone offset from the tonic, within one octave.
+
+    Any integer degree is accepted and wraps into the octave: degree 7 is
+    the tonic again, not the tonic an octave up. Callers that need the
+    octave should use `degree_to_midi`, which carries it explicitly.
+    """
+    return _SCALE_TABLES[mode][degree % 7]
+
+
+def degree_to_midi(degree: int, tonic_midi: int, mode: str) -> int:
+    """A scale degree as an absolute MIDI pitch, octave included.
+
+    Floor division means negative degrees descend correctly: degree -1 is
+    the leading tone *below* the tonic, so a melody can walk under its
+    starting note without the modulo flipping it up an octave.
+    """
+    return tonic_midi + 12 * (degree // 7) + _SCALE_TABLES[mode][degree % 7]
+
+
+def key_scale_pcs(key: KeySignature) -> frozenset[int]:
+    """The key's diatonic pitch classes, for a diatonic-membership test."""
+    tonic_pc = key_root_midi(key) % 12
+    return frozenset((tonic_pc + offset) % 12 for offset in _SCALE_TABLES[key.mode])
+
+
 __all__ = [
     "MOOD_PROFILES",
     "PHRASE_BARS",
     "PHRASE_SIZES",
+    "STEP_MAX_SEMITONES",
     "TEMPO_RANGE_BPM",
     "ChordSlot",
     "ChordTemplate",
     "MoodProfile",
     "apply_final_cadence",
+    "degree_to_midi",
     "get_mood_profile",
     "get_template_for_form",
     "key_root_midi",
+    "key_scale_pcs",
     "key_signature_from_spec",
     "key_signature_from_spec_key",
+    "scale_pitch_offset",
+    "scale_semitones",
 ]

@@ -22,10 +22,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from saimc.compose.duration import bar_ticks
-from saimc.compose.forms import PHRASE_BARS, key_root_midi
+from saimc.compose.forms import PHRASE_BARS, STEP_MAX_SEMITONES, key_root_midi, key_scale_pcs
 from saimc.compose.score import (
     VOICE_MELODY,
     VOICE_PERCUSSION,
+    KeySignature,
     NotationScore,
     NoteEvent,
 )
@@ -91,13 +92,13 @@ def lint(score: NotationScore, *, chord_bars: tuple[tuple[int, ...], ...] | None
     """Run every linter check and return a structured report.
 
     `chord_bars` carries the chord pitch classes sounding in each bar
-    (bar order). When given, the harmony-aware checks run: every
-    pitched note must be a chord tone of its bar (with an anacrusis
-    anticipation allowance), and close m2/M7 overlaps between voices
-    are flagged unless both tones belong to the sounding chord (a
-    maj7 voicing is intended, a rubbed second is not). Without it the
-    two harmony checks are skipped — a chord-less score cannot state
-    its intent.
+    (bar order). When given, the harmony-aware checks run: every pitched
+    note must be a chord tone of its bar, an anacrusis anticipation, or a
+    legal passing/neighbour tone (see `legal_non_chord_tone`), and close
+    m2/M7 overlaps between voices are flagged unless both tones belong to
+    the sounding chord (a maj7 voicing is intended, a rubbed second is
+    not). Without it the two harmony checks are skipped — a chord-less
+    score cannot state its intent.
     """
     issues: list[LintIssue] = []
     issues.extend(_check_range(score))
@@ -283,22 +284,109 @@ def _bar_of_tick(starts: list[int], tick: int) -> int:
     return index
 
 
+def legal_non_chord_tone(
+    note: NoteEvent,
+    *,
+    prev: NoteEvent | None,
+    nxt: NoteEvent | None,
+    bar_start_tick: int,
+    ppq: int,
+    key: KeySignature,
+) -> bool:
+    """Whether a non-chord tone is a legitimate passing or neighbour tone.
+
+    This is the licence that lets a melody move by step between chord
+    tones, and it is the *only* licence: every other non-chord tone is a
+    harmony bug. All four conditions must hold.
+
+    - **Unaccented.** It does not begin on the bar's downbeat. A
+      non-chord tone on the beat is a suspension or an appoggiatura, and
+      the engine models neither device.
+    - **Short.** It lasts no longer than a quarter note (`ppq` ticks). A
+      brief tone is a passing tone by definition; a long unprepared
+      dissonance is the unmodelled device again.
+    - **Diatonic.** It belongs to the key's scale, so it cannot clash
+      chromatically with the prevailing harmony.
+    - **Approached and left by step, with no rest between.** Both
+      neighbours exist in the same voice, each abuts this note exactly,
+      and each lies within `STEP_MAX_SEMITONES` of it.
+
+    Direction is deliberately *not* constrained. A passing tone is
+    entered and left by step in the same direction (C-D-E) and a
+    neighbour tone in the opposite one (C-D-C), so demanding either
+    direction would reject the other figure. The adjacency requirement
+    is what keeps the rule strict: a stepwise tone followed by a rest
+    does not resolve, so it does not qualify.
+
+    `prev` and `nxt` are this note's neighbours *in its own voice*, which
+    the caller derives — a step across a rest or from another voice is
+    not a step. Either being `None` rejects the note.
+    """
+    if note.tick == bar_start_tick:
+        return False
+    if note.duration_ticks > ppq:
+        return False
+    if note.pitch_midi % 12 not in key_scale_pcs(key):
+        return False
+    if prev is None or nxt is None:
+        return False
+    previous_abuts = prev.tick + prev.duration_ticks == note.tick
+    next_abuts = nxt.tick == note.tick + note.duration_ticks
+    if not (previous_abuts and next_abuts):
+        return False
+    previous_step = abs(note.pitch_midi - prev.pitch_midi)
+    next_step = abs(note.pitch_midi - nxt.pitch_midi)
+    return 0 < previous_step <= STEP_MAX_SEMITONES and 0 < next_step <= STEP_MAX_SEMITONES
+
+
+def _voice_neighbours(
+    score: NotationScore,
+) -> dict[int, tuple[NoteEvent | None, NoteEvent | None]]:
+    """Map each note's position in `score.notes` to its same-voice neighbours.
+
+    Neighbours are the adjacent entries in tick order within a voice —
+    the note before it and the note after it. Whether they *abut* it is
+    the licence's business, not this lookup's, so a rest between them
+    simply fails there.
+
+    Positions, not notes, key the result: two notes of one voice could be
+    equal in every field the score records, and a mapping keyed on the
+    note itself would silently give them each other's neighbours.
+    """
+    by_voice: dict[int, list[int]] = {}
+    for position, note in enumerate(score.notes):
+        by_voice.setdefault(note.voice_id, []).append(position)
+    neighbours: dict[int, tuple[NoteEvent | None, NoteEvent | None]] = {}
+    for positions in by_voice.values():
+        positions.sort(key=lambda p: (score.notes[p].tick, score.notes[p].pitch_midi))
+        for order, position in enumerate(positions):
+            before = score.notes[positions[order - 1]] if order > 0 else None
+            after = score.notes[positions[order + 1]] if order + 1 < len(positions) else None
+            neighbours[position] = (before, after)
+    return neighbours
+
+
 def _check_chord_tones(
     score: NotationScore,
     chord_bars: tuple[tuple[int, ...], ...],
 ) -> list[LintIssue]:
-    """Every pitched note must sound a chord tone of its bar.
+    """Every pitched note must sound a chord tone of its bar, or be a legal one.
 
-    Percussion notes are GM kit keys, not pitches, and are exempt. The
-    one melodic licence is the anacrusis: a pickup in the bar's final
-    eighth may anticipate the next chord (that is what a pickup is
-    for). A melody or bass note sounding a non-chord tone mid-bar is
-    a harmony bug, not a passing tone — the engine composes from
-    chord-tone tables, so anything outside the set is wrong.
+    Percussion notes are GM kit keys, not pitches, and are exempt. Two
+    licences apply. The anacrusis: a pickup in the bar's final eighth may
+    anticipate the next chord (that is what a pickup is for). And the
+    passing/neighbour tone, per `legal_non_chord_tone` — an unaccented,
+    brief, diatonic tone entered and left by step between chord tones,
+    which is how a melody moves by step at all.
+
+    Anything else is a harmony bug: the engine composes from chord-tone
+    tables plus that one stepwise figure, so a tone outside both is
+    wrong rather than expressive.
     """
     issues: list[LintIssue] = []
     starts = _measure_starts(score)
-    for note in score.notes:
+    neighbours = _voice_neighbours(score)
+    for position, note in enumerate(score.notes):
         if note.voice_id == VOICE_PERCUSSION:
             continue
         bar = _bar_of_tick(starts, note.tick)
@@ -315,12 +403,23 @@ def _check_chord_tones(
         next_pcs = chord_bars[bar + 1] if bar + 1 < len(chord_bars) else ()
         if in_anticipation and pc in next_pcs:
             continue
+        prev, nxt = neighbours[position]
+        if legal_non_chord_tone(
+            note,
+            prev=prev,
+            nxt=nxt,
+            bar_start_tick=measure.start_tick,
+            ppq=score.ppq,
+            key=score.key,
+        ):
+            continue
         issues.append(
             LintIssue(
                 code=LintCode.CHORD_TONE_VIOLATION,
                 message=(
                     f"pitch {note.pitch_midi} at tick {note.tick} is not a chord "
-                    f"tone of bar {bar} (pcs {list(bar_pcs)})"
+                    f"tone of bar {bar} (pcs {list(bar_pcs)}) and is not a legal "
+                    f"passing or neighbour tone"
                 ),
                 measure_index=bar,
                 tick=note.tick,
@@ -459,5 +558,6 @@ __all__ = [
     "LintCode",
     "LintIssue",
     "LintReport",
+    "legal_non_chord_tone",
     "lint",
 ]
