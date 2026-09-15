@@ -185,22 +185,29 @@ class TestMusicalQualityGate:
         `max_leap_semitones` and `distinct_durations` all clear their
         thresholds now.
 
-        What is left is the accompaniment. `bass_onset_patterns` measures
-        a bass that plays one figure in every bar of every piece, and
-        `tessitura_overlap_semitones` measures the harmony crowding the
-        melody's register rather than sitting under it.
+        The bass-figure library closed the second one: `bass_onset_patterns`
+        measures a bass that played one figure in every bar of every piece,
+        and it now reads 1.0 to 3.2 over the gate matrix against a bar of
+        3, because the left hand states a figure per chord slot instead of
+        repeating one bar for the piece's whole length.
 
-        That second one got *worse* — 8.25 to 20.25 over the four-piece
-        matrix — and the reason is the rewrite itself: the melody used to
+        One threshold is left, and it is the harmony's.
+        `tessitura_overlap_semitones` measures the harmony crowding the
+        melody's register rather than sitting under it — 19.8 over the
+        gate matrix and 12.5 over the pair below, both unchanged by the
+        bass, against a bar of 4.
+
+        That one got *worse* under the melody rewrite — 8.25 to 20.25 at
+        the time — and the reason is the rewrite itself: the melody used to
         live at 72-102 and never descend past C5, so the harmony folded
         into 48-84 was mostly clear of it by accident, out of reach rather
         than out of the way. Now the line descends into the register the
         harmony occupies, which is the honest picture of two voices sharing
         a band, and the harmony has not yet been moved out of it. Clearing
-        it is the next two commits' work; this test is what keeps the gap
-        visible until they land — when the whole matrix clears, this
-        assertion fails and asks to be read, rather than the improvement
-        arriving silently.
+        it for real is the harmony-clearance commit's work; this test is
+        what keeps the gap visible until then — when the whole matrix
+        clears, this assertion fails and asks to be read, rather than the
+        improvement arriving silently.
         """
         specs = [
             CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=30),
@@ -213,7 +220,6 @@ class TestMusicalQualityGate:
             "confirm the music genuinely improved, and drop the assertion"
         )
         assert "tessitura_overlap_semitones" in result.detail
-        assert "bass_onset_patterns" in result.detail
 
 
 class TestRenderTimeBudgetGate:

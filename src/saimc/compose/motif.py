@@ -294,6 +294,91 @@ def _reflow(slots: list[list[int]]) -> list[BarSlot]:
     return out
 
 
+# --- Bass-figure vocabulary ------------------------------------------------
+#
+# The left hand states the harmony, so every figure is chord tones and
+# nothing else. The passing-tone licence admits a stepwise tone in any
+# voice, and this voice does not take it up: a bass that leaves the
+# harmony stops being the harmony.
+#
+# A figure is a tuple of onsets, each `(start, length, rung)`, written in
+# sixteenths of the bar (16 to the bar). Proportions rather than ticks,
+# because the engine composes in every common time signature and one
+# figure should land at the same points of the measure in a 3/4 bar as in
+# a 4/4 one — and because the rungs, not the pitches, are what let one
+# figure serve every chord. `rung` counts up the chord's own tones from
+# the one the walk landed on: rung 0 is that tone, 1 the next chord tone
+# above it, and so on, so the same shape lands as root-third-fifth on a
+# triad and reaches the seventh on a seventh chord. A triad inside an
+# octave always holds three tones above any of its own, so rungs 0 to 3
+# exist whatever the chord.
+#
+# Every figure begins on rung 0 at the bar line. The bar's harmony has to
+# sound on its downbeat whatever the left hand does afterwards, and the
+# walk's register is anchored on that note.
+
+BassFigure = tuple[tuple[int, int, int], ...]
+
+# The plain statement: the tone the walk landed on, then the next chord
+# tone above it. Every mood's table contains it, and the final bar of a
+# piece plays it whatever its slot drew — a close is stated, not decorated.
+PLAIN_BASS_FIGURE: BassFigure = ((0, 8, 0), (8, 8, 1))
+
+# A chord tone per beat: the pulse the electrifying mood is named for.
+_DRIVING_BASS_FIGURE: BassFigure = ((0, 4, 0), (4, 4, 1), (8, 4, 2), (12, 4, 3))
+# Root, third, then the tone a fifth above held to the bar line.
+_ARCHED_BASS_FIGURE: BassFigure = ((0, 4, 0), (4, 4, 1), (8, 8, 2))
+# The chord on the downbeat and then space: the bar belongs to the melody
+# until the last beat leads back into the harmony.
+_SPARSE_BASS_FIGURE: BassFigure = ((0, 4, 0), (12, 4, 1))
+# One tone for the whole bar — a pedal under a slow line.
+_PEDAL_BASS_FIGURE: BassFigure = ((0, 16, 0),)
+
+BASS_FIGURES: dict[str, tuple[BassFigure, ...]] = {
+    "electrifying": (
+        _DRIVING_BASS_FIGURE,
+        _ARCHED_BASS_FIGURE,
+        PLAIN_BASS_FIGURE,
+    ),
+    "calming": (
+        PLAIN_BASS_FIGURE,
+        _ARCHED_BASS_FIGURE,
+        _SPARSE_BASS_FIGURE,
+    ),
+    "sleep": (
+        _PEDAL_BASS_FIGURE,
+        PLAIN_BASS_FIGURE,
+        _SPARSE_BASS_FIGURE,
+        _ARCHED_BASS_FIGURE,
+    ),
+}
+# Moods without their own profile fall back to the gentle set.
+_DEFAULT_BASS_FIGURES: tuple[BassFigure, ...] = BASS_FIGURES["calming"]
+
+
+def draw_bass_figures(
+    mood: str, *, rng: random.Random, count: int
+) -> tuple[BassFigure, ...]:
+    """One figure per chord slot, rotating through the mood's vocabulary.
+
+    A figure belongs to a *slot*, not to a bar: the left hand states a
+    figure for as long as its harmony lasts and changes it when the
+    harmony changes. That is what the scorecard's `bass_onset_patterns`
+    counts — a piece whose bass plays one bar for its whole length scores
+    one — and it is the musical reading of the same number, since variety
+    that arrived per bar would be noise rather than an accompaniment.
+
+    The moods' tables do the work: each runs from its most characteristic
+    figure to its plainest, and the slot's index takes the next one, so a
+    progression is accompanied by a line that changes with it. Only where
+    the rotation *starts* is drawn, so two pieces of one mood do not open
+    on the same figure.
+    """
+    figures = BASS_FIGURES.get(mood, _DEFAULT_BASS_FIGURES)
+    start = rng.randrange(len(figures))
+    return tuple(figures[(start + index) % len(figures)] for index in range(count))
+
+
 def _op_dotted(slots: list[list[int]], *, remainders: tuple[int, ...]) -> list[BarSlot]:
     """Long-short: two quarters become a dotted quarter + eighth.
 

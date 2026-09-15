@@ -10,10 +10,13 @@ import pytest
 
 from saimc.compose.engine import MELODY_HIGH_MIDI, MELODY_LOW_MIDI, compose
 from saimc.compose.motif import (
+    BASS_FIGURES,
+    PLAIN_BASS_FIGURE,
     PPQ,
     Motif,
     MotifCell,
     _op_tie,
+    draw_bass_figures,
     generate_motif,
     vary_motif,
 )
@@ -181,6 +184,69 @@ class TestOpTie:
         assert tied == [(0, 480, 2, 1), (480, 960, 2, 0)]
 
 
+class TestBassFigures:
+    """The left hand's vocabulary: what a figure is, and how one is drawn."""
+
+    def test_every_figure_states_its_landing_tone_on_the_bar_line(self) -> None:
+        """Rung 0 at offset 0, in every figure of every mood.
+
+        The bar's harmony has to sound on its downbeat whatever the left
+        hand does afterwards, and the walk is anchored on that note — so
+        a figure that opened anywhere else would move the harmony and the
+        register the melody is placed against.
+        """
+        for mood, figures in BASS_FIGURES.items():
+            for figure in figures:
+                onset, _length, rung = figure[0]
+                assert (onset, rung) == (0, 0), mood
+
+    def test_every_figure_stays_inside_the_bar(self) -> None:
+        for mood, figures in BASS_FIGURES.items():
+            for figure in figures:
+                assert all(
+                    start >= 0 and start + length <= 16 for start, length, _rung in figure
+                ), mood
+
+    def test_no_figure_reaches_past_the_rungs_a_triad_fills(self) -> None:
+        """No figure reaches past the third tone above its landing tone.
+
+        A triad fills a rung within every octave, so rungs 0 to 3 exist
+        for any chord a mood can draw — this is what lets one figure land
+        on a seventh chord without transposing anything.
+        """
+        for mood, figures in BASS_FIGURES.items():
+            for figure in figures:
+                assert all(
+                    0 <= rung <= 3 for _start, _length, rung in figure
+                ), mood
+
+    def test_the_plain_figure_is_in_every_mood(self) -> None:
+        # It is what a piece's final bar plays whatever its slot drew, so
+        # no mood's vocabulary may be without it.
+        for figures in BASS_FIGURES.values():
+            assert PLAIN_BASS_FIGURE in figures
+
+    def test_the_draw_is_deterministic_and_rotates(self) -> None:
+        """One figure per slot, changing as the harmony changes.
+
+        Deterministic for a seed; and a slot's figure differs from the
+        one before it, which is what gives a progression an accompaniment
+        that moves with it rather than one bar played twelve times. The
+        rotation is why this holds even for a handful of slots over a
+        short vocabulary: a plain weighted draw could repeat and leave
+        the bar-to-bar reading counting one figure.
+        """
+        drawn = draw_bass_figures("calming", rng=random.Random(4), count=6)
+        assert drawn == draw_bass_figures("calming", rng=random.Random(4), count=6)
+        assert len(set(drawn)) >= 3
+        assert all(a != b for a, b in itertools.pairwise(drawn))
+
+    def test_an_unknown_mood_falls_back_to_the_gentle_set(self) -> None:
+        assert set(draw_bass_figures("no-such-mood", rng=random.Random(1), count=4)) <= set(
+            BASS_FIGURES["calming"]
+        )
+
+
 class TestMotifMelody:
     def test_interval_diversity(self) -> None:
         # The old re-rolled arpeggio walk produced just 3 distinct
@@ -291,9 +357,19 @@ class TestMotifMelody:
         below C5: the apex was an octave jump, so every section's peak was
         also where the line left its range.
 
-        A band asserted per piece, not on average: this one is an invariant
-        of the fold and the placement, so a piece outside it is a bug, not
-        an outlier.
+        A band asserted per piece, not on average: it is what the placement
+        does with every bar, so a line outside it means the placement
+        stopped preferring the band rather than that one piece was
+        unlucky.
+
+        One exception is real and is not this test's business to hide: a
+        register is a whole octave, and a line wider than the band's
+        freedom at its rotation has no octave inside it, so a bar can sit
+        a tone past the edge. That is rare — one piece in 4200 over a
+        sweep of every mood, 200 seeds and 7 durations, and by two
+        semitones — and `test_a_bar_the_band_cannot_hold_keeps_its_line`
+        in the engine suite is where it is pinned, along with the line
+        that has to survive it.
         """
         for mood in Mood:
             for seed in (42, 7, 11):

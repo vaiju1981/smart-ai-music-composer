@@ -14,8 +14,8 @@ Stages (per `docs/roadmap.md` §2 step 3):
    ±2% tolerance.
 4. Generate one melody voice + one bass voice over the chord
    progression:
-   - the left hand plays a root-fifth broken pattern instead of a
-     held drone,
+   - the left hand states each chord with a figure drawn from the
+     mood's vocabulary instead of a held drone,
    - the melody sits an octave above the bass to keep the registers
      separate,
    - rhythm, arpeggio direction, and starting tone vary per bar
@@ -71,9 +71,12 @@ from saimc.compose.linter import DISSONANT_INTERVALS, LintIssue, lint
 from saimc.compose.motif import (
     CHORD_TONE_DEGREES,
     LEAP_DEGREES,
+    PLAIN_BASS_FIGURE,
     BarSlot,
+    BassFigure,
     MotifVariant,
     apply_rhythm,
+    draw_bass_figures,
     generate_motif,
     vary_motif,
 )
@@ -415,7 +418,19 @@ def _build_score(
         notes.extend(section_notes)
         bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
         if bass_notes:
-            prev_bass = max(bass_notes, key=lambda n: n.tick).pitch_midi
+            # The walk carries the *landing* tone across the seam, not
+            # the last note heard: a figure decorates above its landing
+            # tone, so the last note of a bar is wherever the figure
+            # climbed to, and joining the next chord to it would move the
+            # walk by the figure's reach rather than by the harmony's
+            # step. The landing tone is the last bar's lowest bass note —
+            # every rung is resolved at or above it, and rung 0 sounds it
+            # on the bar line.
+            ticks = bar_ticks(time_signature)
+            last_bar = max(n.tick for n in bass_notes) // ticks
+            prev_bass = min(
+                n.pitch_midi for n in bass_notes if n.tick // ticks == last_bar
+            )
         melody_notes = [n for n in section_notes if n.voice_id == VOICE_MELODY]
         if melody_notes:
             prev_melody = melody_notes[-1].pitch_midi
@@ -548,6 +563,60 @@ def _build_score(
     ), tuple(chord_bars)
 
 
+# The bass voice's ceiling. A figure's upper rungs climb from the bar's
+# landing tone; a rung that reaches past this is taken an octave lower,
+# where it is still the same chord tone.
+BASS_HIGH_MIDI: int = 67
+
+
+def _bass_ladder(
+    anchor: int, *, chord_root: int, chord_tones: tuple[int, ...]
+) -> tuple[int, ...]:
+    """The chord's own tones rising from the bar's landing tone.
+
+    Rung 0 is the landing tone itself and every later rung is the next
+    chord tone above the one before, so a figure written in rungs lands
+    as the chord's own intervals wherever the walk put it: a
+    root-third-fifth figure is a root-third-fifth over every chord of the
+    progression, and the same figure reaches the seventh on a seventh
+    chord. A triad fills a rung within every octave, so rungs 0 to 3
+    exist for any chord a mood can draw.
+    """
+    pitch_classes = {(chord_root + tone) % 12 for tone in chord_tones}
+    ladder = [anchor]
+    pitch = anchor
+    for _ in range(len(pitch_classes)):
+        pitch = next(p for p in range(pitch + 1, pitch + 13) if p % 12 in pitch_classes)
+        ladder.append(pitch)
+    return tuple(ladder)
+
+
+def _bass_figure_pitches(
+    figure: BassFigure, *, anchor: int, chord_root: int, chord_tones: tuple[int, ...]
+) -> tuple[tuple[int, int, int], ...]:
+    """Resolve a figure's rungs into the bass register above the anchor.
+
+    Returns `(start, length, pitch)` per sounding note, still in
+    sixteenths of the bar. A rung that would climb past the bass ceiling
+    is taken an octave lower, and one that still lands below the bar's
+    landing tone is dropped: the figure is written for the harmony, not
+    for the register the walk happened to land in, and a note under the
+    tone the bar opened on is a different figure. Dropping a rung rather
+    than rewriting it keeps every remaining onset where the figure put
+    it. The landing tone itself is always rung 0 at the bar line, so no
+    figure can leave a bar without its harmony on the downbeat.
+    """
+    ladder = _bass_ladder(anchor, chord_root=chord_root, chord_tones=chord_tones)
+    resolved: list[tuple[int, int, int]] = []
+    for start, length, rung in figure:
+        pitch = ladder[min(rung, len(ladder) - 1)]
+        while pitch > BASS_HIGH_MIDI:
+            pitch -= 12
+        if pitch >= anchor:
+            resolved.append((start, length, pitch))
+    return tuple(resolved)
+
+
 def _generate_section(
     *,
     key: KeySignature,
@@ -570,8 +639,9 @@ def _generate_section(
 
     The left hand walks: each chord's bass lands on the chord tone
     nearest the previous chord's bass (root position when there is no
-    previous bass, or wherever the template pins `bass_degree`), and
-    the bar's midpoint sounds the next chord tone above it — so the
+    previous bass, or wherever the template pins `bass_degree`), and the
+    slot's figure — drawn from the mood's vocabulary in `motif` — is
+    played over that landing tone for every bar of the chord, so the
     bass line moves stepwise through inversions instead of jumping
     root to root, and the walk carries across section boundaries via
     `prev_bass`. The melody carries too, through `prev_melody` and
@@ -657,20 +727,44 @@ def _generate_section(
     cursor = 0
     bar_index = 0
     total_bars = template.bars
+    # One figure per chord slot, not per bar: the left hand states a
+    # figure for as long as its harmony lasts and changes it when the
+    # harmony changes. Drawn from a stream of its own — the bass picking
+    # a figure must not shift the melody's draws, or this would be a
+    # melody rewrite as well, and nobody asked for one.
+    slot_figures = draw_bass_figures(
+        mood,
+        rng=random.Random(seed_for_variation * 31 + 17),
+        count=len(template.chords),
+    )
     for slot_index, slot in enumerate(template.chords):
         chord_root, chord_tones, dur = chords[slot_index]
 
         # Walking bass: the pinned bass degree wins; otherwise the
         # chord tone nearest the previous bass (root on the first
-        # chord). The midpoint sounds the next chord tone above.
+        # chord). That tone is the bar's landing tone — the figure's
+        # rung 0 and the walk's own step.
         if slot.bass_degree is not None:
-            bass_pitch = _octave_down(
+            # The cadence pins the degree, not the octave: the pinned
+            # tone keeps its pitch class and takes the register nearest
+            # the line it joins, the way every other chord's landing tone
+            # is drawn from the register nearest the walk. Without this
+            # the fixed octave makes the cadence the one place the bass
+            # leaps, since the walk has no say in where the pin lands.
+            pinned = _octave_down(
                 tonic_midi
                 + slot_offset
                 + _scale_degree_to_semitones(slot.bass_degree, key.mode),
                 octaves=1,
             )
-            prev_bass = bass_pitch
+            if prev_bass is not None:
+                previous_bass = prev_bass
+                pinned = min(
+                    (pinned - 12, pinned, pinned + 12),
+                    key=lambda p: (abs(p - previous_bass), p),
+                )
+            bass_pitch = pinned
+            prev_bass = pinned
         else:
             # Two octaves of candidates keep the walk inside the bass
             # register even in sharp minor keys whose chord roots sit
@@ -688,62 +782,55 @@ def _generate_section(
             else:
                 last_bass = prev_bass
                 bass_pitch = min(candidates, key=lambda c: abs(c - last_bass))
-        above = sorted(
-            chord_root + tone
-            for tone in chord_tones
-            if chord_root + tone > bass_pitch
-            and (chord_root + tone) % 12 != bass_pitch % 12
+        # The slot's figure, its rungs resolved onto this chord and this
+        # landing tone. Every bar of the slot plays it, which is what
+        # makes the left hand an accompaniment rather than a new idea
+        # every bar.
+        bar_figure = _bass_figure_pitches(
+            slot_figures[slot_index],
+            anchor=bass_pitch,
+            chord_root=chord_root,
+            chord_tones=chord_tones,
         )
-        bass_fifth = above[0] if above else bass_pitch + 12
-        while bass_fifth - bass_pitch > 12:
-            bass_fifth -= 12
-        # Stay near the bass register — an octave shift keeps the note
-        # a chord tone (a hard clamp would not be).
-        if bass_fifth > 67:
-            bass_fifth -= 12
-        if bass_fifth <= bass_pitch:
-            bass_fifth += 12
-        while bass_fifth - bass_pitch > 12:
-            bass_fifth -= 12
 
         chord_root_tick = section_start_tick + cursor
         for _bar in range(dur):
             bar_tick = chord_root_tick + _bar * ticks_per_bar
             bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
+            is_final_bar = is_final_section and bar_index == total_bars - 1
 
-            # Left hand: the walking tone on the downbeat, the next
-            # chord tone above it at the midpoint.
-            half = ticks_per_bar // 2
-            notes.append(
-                NoteEvent(
-                    voice_id=VOICE_BASS,
-                    pitch_midi=bass_pitch,
-                    tick=bar_tick,
-                    duration_ticks=half,
-                    velocity=_shaped_velocity(
-                        base=56,
-                        position=bar_pos,
-                        tick=bar_tick,
-                        ticks_per_bar=ticks_per_bar,
-                        rng_seed=seed_for_variation,
-                    ),
+            # Left hand: the slot's figure, whose rung 0 states the walk's
+            # landing tone on the bar line. A close is stated, not
+            # decorated, so the piece's last bar plays the plain figure
+            # whatever its slot drew — and the cadence's pinned degree
+            # stays where the final bar's harmony already is.
+            figure = bar_figure
+            if is_final_bar:
+                figure = _bass_figure_pitches(
+                    PLAIN_BASS_FIGURE,
+                    anchor=bass_pitch,
+                    chord_root=chord_root,
+                    chord_tones=chord_tones,
                 )
-            )
-            notes.append(
-                NoteEvent(
-                    voice_id=VOICE_BASS,
-                    pitch_midi=bass_fifth,
-                    tick=bar_tick + half,
-                    duration_ticks=ticks_per_bar - half,
-                    velocity=_shaped_velocity(
-                        base=50,
-                        position=bar_pos,
-                        tick=bar_tick + half,
-                        ticks_per_bar=ticks_per_bar,
-                        rng_seed=seed_for_variation,
-                    ),
+            for figure_index, (offset16, length16, pitch) in enumerate(figure):
+                onset = offset16 * ticks_per_bar // 16
+                notes.append(
+                    NoteEvent(
+                        voice_id=VOICE_BASS,
+                        pitch_midi=pitch,
+                        tick=bar_tick + onset,
+                        duration_ticks=length16 * ticks_per_bar // 16,
+                        velocity=_shaped_velocity(
+                            # The bar's first note carries the weight;
+                            # the ones after it are answered, not stated.
+                            base=56 if figure_index == 0 else 50,
+                            position=bar_pos,
+                            tick=bar_tick + onset,
+                            ticks_per_bar=ticks_per_bar,
+                            rng_seed=seed_for_variation,
+                        ),
+                    )
                 )
-            )
 
             # Melody voice: one bar derived from the section's motif.
             # The last bar of the piece resolves at home; a
@@ -753,7 +840,6 @@ def _generate_section(
             if bar_index < melody_from_bar:
                 bar_index += 1
                 continue
-            is_final_bar = is_final_section and bar_index == total_bars - 1
             is_apex = bar_index == apex_bar
             # The bar's own chord, not the template's last one: reading
             # the loop-leaked `degree` here meant a half cadence could
@@ -811,7 +897,7 @@ def _generate_section(
                 apex=is_apex,
                 breathe=breathe,
                 pickup=pickup,
-                bass_pitches=(bass_pitch, bass_fifth),
+                bass_pitches=tuple(pitch for _offset, _length, pitch in figure),
                 prev_leap=last_melody_leap,
             )
             melody_notes.extend(bar_melody)
@@ -1187,8 +1273,9 @@ def _downbeat_anchor(rng: random.Random, tone_count: int) -> int:
 # phrase peak and for a line that moves, narrow enough that the piece's
 # total range stays inside what a singer could hold and that the
 # accompaniment has a register of its own below it. Every bar is placed
-# inside this band, so the piece's range is bounded by construction
-# rather than by a clamp applied after the fact.
+# inside this band by `_place_bar`, which is what bounds the piece's
+# range — a bar is moved to a register, never clamped note by note into
+# one.
 #
 # The extra semitone over the twelfth it reads as is not slack: a bar is
 # entered from the previous bar's last note, and that note sits at the
@@ -1199,6 +1286,17 @@ def _downbeat_anchor(rng: random.Random, tone_count: int) -> int:
 # semitone more gives the same line a register whose entrance is an
 # eleventh, so the band has to be wide enough for the walk to have the
 # choice at all.
+#
+# A bar's register is only ever a whole octave from where the walk wrote
+# it, and a line wider than the band divided by 12 rotations is not
+# guaranteed one: a twelve-semitone line sits in 9 of the 12 octaves it
+# could be written in, so 3 of them have no register inside the band. The
+# floor and the ceiling are both real, and a bar against them has nowhere
+# left to go — so it sounds where the placement put it, up to a tone or
+# two past the edge, rather than being displaced note by note into a
+# tear. `_place_bar` ranks placements by how many notes each leaves
+# outside, so a bar that *can* fit does; the few that cannot are the
+# price of an octave-quantised register, paid at the edge by a tone.
 MELODY_LOW_MIDI: int = 64
 MELODY_HIGH_MIDI: int = 84
 _MELODY_CENTRE_MIDI: int = (MELODY_LOW_MIDI + MELODY_HIGH_MIDI) // 2
@@ -1226,20 +1324,6 @@ _MAX_ENTRANCE_SEMITONES: int = 12
 # every other bar's — and it is read by `_melody_bar`, which retries a bar
 # whose winner rubs.
 _RANK_RUBBING: int = 1
-
-
-def _fold_into_band(pitch: int, low: int, high: int) -> int:
-    """Shift a pitch by whole octaves until it lies inside [low, high].
-
-    An octave keeps the pitch name, so a folded note is still the chord
-    tone or scale degree it was written as. The band must be at least an
-    octave wide for this to terminate.
-    """
-    while pitch < low:
-        pitch += 12
-    while pitch > high:
-        pitch -= 12
-    return pitch
 
 
 def _bound_walk(degrees: list[int], centre_degree: int) -> list[int]:
@@ -1981,8 +2065,9 @@ def _place_bar(
 
     Returns the ranking the placement earned, in the order the keys were
     weighed, then the shift itself, the number of notes it leaves outside
-    the band — zero for every bar the walk's own fold did not already
-    strain — the number of notes it still leaves rubbing the bass, and
+    the band — zero for every bar the walk wrote inside it, and
+    occasionally one or two for a line too wide to sit in the band at any
+    octave — the number of notes it still leaves rubbing the bass, and
     what its entrance costs. The ranking is handed back so the caller
     that chooses between *starts* ranks them on the same scale the
     octaves were ranked on, rather than on a second one of its own.
@@ -2371,11 +2456,20 @@ def _melody_bar(
         notes.append(
             NoteEvent(
                 voice_id=VOICE_MELODY,
-                pitch_midi=_fold_into_band(
-                    scale_walk(degree, chord_root, scale) + shift,
-                    MELODY_LOW_MIDI,
-                    MELODY_HIGH_MIDI,
-                ),
+                # The bar's register is the placement's shift, applied to
+                # the whole bar and to nothing else. Folding an
+                # out-of-band *note* an octave instead would move it
+                # against the line it belongs to — a note at the band's
+                # floor lifted an octave is a twelve-semitone tear in the
+                # middle of a phrase the walk wrote as a step — and no
+                # later pass repairs an interval that no longer matches
+                # the line the licence was checked against. A bar the
+                # placement could not fit therefore sits at the band's
+                # edge, which is where `_place_bar` already ranks it: the
+                # count of notes left outside is the first key of the
+                # ranking, so the octave that leaves the fewest is the
+                # octave that wins.
+                pitch_midi=scale_walk(degree, chord_root, scale) + shift,
                 tick=tick,
                 duration_ticks=duration,
                 velocity=_shaped_velocity(
