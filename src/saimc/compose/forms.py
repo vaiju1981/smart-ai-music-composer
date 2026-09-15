@@ -474,10 +474,17 @@ def key_root_midi(key: KeySignature) -> int:
 # motion, and the mismatch would read as a composition bug.
 STEP_MAX_SEMITONES: int = 2
 
+# A leap is a fourth or wider — the interval at which a listener hears a
+# gap that wants closing, and so the interval a melody must answer with a
+# step. Shared for the same reason as `STEP_MAX_SEMITONES`: the
+# generator's recovery pass and the scorecard's `leap_recovery_ratio`
+# have to agree on which intervals are leaps. Thirds sit between the two
+# definitions and are neither.
+LEAP_MIN_SEMITONES: int = 5
+
 # Diatonic scale degrees as semitone offsets from the tonic, indexed by
 # `degree % 7`. One octave only — the octave is the caller's business
-# (`degree_to_midi` carries it, `scale_pitch_offset` deliberately does
-# not).
+# (`scale_walk` carries it, `scale_pitch_offset` deliberately does not).
 _SCALE_TABLES: Mapping[str, tuple[int, ...]] = {
     "major": (0, 2, 4, 5, 7, 9, 11),
     "minor": (0, 2, 3, 5, 7, 8, 10),
@@ -494,19 +501,59 @@ def scale_pitch_offset(degree: int, mode: str) -> int:
 
     Any integer degree is accepted and wraps into the octave: degree 7 is
     the tonic again, not the tonic an octave up. Callers that need the
-    octave should use `degree_to_midi`, which carries it explicitly.
+    octave should use `scale_walk`, which carries it explicitly.
     """
     return _SCALE_TABLES[mode][degree % 7]
 
 
-def degree_to_midi(degree: int, tonic_midi: int, mode: str) -> int:
-    """A scale degree as an absolute MIDI pitch, octave included.
+def scale_intervals(degree: int, mode: str) -> tuple[int, ...]:
+    """The mode's scale spelled from `degree` as its root, one octave.
 
-    Floor division means negative degrees descend correctly: degree -1 is
-    the leading tone *below* the tonic, so a melody can walk under its
-    starting note without the modulo flipping it up an octave.
+    Rotation only — the seven intervals cover the same pitch classes as
+    the mode rooted on the tonic, in the order a line walking from
+    `degree` would meet them. Degree 4 of major gives the mixolydian
+    rotation (0, 2, 4, 5, 7, 9, 10), which is what a bar on the V sounds.
     """
-    return tonic_midi + 12 * (degree // 7) + _SCALE_TABLES[mode][degree % 7]
+    table = _SCALE_TABLES[mode]
+    root = table[degree % 7]
+    return tuple(
+        table[(degree + step) % 7] - root + (12 if degree + step >= 7 else 0)
+        for step in range(7)
+    )
+
+
+def scale_walk(degree: int, root_midi: int, intervals: tuple[int, ...]) -> int:
+    """A scale degree above `root_midi` as an absolute MIDI pitch.
+
+    `intervals` is one octave of the scale, spelled from `root_midi` (see
+    `scale_intervals`). Floor division means negative degrees descend
+    correctly: degree -1 is the scale tone *below* the root, so a melody
+    can walk under its starting note without the modulo flipping it up an
+    octave.
+    """
+    return root_midi + 12 * (degree // 7) + intervals[degree % 7]
+
+
+def bar_scale_intervals(
+    degree: int,
+    key: KeySignature,
+    *,
+    borrowed: bool = False,
+) -> tuple[int, ...]:
+    """The scale a bar's chord is built from, spelled from the chord root.
+
+    A diatonic bar walks the key's own mode; a borrowed bar walks the
+    parallel mode, which is the same table `chord_intervals` takes its
+    borrowed chord from. The two must agree, or a stepwise line would
+    leave the scale its own chord belongs to: rotating a table into a
+    scale always yields a chord whose tones are its degrees 0, 2, 4 (and
+    6 for a seventh), which is what makes a chord-tone index a scale
+    degree of exactly `2 * index`.
+    """
+    mode = key.mode
+    if borrowed:
+        mode = "minor" if mode == "major" else "major"
+    return scale_intervals(degree, mode)
 
 
 def key_scale_pcs(key: KeySignature) -> frozenset[int]:
@@ -515,7 +562,61 @@ def key_scale_pcs(key: KeySignature) -> frozenset[int]:
     return frozenset((tonic_pc + offset) % 12 for offset in _SCALE_TABLES[key.mode])
 
 
+# Every major and natural-minor scale, for recovering which scale a bar's
+# harmony belongs to when the key alone does not say (see
+# `bar_diatonic_pcs`). Two per root: the mode is part of the reading.
+_CANDIDATE_SCALES: tuple[frozenset[int], ...] = tuple(
+    frozenset((root + offset) % 12 for offset in table)
+    for table in _SCALE_TABLES.values()
+    for root in range(12)
+)
+
+
+def chord_tone_degrees(tone_count: int) -> tuple[int, ...]:
+    """The scale degrees a chord of `tone_count` tones occupies.
+
+    A bar's chord is spelled from the same scale the melody walks
+    (`bar_scale_intervals`), which is a rotation of the mode's table
+    rooted on the chord root — and the chord tables take their tones from
+    that same rotation. So a triad's tones are degrees 0, 2 and 4 of the
+    bar's scale and a seventh chord's are 0, 2, 4 and 6, whatever the
+    mode, the degree or whether the chord is borrowed. Callers use this
+    to tell a chord tone from a tone that needs the passing-tone licence,
+    which is a question about scale degrees and not about pitch classes.
+    """
+    return tuple(range(0, 2 * tone_count, 2))
+
+
+def bar_diatonic_pcs(chord_pcs: tuple[int, ...], key: KeySignature) -> frozenset[int]:
+    """The pitch classes a passing tone may use in a bar sounding `chord_pcs`.
+
+    The key's own scale is the wrong answer for the two cases where a
+    bar's harmony leaves the key: the modulation lift on a long piece's
+    final repetition, and the borrowed chords. Both are legible from the
+    chord, so the scale is recovered from it.
+
+    Every major and natural-minor scale containing the whole chord is a
+    reading of the bar. When one of them is the key's own scale, that is
+    the answer, and a diatonic chord therefore reads exactly — a C major
+    triad in C major admits the key's seven tones and no others, which is
+    what keeps the licence strict where it matters. A foreign chord has
+    no single parent scale (a D major triad fits D, G and A major alike),
+    so the readings are unioned: the honest statement is "a scale this
+    bar's harmony belongs to", and the engine's own walk in such a bar is
+    always one of the readings, so nothing it plays is refused.
+
+    Computed once per bar by the caller, not once per note.
+    """
+    pcs = frozenset(chord_pcs)
+    readings = [scale for scale in _CANDIDATE_SCALES if pcs <= scale]
+    home = key_scale_pcs(key)
+    if home in readings or not readings:
+        return home
+    return frozenset().union(*readings)
+
+
 __all__ = [
+    "LEAP_MIN_SEMITONES",
     "MOOD_PROFILES",
     "PHRASE_BARS",
     "PHRASE_SIZES",
@@ -525,13 +626,17 @@ __all__ = [
     "ChordTemplate",
     "MoodProfile",
     "apply_final_cadence",
-    "degree_to_midi",
+    "bar_diatonic_pcs",
+    "bar_scale_intervals",
+    "chord_tone_degrees",
     "get_mood_profile",
     "get_template_for_form",
     "key_root_midi",
     "key_scale_pcs",
     "key_signature_from_spec",
     "key_signature_from_spec_key",
+    "scale_intervals",
     "scale_pitch_offset",
     "scale_semitones",
+    "scale_walk",
 ]

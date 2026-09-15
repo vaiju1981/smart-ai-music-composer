@@ -33,7 +33,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
 
-from saimc.compose.forms import STEP_MAX_SEMITONES
+from saimc.compose.forms import LEAP_MIN_SEMITONES, STEP_MAX_SEMITONES
 from saimc.compose.score import (
     VOICE_BASS,
     VOICE_HARMONY,
@@ -43,13 +43,11 @@ from saimc.compose.score import (
     NoteEvent,
 )
 
-# `STEP_MAX_SEMITONES` — "a step is a major second or less" — is defined
-# in `forms.py` and re-exported here so the scorecard and the linter's
-# passing-tone licence cannot disagree about what a step is.
-
-# A leap, for the "answer it with a step" rule, is a fourth or wider —
-# the interval at which a listener hears a gap that wants closing.
-LEAP_MIN_SEMITONES: int = 5
+# `STEP_MAX_SEMITONES` — "a step is a major second or less" — and
+# `LEAP_MIN_SEMITONES` — "a leap is a fourth or wider" — are defined in
+# `forms.py` and re-exported here, so the scorecard, the linter's
+# passing-tone licence and the generator's leap-recovery pass cannot
+# disagree about which intervals are steps and which are leaps.
 
 QUALITY_STEP_RATIO_MIN: float = 0.45
 """At least this share of the melody's *moving* intervals must be steps.

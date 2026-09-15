@@ -11,21 +11,47 @@ import pytest
 
 from saimc.compose.duration import bar_ticks
 from saimc.compose.engine import (
+    _RANK_RUBBING,
+    _START_REACH_DEGREES,
+    _WALK_REACH_DEGREES,
     ARRANGEMENT_ARC_MIN_REPS,
     MODULATION_OFFSET,
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
+    _answer_leaps,
+    _answered,
+    _apex_starts,
+    _bound_walk,
     _chord_intervals,
+    _close_bar,
+    _entrance_cost,
+    _entry_answer,
+    _hold_tied_pairs,
+    _legal_slots,
+    _licit_line,
     _merged_tie_runs,
+    _opening_step,
+    _place_bar,
     _scale_degree_to_semitones,
+    _snap_to_chord,
+    _start_offsets,
     _truncate_template_for_coda,
     compose,
 )
-from saimc.compose.forms import PHRASE_BARS, key_root_midi
-from saimc.compose.linter import LintCode, lint
+from saimc.compose.forms import (
+    PHRASE_BARS,
+    STEP_MAX_SEMITONES,
+    ChordSlot,
+    bar_diatonic_pcs,
+    key_root_midi,
+    scale_intervals,
+)
+from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
+from saimc.compose.motif import LEAP_DEGREES
 from saimc.compose.score import (
     VOICE_MELODY,
+    VOICE_PERCUSSION,
     KeySignature,
     NotationScore,
     PerformancePlan,
@@ -62,7 +88,10 @@ MAJOR_SEVENTHS_ABS = (
     (5, 9, 12, 16),
     (7, 11, 14, 17),
     (9, 12, 16, 19),
-    (11, 14, 17, 20),
+    # vii m7b5: the half-diminished seventh on the leading tone (B-D-F-A
+    # in C), not a diminished seventh — the A is the key's own sixth, and
+    # a dim7 there would put an Ab in a bar that sounds no Ab.
+    (11, 14, 17, 21),
 )
 MINOR_SEVENTHS_ABS = (
     (0, 3, 7, 10),
@@ -71,7 +100,11 @@ MINOR_SEVENTHS_ABS = (
     (5, 8, 12, 15),
     (7, 10, 14, 17),
     (8, 12, 15, 19),
-    (10, 14, 17, 21),
+    # VII7 in the natural minor (Bb7 in C minor: Bb-D-F-Ab). The seventh
+    # of that chord is the key's own sixth degree; a major seventh would
+    # be the raised leading tone, which belongs to the harmonic minor's
+    # dominant and not to this table.
+    (10, 14, 17, 20),
 )
 
 
@@ -342,26 +375,85 @@ class TestChordToneHarmony:
         ],
     )
     def test_all_notes_are_chord_tones(self, mood: Mood, duration: int) -> None:
+        """Every pitched note is a chord tone of its bar, or a licensed tone.
+
+        The licence is not a loophole: a non-chord tone has to be brief,
+        unaccented, diatonic to the bar's own harmony, and entered *and*
+        left by step from the notes either side of it in the same voice.
+        That is the whole vocabulary the engine composes from, so a note
+        outside both is a harmony bug rather than an expressive one.
+        """
         out = compose(_spec(mood, duration=duration, seed=42))
         bars = _bar_degrees_and_offsets(out, mood.value)
         assert len(bars) == out.arrangement.total_bars_with_coda
-        ticks_per_bar = out.notation_score.ppq * 4
+        score = out.notation_score
+        ticks_per_bar = score.ppq * 4
         tonic = key_root_midi(out.key)
-        anticipation_zone = ticks_per_bar - out.notation_score.ppq // 2
-        for note in out.notation_score.notes:
-            if note.voice_id == 2:  # percussion keys are GM drum map, not pitched
+        anticipation_zone = ticks_per_bar - score.ppq // 2
+        by_voice: dict[int, list] = {}
+        for note in score.notes:
+            by_voice.setdefault(note.voice_id, []).append(note)
+        for voice_id, voice_notes in by_voice.items():
+            if voice_id == 2:  # percussion keys are GM drum map, not pitched
                 continue
-            bar = note.tick // ticks_per_bar
-            _degree, offsets, key_offset = bars[bar]
-            sounding = {(tonic + key_offset + offset) % 12 for offset in offsets}
-            if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
-                # An anacrusis pickup anticipates the next bar's chord.
-                _next_degree, next_offsets, next_offset = bars[bar + 1]
-                sounding |= {(tonic + next_offset + offset) % 12 for offset in next_offsets}
-            assert note.pitch_midi % 12 in sounding, (
-                f"bar {bar}: pitch {note.pitch_midi} "
-                f"not in chord pcs {sounding} (offsets {offsets})"
-            )
+            voice_notes.sort(key=lambda n: (n.tick, n.pitch_midi))
+            for index, note in enumerate(voice_notes):
+                bar = note.tick // ticks_per_bar
+                _degree, offsets, key_offset = bars[bar]
+                chord = {(tonic + key_offset + offset) % 12 for offset in offsets}
+                sounding = set(chord)
+                if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
+                    # An anacrusis pickup anticipates the next bar's chord.
+                    _next_degree, next_offsets, next_offset = bars[bar + 1]
+                    sounding |= {
+                        (tonic + next_offset + offset) % 12 for offset in next_offsets
+                    }
+                if note.pitch_midi % 12 in sounding:
+                    continue
+                assert legal_non_chord_tone(
+                    note,
+                    prev=voice_notes[index - 1] if index else None,
+                    nxt=(
+                        voice_notes[index + 1]
+                        if index + 1 < len(voice_notes)
+                        else None
+                    ),
+                    bar_start_tick=bar * ticks_per_bar,
+                    ppq=score.ppq,
+                    diatonic_pcs=bar_diatonic_pcs(tuple(chord), out.key),
+                ), (
+                    f"voice {voice_id} bar {bar}: pitch {note.pitch_midi} at "
+                    f"{note.tick} is neither a chord tone of {sounding} "
+                    f"(offsets {offsets}) nor a licensed passing tone"
+                )
+
+    def test_the_oracle_and_the_engine_spell_the_same_chords(self) -> None:
+        """`_bar_degrees_and_offsets` spells each slot's chord from the
+        oracle tables above; the engine spells it from `forms`. The oracle
+        is only a check on the engine while the two agree, so this pins
+        them together — a degree's scale-semitone offset is its chord's
+        root, and the chord's intervals rise from there onto the oracle's
+        own tones.
+
+        Without it, a drift in the shared scale table would show up as the
+        chord-tone tests failing on notes the engine got right.
+        """
+        for mode, key in (
+            ("major", KeySignature(root="C", mode="major")),
+            ("minor", KeySignature(root="A", mode="minor")),
+        ):
+            for degree in range(7):
+                for seventh in (False, True):
+                    slot = ChordSlot(degree=degree, bars=1, seventh=seventh)
+                    tones = _chord_offsets(slot, mode)
+                    root = _scale_degree_to_semitones(degree, mode)
+                    assert root == tones[0], (mode, degree, seventh)
+                    intervals = _chord_intervals(degree, key, seventh=seventh)
+                    assert tuple(root + interval for interval in intervals) == tones, (
+                        mode,
+                        degree,
+                        seventh,
+                    )
 
     def test_seventh_chords_reach_the_score(self) -> None:
         """Templates with 7th slots play their 4th tone, and it is a
@@ -409,7 +501,21 @@ class TestChordToneHarmony:
     def test_borrowed_bVII_reaches_the_score(self) -> None:
         """The extended electrifying template's borrowed bVII (a major
         triad a whole step below the tonic) actually sounds: the bar's
-        notes sit on the lowered-root pcs, not the diatonic vii."""
+        harmony spells the lowered-root triad rather than the diatonic
+        vii, its downbeats land on that triad, and what the melody plays
+        between those downbeats is a chord tone of it or a licensed
+        stepwise tone.
+
+        This used to pin every pitched note of the bar to the borrowed
+        triad, which was true of the chord-tone walk it was written for.
+        The melody now moves in scale degrees, so a bar's line passes
+        *through* its harmony — a step is a semitone or a whole tone and
+        the tones between the anchors are the ones a step explains. The
+        borrowed chord still has to be what sounds, so the anchor half of
+        the old assertion stays (via the licence, which admits no
+        non-chord tone on a downbeat), and the stepwise tones are checked
+        against the licence instead of being forbidden.
+        """
         out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
         assert out.key.mode == "major"
         tonic = key_root_midi(out.key)
@@ -420,13 +526,49 @@ class TestChordToneHarmony:
             b for b, (_degree, offsets, _key_offset) in enumerate(bars) if offsets == (10, 14, 17)
         ]
         assert borrowed_bars, "expected the bVII borrowed slot to sound"
-        ticks_per_bar = out.notation_score.ppq * 4
-        pitched = [n for n in out.notation_score.notes if n.voice_id != 2]
+        score = out.notation_score
+        ticks_per_bar = score.ppq * 4
+        by_voice: dict[int, list] = {}
+        for note in score.notes:
+            if note.voice_id != VOICE_PERCUSSION:
+                by_voice.setdefault(note.voice_id, []).append(note)
+        for voice_notes in by_voice.values():
+            voice_notes.sort(key=lambda n: (n.tick, n.pitch_midi))
         for bar in borrowed_bars:
             sounding = {(tonic + offset) % 12 for offset in (10, 14, 17)}
-            for note in pitched:
-                if note.tick // ticks_per_bar == bar:
-                    assert note.pitch_midi % 12 in sounding
+            # The chord the bar publishes is the borrowed triad: the
+            # template degree alone would spell the diatonic vii.
+            assert set(out.chord_bars[bar]) == sounding, (
+                f"bar {bar}: the score sounds {sorted(out.chord_bars[bar])}, "
+                f"not the borrowed bVII {sorted(sounding)}"
+            )
+            diatonic = bar_diatonic_pcs(out.chord_bars[bar], out.key)
+            # The bar's final eighth is the anacrusis zone, where a pickup
+            # may anticipate the chord it leads into.
+            anticipation = (bar + 1) * ticks_per_bar - score.ppq // 2
+            into_next = set(out.chord_bars[bar + 1]) if bar + 1 < len(out.chord_bars) else set()
+            for voice_notes in by_voice.values():
+                for index, note in enumerate(voice_notes):
+                    if note.tick // ticks_per_bar != bar:
+                        continue
+                    if note.pitch_midi % 12 in sounding:
+                        continue
+                    if note.tick >= anticipation and note.pitch_midi % 12 in into_next:
+                        continue
+                    assert legal_non_chord_tone(
+                        note,
+                        prev=voice_notes[index - 1] if index else None,
+                        nxt=(
+                            voice_notes[index + 1] if index + 1 < len(voice_notes) else None
+                        ),
+                        bar_start_tick=bar * ticks_per_bar,
+                        ppq=score.ppq,
+                        diatonic_pcs=diatonic,
+                    ), (
+                        f"voice {note.voice_id} bar {bar}: pitch {note.pitch_midi} at "
+                        f"{note.tick} is neither a tone of the borrowed bVII "
+                        f"{sorted(sounding)} nor a licensed stepwise tone"
+                    )
 
     def test_cadence_bass_is_root_position(self) -> None:
         """The cadence's pinned bass_degree lands the final tonic's root
@@ -548,40 +690,42 @@ class TestPhraseStructure:
         )
         assert rests >= 1, "expected at least one breath in the melody"
 
-    def test_downbeats_anchor_to_root_or_third(self) -> None:
-        out = compose(_spec(Mood.CALMING, duration=180))
-        ticks_per_bar = out.notation_score.ppq * 4
-        melody = [n for n in out.notation_score.notes if n.voice_id == 1]
-        downbeats = [n for n in melody if n.tick % ticks_per_bar == 0]
-        tonic = key_root_midi(out.key)
-        # Chord roots per bar come from the template walk; a downbeat
-        # anchors when it matches the chord root or third, i.e. when it
-        # is one of the chord's first two tones.
-        from saimc.compose.forms import apply_final_cadence, get_template_for_form
+    def test_every_downbeat_is_a_chord_tone(self) -> None:
+        """The bar's first melody note is a tone of the bar's own chord.
 
-        arrangement = out.arrangement
-        chords: list[int] = []
-        for section in range(arrangement.repetition_count):
-            template = (
-                arrangement.template
-                if section == 0
-                else get_template_for_form(
-                    "calming", arrangement.form_bars, variant_index=section
-                )
-            )
-            if section == arrangement.repetition_count - 1:
-                template = apply_final_cadence(template, "calming")
-            for slot in template.chords:
-                chords.extend([slot.degree] * slot.bars)
-        anchored = 0
+        This replaces a check that only half the downbeats were the chord's
+        root or third, which the bar-by-bar walk satisfied by accident: the
+        old melody was arpeggiated from the chord, so a downbeat could be
+        any tone of it, and the third was commoner than the fifth only
+        because the walk started there.
+
+        The walk now moves in scale degrees, so what the contract can still
+        promise is the anchor: notes *between* downbeats are steps and may
+        be licensed non-chord tones, but every note the harmony comes to
+        rest on is a tone of the chord underneath it. That is precisely why
+        the passing-tone licence admits no non-chord tone on a downbeat, so
+        the two rules are one rule read from either side.
+        """
+        out = compose(_spec(Mood.CALMING, duration=180))
+        score = out.notation_score
+        ticks_per_bar = score.ppq * 4
+        tonic = key_root_midi(out.key)
+        bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
+        assert len(bars) == out.arrangement.total_bars_with_coda
+        downbeats = [
+            n
+            for n in score.notes
+            if n.voice_id == VOICE_MELODY and n.tick % ticks_per_bar == 0
+        ]
+        assert downbeats
         for note in downbeats:
-            degree = chords[note.tick // ticks_per_bar]
-            chord_root = tonic + _scale_degree_to_semitones(degree, out.key.mode)
-            chord_tones = _chord_intervals(degree, out.key)
-            candidates = {(chord_root + 12 + t) % 12 for t in chord_tones[:2]}
-            if note.pitch_midi % 12 in candidates:
-                anchored += 1
-        assert anchored / len(downbeats) >= 0.5
+            bar = note.tick // ticks_per_bar
+            degree, offsets, key_offset = bars[bar]
+            chord = {(tonic + key_offset + offset) % 12 for offset in offsets}
+            assert note.pitch_midi % 12 in chord, (
+                f"bar {bar}: downbeat {note.pitch_midi} is not a tone of the "
+                f"bar's chord (degree {degree}, pcs {sorted(chord)})"
+            )
 
     def test_apex_rises_after_the_first_quarter_of_each_section(self) -> None:
         out = compose(_spec(Mood.ELECTRIFYING, duration=180))
@@ -604,6 +748,294 @@ class TestPhraseStructure:
             assert any(0.25 <= p <= 0.95 for p in peak_positions), (
                 f"section {section_idx}: peak {peak} at positions {peak_positions}"
             )
+
+
+class TestMelodyWalk:
+    """One bar's line, one pass at a time.
+
+    A bar is written in four passes — fold the walk into one octave, answer
+    its leaps, bend the line around the notes the licence cannot cover, then
+    choose the octave it sits in — and each of them is the reason some
+    metric clears its bar. The piece-level tests elsewhere in this file say
+    *that* the melody moved; these say where, so a regression names itself
+    instead of arriving as a metric that quietly got worse.
+    """
+
+    def test_bound_walk_folds_a_climb_into_one_octave(self) -> None:
+        """A sequence climbing a chord tone per replay comes back down.
+
+        The band is centred on the degree the bar starts on — the walk is
+        folded to within an octave *of where it is*, not of a fixed register
+        — so the same line folded from a different anchor keeps its own
+        centre, and the caller keeps the bar's register.
+        """
+        walk = [0, 3, 6, 9, 12, 15, 18]
+        folded = _bound_walk(walk, walk[0])
+        assert folded == [0, 3, -1, 2, 5, 1, 4]
+        for before, after in zip(walk, folded, strict=True):
+            assert after % 7 == before % 7, "a fold is an octave, not a transposition"
+        assert all(abs(degree - walk[0]) <= _WALK_REACH_DEGREES for degree in folded)
+
+    def test_a_leap_is_answered_by_a_turn_back(self) -> None:
+        """The answer is the whole figure: the step back, and the step that
+        leaves it — a passing tone between the chord tones either side."""
+        assert _answer_leaps([0, 4, 5, 6]) == [0, 4, 3, 2]
+
+    def test_a_leap_that_lands_off_the_chord_is_undone(self) -> None:
+        """A non-chord tone is entered by a step or not at all, so a leap
+        landing off the harmony keeps the bar's contour and loses the leap."""
+        assert _answer_leaps([0, 5, 6]) == [0, -1, -2]
+
+    def test_a_leap_with_no_room_after_it_is_answered_from_before(self) -> None:
+        """The landing is where the bar has to be, so the note before it
+        takes the step — the way a cadence is approached."""
+        assert _answer_leaps([0, 4, 6]) == [3, 4, 6]
+        assert _answer_leaps([0, 4, 5, 6], fixed_tail=1) == [3, 4, 5, 6]
+
+    def test_a_leap_the_bar_cannot_answer_is_left_to_the_next_bar(self) -> None:
+        """The pass settles a slot as the approach to its pair, and a
+        settled slot is never written again — a bar whose answer has to come
+        from before the landing can be re-leapt by the repair of the pair in
+        front of it, which is what the engine hung on. So the walk settles
+        instead, and the leap it cannot answer is answered by the next bar's
+        entrance (`_entry_answer`).
+
+        What this test really asserts is that the call returns at all: a
+        regression in the settling rule is an infinite loop, and the harness
+        turns that into a timeout here rather than into a hung render.
+        """
+        walk = [0, 4, 5, 3, 1, 5, 9, 11]
+        answered = _answer_leaps(walk)
+        assert len(answered) == len(walk), "the pass rewrites, it does not re-time"
+        assert answered[1] - answered[0] >= LEAP_DEGREES, (
+            "the opening leap has both sides settled and is left standing"
+        )
+
+    def test_licit_line_bends_the_note_that_arrives_by_a_third(self) -> None:
+        """A non-chord tone owes a step on each side, so the note that
+        arrives at one by a third moves by a degree — the one nearer the
+        note on its far side."""
+        assert _licit_line([0, 1, 5], remainders=(0, 2, 4)) == [0, 1, 2]
+        assert _licit_line([0, 1, 5, 6], remainders=(0, 2, 4)) == [0, 1, 2, 3]
+
+    def test_licit_line_never_moves_a_pinned_closing_note(self) -> None:
+        """A closing gesture lands where it lands; a line that cannot bend
+        toward it is left for the snap pass, which is the one repair allowed
+        to move a note the bar has pinned."""
+        assert _licit_line([0, 3, 4], remainders=(0, 2, 4), fixed_tail=1) == [0, 3, 4]
+
+    def test_snap_to_chord_stays_a_step_away(self) -> None:
+        """A chord scale's tones sit on every other degree, so a snap is a
+        move of one degree for every tone that is not already a chord tone."""
+        for degree in range(7):
+            if degree in (0, 2, 4):
+                continue
+            for prefer_up in (True, False):
+                snapped = _snap_to_chord(degree, tone_count=3, prefer_up=prefer_up)
+                assert snapped % 7 in (0, 2, 4)
+                assert abs(snapped - degree) == 1, (degree, prefer_up)
+
+    def test_snap_to_chord_weighs_the_neighbours_it_strands(self) -> None:
+        """A snap decides the intervals the notes either side are heard on,
+        so a chord tone a third from a neighbour the licence covers loses to
+        one that keeps that neighbour a step away."""
+        snapped = _snap_to_chord(1, tone_count=3, prefer_up=True, neighbours=(0, 3))
+        assert snapped == 2, "the downward chord tone (0) strands the neighbour at 3"
+
+    def test_the_licence_keeps_a_passing_tone_and_takes_the_rest(self) -> None:
+        """`_legal_slots` is the bar's floor: what the walk could not get
+        past the linter, the snap pass rewrites, and it rewrites the degree
+        only — a bar keeps its rhythm whatever the licence does to it."""
+        scale = scale_intervals(0, "major")
+
+        def bar(degrees, **kw):
+            slots = [(index * 480, 480, degree, 0) for index, degree in enumerate(degrees)]
+            return _legal_slots(
+                slots, tone_count=3, chord_root=60, scale=scale, **kw
+            )
+
+        passing = [(0, 480, 0, 0), (480, 480, 1, 0), (960, 480, 2, 0)]
+        assert bar((0, 1, 2)) == passing, "entered and left by a step is legal"
+
+        # A non-chord tone on the downbeat is an appoggiatura, which this
+        # engine does not model: it snaps to the chord the bar rests on.
+        assert bar((1, 1, 2))[0][2] == 0
+        # A rub against another voice's pitch class is decided in pitch
+        # class, where no octave placement can undo it.
+        assert bar((0, 1, 2), avoid_pcs=frozenset({3}))[1][2] == 2
+        assert bar((0, 1, 2), avoid_pcs=frozenset({6}))[1][2] == 1
+        # A quarter is the longest a non-chord tone may be.
+        assert bar((0, 1))[1][2] == 2
+        assert _legal_slots(
+            [(0, 480, 0, 0), (480, 960, 1, 0)], tone_count=3, chord_root=60, scale=scale
+        ) == [(0, 480, 0, 0), (480, 960, 2, 0)]
+
+    def test_a_tied_pair_snaps_as_one_note(self) -> None:
+        """Two noteheads at one pitch stand or fall together — snapped apart
+        they would be a tie the engraver draws between two heights, and a
+        pitch the performance layer, which plays the continuation as
+        nothing, drops."""
+        snapped = _legal_slots(
+            [(0, 480, 1, 1), (480, 480, 1, 0), (960, 480, 2, 0)],
+            tone_count=3,
+            chord_root=60,
+            scale=scale_intervals(0, "major"),
+        )
+        assert [slot[2] for slot in snapped] == [0, 0, 2]
+        assert snapped[0][3] == 1, "the tie itself survives the snap"
+
+    def test_hold_tied_pairs_writes_the_second_notehead_as_the_first(self) -> None:
+        """The passes between the rhythm library and the licence rewrite a
+        note without knowing which notes are tied to their neighbour, so the
+        pair is re-held before the licence reads it."""
+        held = _hold_tied_pairs([(0, 480, 0, 1), (480, 240, 1, 0), (720, 240, 4, 0)])
+        assert held == [(0, 480, 0, 1), (480, 240, 0, 0), (720, 240, 4, 0)]
+
+    def test_close_bar_writes_the_closing_gesture(self) -> None:
+        slots = [(0, 480, 0, 0), (480, 480, 4, 0)]
+        assert _close_bar(slots, degree=2, ticks=None) == [
+            (0, 480, 0, 0),
+            (480, 480, 2, 0),
+        ]
+
+    def test_close_bar_shortens_a_breathing_bar(self) -> None:
+        """A phrase breathes by halving what it had, not by leaving the
+        note there: the rest is what the ear hears as the breath."""
+        slots = [(0, 480, 0, 0), (480, 480, 4, 0)]
+        assert _close_bar(slots, degree=None, ticks=240) == [
+            (0, 480, 0, 0),
+            (480, 240, 4, 0),
+        ]
+
+    def test_close_bar_yields_a_tie_the_gesture_broke(self) -> None:
+        """A tie holds one pitch and the cadence now lands elsewhere, so the
+        tie yields — the phrase asked for the gesture, not for the tie."""
+        slots = [(0, 480, 0, 1), (480, 480, 4, 0)]
+        assert _close_bar(slots, degree=2, ticks=None) == [
+            (0, 480, 0, 0),
+            (480, 480, 2, 0),
+        ]
+        kept = [(0, 480, 0, 1), (480, 480, 4, 0)]
+        assert _close_bar(kept, degree=4, ticks=None) == kept, (
+            "a gesture that lands where the bar already was leaves the tie alone"
+        )
+
+    def test_close_bar_is_a_noop_without_a_gesture(self) -> None:
+        slots = [(0, 480, 0, 0), (480, 480, 4, 0)]
+        assert _close_bar(slots, degree=None, ticks=None) == slots
+        assert _close_bar([], degree=2, ticks=None) == []
+
+    def test_opening_step_skips_a_tied_notehead(self) -> None:
+        """A tied continuation is not struck, so the interval the ear hears
+        first is the one out of the tie — reading it as a repeat would let a
+        bar turn a seam it has already answered."""
+        slots = [(0, 480, 0, 0), (480, 480, 1, 0), (960, 480, 2, 0)]
+        assert _opening_step([60, 62, 64], slots) == 2
+        tied = [(0, 480, 0, 1), (480, 480, 1, 0), (960, 480, 2, 0)]
+        assert _opening_step([60, 60, 62], tied) == 2, "the move out of the tie"
+        assert _opening_step([60], slots[:1]) is None, "one note has no move"
+        assert _opening_step([60, 60], [(0, 480, 0, 1), (480, 480, 1, 1)]) is None
+
+    def test_entrance_cost_grades_a_step_above_a_skip_above_a_leap(self) -> None:
+        """A step into a bar is what a melody does; a skip still moves and
+        still comes back; a repeat is a note the bar did not need; a leap is
+        what the listener has to recover from."""
+        assert _entrance_cost(None, None) == 0, "the first bar owes nothing"
+        assert _entrance_cost(2, None) == 0, "a step"
+        assert _entrance_cost(3, None) == _entrance_cost(4, None) == 1, "a skip"
+        assert _entrance_cost(0, None) == 2, "a repeat"
+        assert _entrance_cost(7, None) == _entrance_cost(12, None) == 3, "a leap"
+
+    def test_a_leap_makes_one_entrance_free_and_the_rest_faults(self) -> None:
+        """A leap has to be answered, and the bar's second note is what
+        answers it — so a step back the other way is the one way in that
+        costs nothing, and a step carrying on the same way is a fault."""
+        assert _entrance_cost(-2, 7) == 0, "the step that answers the leap"
+        assert _entrance_cost(-7, 7) != 0, "a leap back is still a leap"
+        for entrance in (0, 2, 3, -12):
+            assert _entrance_cost(entrance, 7) == 3, entrance
+        assert _entrance_cost(None, 7) == 0, "a bar after a rest owes no answer"
+
+    def test_answered_and_entry_answer_read_the_same_seam(self) -> None:
+        """A seam is answered when the bar's first *sounding* move is a step
+        back the way the leap came; `_entry_answer` is the degree step that
+        makes that true, and the two must agree on every seam — the ranker
+        judges with one and the walk repairs with the other."""
+        seams = [
+            (None, None),
+            (2, None),
+            (4, None),
+            (7, None),
+            (7, 0),
+            (7, 2),
+            (7, -2),
+            (-7, None),
+            (-7, 3),
+            (-7, -3),
+            (12, 5),
+        ]
+        for entrance, opening in seams:
+            answer = _entry_answer(entrance, opening)
+            assert (answer is None) == _answered(entrance, opening), (entrance, opening)
+            if answer is not None:
+                assert answer == (-1 if entrance > 0 else 1), (entrance, opening)
+
+    def test_start_offsets_lead_with_the_drawn_anchor(self) -> None:
+        """Every tone of the bar's chord is a place its line can begin, so a
+        bar can be restated into another register without rewriting a note —
+        and the drawn anchor leads, because the caller keeps it unless
+        another placement fits better."""
+        for anchor in range(3):
+            offsets = _start_offsets(anchor, 3)
+            assert offsets[0] == 2 * anchor, "the drawn anchor leads"
+            assert len(set(offsets)) == len(offsets)
+            for offset in offsets:
+                assert offset % 7 in (0, 2, 4), offset
+                assert abs(offset) <= _START_REACH_DEGREES, offset
+
+    def test_apex_starts_lift_without_an_octave_jump(self) -> None:
+        """The apex is the one bar whose register is chosen rather than
+        fitted, and it is chosen *above* where the bar already stands and
+        *inside* the octave: an octave lift is the same statement made by a
+        leap the listener has to recover from."""
+        for anchor in range(3):
+            drawn = 2 * anchor
+            starts = _apex_starts(anchor, 3)
+            assert starts, "any six consecutive degrees hold two tones of a triad"
+            assert all(drawn < offset < drawn + 7 for offset in starts), (anchor, starts)
+
+    def test_place_bar_counts_rubbing_only_off_the_bar_chord(self) -> None:
+        """Two tones of the bar's own chord are a voicing; only the notes off
+        it can rub the bass, and those are the ones the licence pass would
+        snap away anyway. The count is what steers the octave choice, so an
+        exemption that leaked into it would let a real collision through."""
+        _rank, _shift, _outside, rubbing, _entrance = _place_bar(
+            [64], prev_pitch=None, apex=False, bass_pitches=(65,)
+        )
+        assert rubbing == 1, "64 against a sounding 65 is the m2 the linter refuses"
+        _rank, _shift, _outside, exempt, _entrance = _place_bar(
+            [64],
+            prev_pitch=None,
+            apex=False,
+            bass_pitches=(65,),
+            chord_pcs=frozenset({64 % 12}),
+        )
+        assert exempt == 0
+
+    def test_place_bar_ranks_both_bar_shapes_on_one_scale(self) -> None:
+        """The apex ranks its octaves on its own key order — the height it
+        earns comes before the approach — and every other bar on the
+        approach. What the two shapes share is the front: the notes left
+        outside the band, then the notes left rubbing the bass. The caller
+        compares a start's ranking against these, so `_RANK_RUBBING` names
+        the index in both and this is what keeps it honest."""
+        for apex in (False, True):
+            rank, _shift, outside, rubbing, _entrance = _place_bar(
+                [64, 67], prev_pitch=None, apex=apex, bass_pitches=(65,)
+            )
+            assert len(rank) == (8 if apex else 7), (apex, rank)
+            assert rank[0] == outside, (apex, rank)
+            assert rank[_RANK_RUBBING] == rubbing, (apex, rank, rubbing)
 
 
 class TestExpressionModel:
@@ -753,20 +1185,76 @@ class TestRhythmVocabulary:
                 assert span >= note.duration_ticks
 
     def test_anacrusis_pickups_lead_into_the_bar(self) -> None:
-        out = compose(_spec(Mood.ELECTRIFYING, duration=60))
-        ppq = out.notation_score.ppq
-        ticks_per_bar = 4 * ppq
-        # True pickups are the appended half-bar notes at the last
-        # eighth slot; 16th-op notes can land at the same tick, so the
-        # duration is what distinguishes them.
-        pickups = [
-            n
-            for n in self._melody(out)
-            if n.tick % ticks_per_bar == ticks_per_bar - ppq // 2
-            and n.duration_ticks == ppq // 2
-        ]
-        assert pickups, "no eighth-note pickups rendered"
-        assert len(pickups) >= 10
+        """Where the melody leaves its bar's last eighth, the note it puts
+        there leads into the bar it abuts: it steps out of the note before
+        it and it is a tone of the chord it enters.
+
+        A score cannot tell a pickup from the bar's own last slot — both
+        abut the bar line and both are eighth notes — so the two are told
+        apart by harmony, which is what distinguishes them in the music.
+        A note there that is a tone of the bar it sits in is the bar's own
+        last slot and is left alone; one that is not is a pickup on the
+        next chord (or a licensed passing tone), and is required to step
+        out of its predecessor and to belong to the bar it leads into.
+
+        Asserted over several seeds as a floor rather than a fixed count
+        at one. Whether a bar leaves its last eighth free is a rhythm
+        draw, and whether the free eighth finds a step onto a tone of the
+        next chord is a harmony draw on top of it — so a fixed count
+        measures the order the draws happen to fall in, which is what the
+        melody rewrite changed, and not the device, which it did not.
+        Measured across seeds, roughly a quarter to a half of bars leave
+        that eighth and the anacrusis itself lands in several of them.
+        """
+        for seed in (42, 1, 7, 99):
+            out = compose(_spec(Mood.ELECTRIFYING, duration=60, seed=seed))
+            score = out.notation_score
+            ppq = score.ppq
+            ticks_per_bar = 4 * ppq
+            melody = self._melody(out)
+            last_eighth = [
+                (index, note)
+                for index, note in enumerate(melody)
+                if note.tick % ticks_per_bar == ticks_per_bar - ppq // 2
+                and note.duration_ticks == ppq // 2
+            ]
+            bars = out.arrangement.total_bars_with_coda
+            assert len(last_eighth) >= 3, (
+                f"seed {seed}: only {len(last_eighth)} of {bars} bars left "
+                "their last eighth for a leading note"
+            )
+            for index, note in last_eighth:
+                bar = note.tick // ticks_per_bar
+                chord = set(out.chord_bars[bar])
+                if note.pitch_midi % 12 in chord:
+                    continue  # the bar's own last slot, part of its line
+                # Not a tone of the bar it sits in, so it is a pickup on
+                # the next chord or a licensed stepwise tone. Both are
+                # entered by step, and the harmony it belongs to is the
+                # bar it abuts.
+                into_next = (
+                    set(out.chord_bars[bar + 1]) if bar + 1 < len(out.chord_bars) else set()
+                )
+                previous = melody[index - 1] if index else None
+                stepped = (
+                    previous is not None
+                    and 0 < abs(note.pitch_midi - previous.pitch_midi) <= STEP_MAX_SEMITONES
+                )
+                assert stepped, (
+                    f"seed {seed}: the note at {note.tick} leaves bar {bar}'s "
+                    f"chord {sorted(chord)} without stepping out of {previous}"
+                )
+                assert note.pitch_midi % 12 in into_next or legal_non_chord_tone(
+                    note,
+                    prev=previous,
+                    nxt=melody[index + 1] if index + 1 < len(melody) else None,
+                    bar_start_tick=bar * ticks_per_bar,
+                    ppq=ppq,
+                    diatonic_pcs=bar_diatonic_pcs(out.chord_bars[bar], out.key),
+                ), (
+                    f"seed {seed}: the note at {note.tick} is a tone of neither "
+                    f"bar {bar} nor bar {bar + 1} and is not a licensed tone"
+                )
 
     def test_sheet_engraves_ties(self) -> None:
         from saimc.render.sheet import _tie_modes, notation_score_to_musicxml
@@ -1155,13 +1643,22 @@ class TestHarmonyVoice:
         assert cc64_voices == {1, 3}
 
     def test_drum_set_plan_is_byte_identical_to_the_pre_ensemble_layout(self) -> None:
-        """The scalar drum-set spec's plan must not have moved.
+        """The scalar drum-set spec's plan must not have moved by accident.
 
-        The SHA-256 of the plan's canonical JSON, computed at the commit
-        just before the ensemble landed, pins the Phase 2 drum-kit
-        behaviour: no melody legato or pedal, kit humanization only.
-        Changing this pin on purpose means changing drum-set sound on
-        purpose.
+        The SHA-256 of the plan's canonical JSON pins the drum-set layout
+        down to the note: no melody legato or pedal, kit humanization
+        only, exactly as the scalar-drum spec played before the ensemble
+        landed. Nothing about the kit has changed — the hash is the whole
+        plan, so it also covers the melody the plan carries, and it was
+        re-based once, deliberately, when the melody walk was rewritten to
+        move in scale degrees instead of chord tones (the plan's melody
+        events are different notes now; the kit's own events are not).
+
+        So this pin guards the *layout*: if it moves when neither the kit
+        behaviour nor the melody has been changed on purpose, something
+        reordered or re-timed the plan. A later change to the melody or
+        the bass that is intended means re-basing the hash on a plan read
+        by eye first.
         """
         out = compose(
             _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
@@ -1170,7 +1667,7 @@ class TestHarmonyVoice:
             out.performance_plan, sort_keys=True, default=lambda o: asdict(o)
         )
         assert hashlib.sha256(payload.encode()).hexdigest() == (
-            "24dd3111f71b8a11434daf6be015873d27cebaa154970d124e220b622321d846"
+            "6e535c9c3419ab1fdfa0f3312eae3f3c1933764a5561974a3b336b7a67656214"
         )
 
     def test_sidecar_round_trips_voice_instruments(self) -> None:

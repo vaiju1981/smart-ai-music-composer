@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import pairwise
@@ -52,18 +52,25 @@ from saimc.compose.duration import (
 )
 from saimc.compose.ensemble import Ensemble, resolve_ensemble
 from saimc.compose.forms import (
+    LEAP_MIN_SEMITONES,
     PHRASE_BARS,
+    STEP_MAX_SEMITONES,
     ChordSlot,
     ChordTemplate,
     apply_final_cadence,
+    bar_scale_intervals,
     chord_intervals,
+    chord_tone_degrees,
     get_template_for_form,
     key_root_midi,
     key_signature_from_spec,
     scale_pitch_offset,
+    scale_walk,
 )
-from saimc.compose.linter import LintIssue, lint
+from saimc.compose.linter import DISSONANT_INTERVALS, LintIssue, lint
 from saimc.compose.motif import (
+    CHORD_TONE_DEGREES,
+    LEAP_DEGREES,
     BarSlot,
     MotifVariant,
     apply_rhythm,
@@ -328,6 +335,14 @@ def _build_score(
     section_starts: list[int] = []  # start_tick of each section
     cursor_tick = 0
     prev_bass: int | None = None
+    # The melody's last sounding pitch and the interval that arrived
+    # there, carried across section boundaries exactly as the bass walk
+    # is: a section boundary is a bar line, and the bar after it has to
+    # join the line the way any other bar does. Without this the first
+    # bar of every section was placed against nothing, which is where
+    # the widest entrances and the unanswerable ones came from.
+    prev_melody: int | None = None
+    prev_melody_leap: int | None = None
     bars_since_breath = 0
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
@@ -372,6 +387,8 @@ def _build_score(
             seed_for_variation=rng_base_seed + section_idx,
             mood=spec.mood.value,
             prev_bass=prev_bass,
+            prev_melody=prev_melody,
+            prev_melody_leap=prev_melody_leap,
             is_final_section=is_final_section,
             key_offset=key_offset,
             melody_from_bar=arrangement.intro_bars if section_idx == 0 else 0,
@@ -399,6 +416,14 @@ def _build_score(
         bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
         if bass_notes:
             prev_bass = max(bass_notes, key=lambda n: n.tick).pitch_midi
+        melody_notes = [n for n in section_notes if n.voice_id == VOICE_MELODY]
+        if melody_notes:
+            prev_melody = melody_notes[-1].pitch_midi
+            prev_melody_leap = (
+                melody_notes[-1].pitch_midi - melody_notes[-2].pitch_midi
+                if len(melody_notes) >= 2
+                else None
+            )
         cursor_tick += arrangement.form_bars * bar_ticks(time_signature)
 
     # Optional coda: append a coda-length tail using the same chord
@@ -419,6 +444,8 @@ def _build_score(
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
             mood=spec.mood.value,
             prev_bass=prev_bass,
+            prev_melody=prev_melody,
+            prev_melody_leap=prev_melody_leap,
             # The outro thins out: the coda opens bass alone, and a
             # long-piece modulation stays lifted through the ending.
             key_offset=MODULATION_OFFSET if long_piece else 0,
@@ -531,6 +558,8 @@ def _generate_section(
     seed_for_variation: int,
     mood: str,
     prev_bass: int | None = None,
+    prev_melody: int | None = None,
+    prev_melody_leap: int | None = None,
     is_final_section: bool = False,
     key_offset: int = 0,
     melody_from_bar: int = 0,
@@ -545,16 +574,20 @@ def _generate_section(
     the bar's midpoint sounds the next chord tone above it — so the
     bass line moves stepwise through inversions instead of jumping
     root to root, and the walk carries across section boundaries via
-    `prev_bass`. The melody is an octave above the chord root and
-    develops the section's motif: every bar replays the motif through
-    one classic operation (repetition, transposition, sequence,
-    inversion, truncation, ornament) onto that bar's chord. Velocity
-    follows an arch across the section with a slight accent on
+    `prev_bass`. The melody carries too, through `prev_melody` and
+    `prev_melody_leap`: a section opens on the line the last one left
+    off rather than restarting it. The melody develops the section's
+    motif: every bar
+    replays it through one classic operation (repetition, transposition,
+    sequence, inversion, truncation, ornament) onto that bar's chord,
+    walked in the chord's own scale and placed in the tessitura band, so
+    a bar joins the one before it by step wherever the chord allows.
+    Velocity follows an arch across the section with a slight accent on
     downbeats. Everything is derived from `seed_for_variation`, so
     repeated sections sound different but stay deterministic.
 
-    Phrase shape: one bar per section is the melodic apex (raised an
-    octave-portion above the line, near the 60% mark); bars ending a
+    Phrase shape: one bar per section is the melodic apex (placed at the
+    top of the band, near the 60% mark); bars ending a
     4-bar phrase lift off early into a breath — on the dominant's root
     when the chord there is the V (a half cadence), otherwise on a
     shortened chord tone. The breath is guaranteed, not just likely:
@@ -575,6 +608,14 @@ def _generate_section(
     notes: list[NoteEvent] = []
     melody_notes: list[NoteEvent] = []
     bar_pcs: list[tuple[int, ...]] = []
+    # The melody's last sounding pitch, carried bar to bar so each bar is
+    # placed where it continues the line rather than restarting it, and
+    # the interval that arrived there — a bar entered after a leap is
+    # the bar that has to answer it. Both are seeded from the previous
+    # section's last melody note, so the seam between sections is
+    # weighed like any other bar line.
+    prev_melody_pitch: int | None = prev_melody
+    last_melody_leap: int | None = prev_melody_leap
     # A breath (or half cadence) at bar g means the melody runs
     # continuously for bar g+1 onward; the deficit inherited from the
     # previous section counts against this one's bars. A fresh section
@@ -714,7 +755,10 @@ def _generate_section(
                 continue
             is_final_bar = is_final_section and bar_index == total_bars - 1
             is_apex = bar_index == apex_bar
-            is_half_cadence = degree == 4 and bar_index % 4 == 3 and not is_final_bar
+            # The bar's own chord, not the template's last one: reading
+            # the loop-leaked `degree` here meant a half cadence could
+            # only ever fall on a form whose final slot was the dominant.
+            is_half_cadence = slot.degree == 4 and bar_index % 4 == 3 and not is_final_bar
             breathe = (
                 not is_final_bar and not is_half_cadence and rng.random() < 0.18
             )
@@ -732,57 +776,50 @@ def _generate_section(
             else:
                 variant = vary_motif(motif, rng)
             # Anacrusis: when the next bar exists, the pickup leads into
-            # it from the pickup chord's tones — root first, but a tone
-            # that would sound a close m2/M7 against the bar's sounding
-            # bass is skipped, and if every candidate clashes the
-            # pickup is dropped. Zero-length slots (a template
-            # truncation artifact) are skipped — they never sound, so
-            # anticipating them would be wrong.
-            pickup_pitch: int | None = None
-            pickup_root: int | None = None
-            pickup_tones: tuple[int, ...] = ()
+            # it from the pickup chord's tones — the one nearest the note
+            # it follows, skipping any candidate that would sound a close
+            # m2/M7 against the bar's sounding bass. If every candidate
+            # clashes the pickup is dropped. Zero-length slots (a
+            # template truncation artifact) are skipped — they never
+            # sound, so anticipating them would be wrong.
+            pickup: tuple[int, tuple[int, ...]] | None = None
             if not is_final_bar:
                 if _bar < dur - 1:
-                    pickup_root, pickup_tones = chord_root, chord_tones
+                    pickup = (chord_root, chord_tones)
                 else:
                     next_slot = next(
                         (c for c in chords[slot_index + 1 :] if c[2] > 0), None
                     )
                     if next_slot is not None:
-                        pickup_root, pickup_tones = next_slot[0], next_slot[1]
-                if pickup_root is not None:
-                    pickup_pitch = next(
-                        (
-                            candidate
-                            for candidate in (
-                                min(107, pickup_root + 12 + tone) for tone in pickup_tones
-                            )
-                            if all(
-                                abs(candidate - bass) not in (1, 11)
-                                for bass in (bass_pitch, bass_fifth)
-                            )
-                        ),
-                        None,
-                    )
-            melody_notes.extend(
-                _melody_bar(
-                    variant=variant,
-                    chord_root=chord_root + 12,
-                    chord_tones=chord_tones,
-                    anchor=anchor,
-                    start_tick=bar_tick,
-                    bar_ticks=ticks_per_bar,
-                    rng=rng,
-                    position=bar_pos,
-                    ticks_per_bar=ticks_per_bar,
-                    seed_for_variation=seed_for_variation + bar_index * 101,
-                    mood=mood,
-                    is_final_bar=is_final_bar,
-                    half_cadence=is_half_cadence,
-                    apex=is_apex,
-                    breathe=breathe,
-                    pickup_pitch=pickup_pitch,
-                )
+                        pickup = (next_slot[0], next_slot[1])
+            bar_melody = _melody_bar(
+                variant=variant,
+                chord_root=chord_root,
+                chord_tones=chord_tones,
+                scale=bar_scale_intervals(slot.degree, key, borrowed=slot.borrowed),
+                anchor=anchor,
+                prev_pitch=prev_melody_pitch,
+                start_tick=bar_tick,
+                bar_ticks=ticks_per_bar,
+                rng=rng,
+                position=bar_pos,
+                ticks_per_bar=ticks_per_bar,
+                seed_for_variation=seed_for_variation + bar_index * 101,
+                mood=mood,
+                is_final_bar=is_final_bar,
+                half_cadence=is_half_cadence,
+                apex=is_apex,
+                breathe=breathe,
+                pickup=pickup,
+                bass_pitches=(bass_pitch, bass_fifth),
+                prev_leap=last_melody_leap,
+            )
+            melody_notes.extend(bar_melody)
+            prev_melody_pitch = bar_melody[-1].pitch_midi
+            last_melody_leap = (
+                bar_melody[-1].pitch_midi - bar_melody[-2].pitch_midi
+                if len(bar_melody) >= 2
+                else None
             )
             bar_index += 1
 
@@ -1146,12 +1183,911 @@ def _downbeat_anchor(rng: random.Random, tone_count: int) -> int:
     return 2 % tone_count
 
 
+# The melody's tessitura: E4 to C6, twenty semitones. Wide enough for a
+# phrase peak and for a line that moves, narrow enough that the piece's
+# total range stays inside what a singer could hold and that the
+# accompaniment has a register of its own below it. Every bar is placed
+# inside this band, so the piece's range is bounded by construction
+# rather than by a clamp applied after the fact.
+#
+# The extra semitone over the twelfth it reads as is not slack: a bar is
+# entered from the previous bar's last note, and that note sits at the
+# top of the band whenever the bar before it was the phrase's peak. A
+# twelve-semitone line reaching the band's floor then has exactly one
+# register it may sound in, and the way into it from the top is a
+# fourteenth — wider than `_MAX_ENTRANCE_SEMITONES` will allow. One
+# semitone more gives the same line a register whose entrance is an
+# eleventh, so the band has to be wide enough for the walk to have the
+# choice at all.
+MELODY_LOW_MIDI: int = 64
+MELODY_HIGH_MIDI: int = 84
+_MELODY_CENTRE_MIDI: int = (MELODY_LOW_MIDI + MELODY_HIGH_MIDI) // 2
+# How far a bar's walk may reach from its anchor before it is folded
+# back an octave. Ten degrees is at most 18 semitones in either diatonic
+# mode, so a bar that stays inside this window fits the band above and
+# is never folded for reasons the motif did not already imply.
+_WALK_REACH_DEGREES: int = 5
+# How far from the drawn anchor a bar may be restated, in scale degrees:
+# an octave each way. The band is narrower than that in every direction
+# that matters, so a wider lattice would only offer placements the
+# tessitura refuses — but a narrower one would leave the octave grid
+# (`_place_bar`) as the only way to move a line, and an octave step is
+# twelve semitones when the entrance wanted three.
+_START_REACH_DEGREES: int = 8
+# The widest interval a bar may be entered on. A leap is recovered by the
+# step that follows it, and past an octave there is no answer the ear
+# accepts: the line is lost before the recovery arrives. It binds in one
+# place — a bar whose line fits the band in a single register and whose
+# every restatement rubs the bass has no way in but a leap, and this says
+# which leap. Inside the octave, size is still the caller's tiebreak.
+_MAX_ENTRANCE_SEMITONES: int = 12
+# Which field of `_place_bar`'s rank tuple counts the notes left rubbing
+# the bass. It is the second field of both rank shapes — the apex's and
+# every other bar's — and it is read by `_melody_bar`, which retries a bar
+# whose winner rubs.
+_RANK_RUBBING: int = 1
+
+
+def _fold_into_band(pitch: int, low: int, high: int) -> int:
+    """Shift a pitch by whole octaves until it lies inside [low, high].
+
+    An octave keeps the pitch name, so a folded note is still the chord
+    tone or scale degree it was written as. The band must be at least an
+    octave wide for this to terminate.
+    """
+    while pitch < low:
+        pitch += 12
+    while pitch > high:
+        pitch -= 12
+    return pitch
+
+
+def _bound_walk(degrees: list[int], centre_degree: int) -> list[int]:
+    """Fold a bar's degree walk into one octave of where it starts.
+
+    A sequence climbs a chord tone per replay, and a long bar replays the
+    motif many times, so without this the line walks out of the
+    instrument. Folding is an octave displacement — what a sequence does
+    at its seam anyway — and the leap-answering pass that follows treats
+    it as the leap it is.
+    """
+    low = centre_degree - _WALK_REACH_DEGREES
+    high = centre_degree + _WALK_REACH_DEGREES
+    folded: list[int] = []
+    for degree in degrees:
+        while degree > high:
+            degree -= 7
+        while degree < low:
+            degree += 7
+        folded.append(degree)
+    return folded
+
+
+def _answer_leaps(
+    degrees: list[int],
+    *,
+    fixed_tail: int = 0,
+    remainders: tuple[int, ...] = (0, 2, 4),
+) -> list[int]:
+    """Answer every leap in a bar's degree walk with a turn back.
+
+    A leap that is not answered is the fault a listener notices first,
+    and the answer has to survive the licence pass to be heard at all: a
+    single step back lands on a non-chord tone, and the licence covers
+    that only when it is entered *and* left by a step. So the answer is
+    the whole figure — the step back, and the step that leaves it, which
+    is a passing tone between the two chord tones either side of it.
+
+    The turn comes back the way the leap went, so a phrase that has
+    climbed answers downward and one that has dived answers up.
+
+    The leap itself is kept whenever it can be: a leap the licence can
+    cover lands *on* the harmony — three degrees from the chord's fifth
+    is its root — and a leap that lands off it cannot be licensed at all,
+    because a non-chord tone is entered by a step or not at all. That
+    second leap is not answered but undone: the landing steps back to
+    where the line came from, which leaves the bar's contour intact and
+    one leap poorer rather than one dissonance richer.
+
+    `fixed_tail` is how many of the bar's last slots the answer may not
+    move — the closing gesture's note, which has to land where it lands.
+    A leap into one of those is answered from the other side instead:
+    the note *before* the landing takes the step, which is how a cadence
+    is approached in the first place. Rewriting the note before a
+    landing can leave a leap before *that* one, so the loop walks back
+    over the slots it has rewritten.
+
+    A slot the pass has written as the *approach* to its pair is settled,
+    and settled slots are never written again. Without that, two repairs
+    that face each other undo one another on every pass and the walk never
+    finishes: a bar whose answer has to come from before the landing can
+    be re-leapt by the repair of the pair before it — the engine hung on
+    exactly that. Every walk back settles one more slot at a lower index
+    than the last, so the walk cannot go round, and a leap whose both
+    sides are settled is left to the bar after this one, whose entrance
+    answers it (`_entry_answer`).
+    """
+    out = list(degrees)
+    last_mutable = len(out) - fixed_tail - 1
+    settled = [False] * len(out)
+    index = 0
+    while index + 1 < len(out):
+        leap = out[index + 1] - out[index]
+        if abs(leap) < LEAP_DEGREES:
+            index += 1
+            continue
+        back = -1 if leap > 0 else 1
+        landing = index + 1
+        if not settled[landing]:
+            if out[landing] % 7 not in remainders:
+                # The landing needs the licence and cannot have it: a step
+                # is the only way into a non-chord tone. The line keeps its
+                # shape and loses the leap instead.
+                out[landing] = out[index] + back
+                if index + 2 <= last_mutable and not settled[index + 2]:
+                    out[index + 2] = out[landing] + back
+                index += 1
+                continue
+            if (
+                index + 3 <= last_mutable
+                and not settled[index + 2]
+                and not settled[index + 3]
+            ):
+                # Landing on a chord tone, with room for the whole answer.
+                out[index + 2] = out[landing] + back
+                out[index + 3] = out[index + 2] + back
+                index += 3
+                continue
+        if settled[index]:
+            # Nothing left on this pair that may be written, so the leap
+            # stands and the next bar's entrance is what answers it.
+            index += 1
+            continue
+        # No room after the landing for the turn: the landing is where
+        # the bar has to be, so the note before it steps into it.
+        out[index] = out[landing] + back
+        settled[index] = True
+        index = max(index - 1, 0)
+    return out
+
+
+def _licit_line(
+    degrees: list[int],
+    *,
+    remainders: tuple[int, ...],
+    fixed_tail: int = 0,
+) -> list[int]:
+    """Reshape a walk so every non-chord tone is a passing or neighbour tone.
+
+    A non-chord tone owes the licence a single degree on each side: it is
+    entered by a step and left by a step, and one degree is a semitone or
+    a whole tone in every diatonic mode. That makes the licence a
+    statement about the *walk* — a line that arrives at a non-chord tone
+    by a third has already broken the rule, and one that leaves by a
+    third breaks it again — and it makes the repair a local one: the
+    offending note moves by a degree, the way it was already going.
+
+    Only the notes around a non-chord tone move, and they move by a
+    single degree, so a bar's rhythm is untouched and its contour barely
+    shifts. Of the two degrees the moved note could take, the one nearer
+    the note on its far side wins, which is what keeps the repair from
+    opening a gap of its own.
+
+    An earlier version of this repair snapped the non-chord tone onto the
+    chord instead. That is the right answer for a note with nowhere to
+    go, but as a general repair it moves the *wrong* note: it puts the
+    decorated tone on the harmony and leaves the harmony's own tones a
+    third or a fourth apart, which is the very leap the licence exists to
+    prevent. Bending the line around the non-chord tone keeps the music
+    and removes the fault.
+
+    `fixed_tail` is the bar's closing gesture, which has to land where it
+    lands; a line that cannot bend toward it is left for the snap pass,
+    which is the one repair allowed to move a note the bar has pinned.
+    """
+    out = list(degrees)
+    count = len(out)
+    last_mutable = count - fixed_tail - 1
+    for index in range(1, count):
+        if out[index] % 7 in remainders and out[index - 1] % 7 in remainders:
+            continue
+        gap = out[index] - out[index - 1]
+        if abs(gap) == 1:
+            continue
+        # A repeat is as unwalkable here as a leap: the non-chord tone
+        # has to be left by a degree, and staying still is not one.
+        upward = gap > 0 if gap else _was_rising(out, index)
+        far = out[index + 1] if index + 1 < count else None
+        if index <= last_mutable:
+            out[index] = _bent_step(out[index - 1], upward, far)
+        elif index - 1 <= last_mutable:
+            out[index - 1] = _bent_step(out[index], not upward, out[index - 2] if index > 1 else None)
+    return out
+
+
+def _bent_step(anchor: int, upward: bool, far: int | None) -> int:
+    """One degree from `anchor`, in the direction the line was going.
+
+    A bend is the licence's repair, and a leap is the fault that licence
+    exists to prevent, so a candidate that leaves `far` a step away
+    outranks one that is merely nearer to it — a bend that closes the gap
+    it was called for and opens a fourth on the far side has repaired
+    nothing. Where neither is a step away, the other candidate wins only
+    when it leaves `far` strictly nearer, which is the older rule and
+    still the one that keeps a line's intervals from widening.
+    """
+    up, down = anchor + 1, anchor - 1
+    if far is not None:
+        ordered = (up, down) if upward else (down, up)
+        for step in ordered:
+            if abs(far - step) <= CHORD_TONE_DEGREES:
+                return step
+        if abs(far - ordered[1]) < abs(far - ordered[0]):
+            return ordered[1]
+    return up if upward else down
+
+
+def _was_rising(degrees: list[int], index: int) -> bool:
+    """Whether the line was rising before a repeated note."""
+    for position in range(index - 1, 0, -1):
+        step = degrees[position] - degrees[position - 1]
+        if step:
+            return step > 0
+    return True
+
+
+def _snap_to_chord(
+    degree: int,
+    *,
+    tone_count: int,
+    prefer_up: bool,
+    neighbours: tuple[int, ...] = (),
+) -> int:
+    """The bar's nearest chord degree to `degree`, preferring one direction.
+
+    A chord scale's tones sit on every other degree, so a tone that is
+    not a chord tone always has one within two degrees — which is what
+    makes this a snap and not a search.
+
+    `neighbours` are the degrees the snapped note sits between, and a
+    snap decides the intervals *they* are heard on, so what the chord
+    tone costs them is weighed before how far the note itself moves:
+
+    - A neighbour the licence covers is a step away, and it has to stay
+      one. Snapping a note onto a chord tone a third from such a
+      neighbour leaves the neighbour a note the licence cannot cover any
+      more, so the pass snaps that one too — and two snaps facing away
+      from each other widen a step into a leap, which is the fault the
+      whole line is written to avoid.
+    - A chord-tone neighbour needs no licence, but a leap between two
+      chord tones is still a leap: the line has to answer it, and the
+      room to answer it may not be there. So a leap behind the note
+      costs less than a stranded neighbour and more than neither.
+
+    Only among chord tones that are equally kind to the neighbours does
+    the smaller move win, and then the direction the line was going.
+    """
+    remainders = chord_tone_degrees(tone_count)
+    candidates = [
+        degree + offset
+        for offset in (1, -1, 2, -2)
+        if (degree + offset) % 7 in remainders
+    ]
+
+    def cost(candidate: int) -> tuple[int, int]:
+        """How many neighbours the move leaves stranded, and how many leaping."""
+        stranded = leapt = 0
+        for neighbour in neighbours:
+            gap = abs(neighbour - candidate)
+            if neighbour % 7 in remainders:
+                leapt += gap >= LEAP_DEGREES
+            else:
+                stranded += gap != 1
+        return stranded, leapt
+
+    return min(
+        candidates,
+        key=lambda candidate: (
+            *cost(candidate),
+            abs(candidate - degree),
+            0 if (candidate > degree) == prefer_up else 1,
+        ),
+    )
+
+
+def _hold_tied_pairs(slots: list[BarSlot]) -> list[BarSlot]:
+    """Write a tied pair as the one pitch it is.
+
+    A tie joins two noteheads into a single sound, so the second of them
+    has to carry the first's degree. The passes between the rhythm
+    library and the licence each rewrite a note of the line without
+    knowing which notes are tied to their neighbour — the entry turn
+    writes the bar's opening two moves outright — and a pair left at two
+    pitches is not a tie at all: the engraver draws a slur between
+    different heights, and the performance layer, which plays a tied
+    continuation as nothing, drops a pitch the line meant to sound.
+
+    Both halves are chord tones of the bar's chord scale when the rhythm
+    library drew the tie, so holding the pair together invents no
+    dissonance; it also cannot open a leap, since the tie's own pitch is
+    the one already there.
+    """
+    out = list(slots)
+    for index, slot in enumerate(out[:-1]):
+        if slot[3]:
+            offset, duration, _degree, tie = out[index + 1]
+            out[index + 1] = (offset, duration, slot[2], tie)
+    return out
+
+
+def _legal_slots(
+    slots: list[BarSlot],
+    *,
+    tone_count: int,
+    chord_root: int,
+    scale: tuple[int, ...],
+    avoid_pcs: frozenset[int] = frozenset(),
+) -> list[BarSlot]:
+    """Snap every slot the passing-tone licence cannot cover to a chord tone.
+
+    A slot sounding a chord tone of the bar (`forms.chord_tone_degrees`)
+    needs no licence. A slot that does not is a non-chord tone, and the
+    licence covers it only when it is unaccented, no longer than a
+    quarter, and entered and left by a step that abuts it on both sides
+    (`linter.legal_non_chord_tone`). Whatever fails those is snapped to
+    the nearest chord degree in the direction the line was already
+    moving, so the bar keeps its rhythm and its contour and the note
+    sounds the chord tone it was decorating instead of one the harmony
+    forbids.
+
+    `avoid_pcs` are the pitch classes of the bar's other sounding
+    voices, and a non-chord tone a semitone from one of them is snapped
+    whatever its surroundings: the collision check flags a m2 and a M7
+    between two sounding notes, and those are the same pair of pitch
+    classes an octave apart, so the pass decides in pitch class where no
+    octave placement can undo it. Only non-chord tones are affected — a
+    chord tone against a chord tone of the same bar is a voicing, which
+    the check exempts.
+
+    A tie holds one pitch across two noteheads, so a tied pair stands or
+    falls together and is snapped as a unit — otherwise the two halves
+    could snap opposite ways and the engraver would draw a tie between
+    two different pitches.
+    """
+    degrees = [slot[2] for slot in slots]
+    count = len(degrees)
+    if count == 0:
+        return slots
+    tied = [bool(slot[3]) for slot in slots]
+    remainders = chord_tone_degrees(tone_count)
+
+    def pitch_class(index: int) -> int:
+        """The slot's pitch class — what the octave placement cannot change."""
+        return (chord_root + scale[degrees[index] % 7]) % 12
+
+    def clashes(index: int) -> bool:
+        """Whether a non-chord tone here would rub another voice."""
+        return any(
+            (pitch_class(index) - other) % 12 in DISSONANT_INTERVALS
+            for other in avoid_pcs
+        )
+
+    def needs_snapping(index: int) -> bool:
+        if degrees[index] % 7 in remainders:
+            return False
+        if clashes(index):
+            return True
+        # The bar's first slot falls on the downbeat, and its last has no
+        # note inside the bar to step away to; either is unlicensable.
+        if index == 0 or index == count - 1:
+            return True
+        if slots[index][1] > PPQ:
+            return True
+        if tied[index] or tied[index - 1]:
+            return True
+        # Both neighbours must be a single degree away: one degree is a
+        # semitone or a whole tone, two is a third and no step.
+        return not (
+            abs(degrees[index] - degrees[index - 1]) == 1
+            and abs(degrees[index + 1] - degrees[index]) == 1
+        )
+
+    changed = True
+    while changed:
+        changed = False
+        for index in range(count):
+            if not needs_snapping(index):
+                continue
+            start = index - 1 if index > 0 and tied[index - 1] else index
+            stop = start + 1 if tied[start] else start
+            prefer_up = start > 0 and degrees[start] >= degrees[start - 1]
+            neighbours = tuple(
+                degrees[position]
+                for position in (start - 1, stop + 1)
+                if 0 <= position < count
+            )
+            for member in range(start, stop + 1):
+                degrees[member] = _snap_to_chord(
+                    degrees[member],
+                    tone_count=tone_count,
+                    prefer_up=prefer_up,
+                    neighbours=neighbours,
+                )
+            changed = True
+    return [
+        (slot[0], slot[1], degrees[index], slot[3])
+        for index, slot in enumerate(slots)
+    ]
+
+
+def _walk_shape(
+    variant: MotifVariant,
+    *,
+    bar_ticks: int,
+    tone_count: int,
+    closing_degree: int | None = None,
+) -> tuple[list[int], list[int]]:
+    """Walk one bar's motif: scale degrees and durations, in slot order.
+
+    The degrees are relative to the bar's anchor chord tone, and the
+    shape does not depend on which tone that is: every candidate start
+    sits a whole number of chord tones above the others, so the same
+    shape serves all of them, shifted.
+
+    `closing_degree` is written over the walk's last slot before the
+    leap answering runs, so the answer can step into the note the bar
+    has to land on rather than turn away from it. `_close_bar` writes
+    the same degree again once the start's offset is applied — the walk
+    here only has to know where the bar is going.
+
+    The walk is folded to within an octave of where it starts, its leaps
+    are answered by a turn back, and the line is bent so every note off
+    the chord is a step from both its neighbours. Those three passes are
+    what let the bar reach the licence already legal: the generator and
+    the linter have to agree note for note, and the safest way to agree
+    is for the walk to be written the way the linter reads it.
+    """
+    degrees: list[int] = []
+    durations: list[int] = []
+    offset = 0
+    degree = variant.anchor_offset
+    while offset < bar_ticks:
+        for cell in variant.motif:
+            if offset >= bar_ticks:
+                break
+            # The step is the move *into* the note, so it is taken before
+            # the note is emitted: the motif's first step is always 0 —
+            # "start on the bar's anchor tone" — and taking it afterwards
+            # sounded that step as a repeat of the anchor and dropped the
+            # last step the motif actually drew.
+            degree += cell.step
+            degrees.append(degree)
+            durations.append(min(cell.length_ticks, bar_ticks - offset))
+            offset += cell.length_ticks
+        if not variant.repeat:
+            break
+        # The sequence advances one chord tone per replay, so each replay
+        # starts on the next tone of the chord.
+        degree += CHORD_TONE_DEGREES
+    if not degrees:
+        return degrees, durations
+    if closing_degree is not None:
+        degrees[-1] = closing_degree
+    remainders = chord_tone_degrees(tone_count)
+    return (
+        _licit_line(
+            _answer_leaps(
+                _bound_walk(degrees, degrees[0]),
+                fixed_tail=1 if closing_degree is not None else 0,
+                remainders=remainders,
+            ),
+            remainders=remainders,
+        ),
+        durations,
+    )
+
+
+def _closing_tone(
+    closing_degree: int,
+    offset: int,
+    *,
+    half_cadence: bool,
+) -> int | None:
+    """The degree a bar closes on when its walk starts `offset` away.
+
+    The gesture is written in the bar's own frame — the walk was shaped
+    around it, so the last note steps into it — and a bar restated a
+    chord tone higher therefore closes one chord tone higher, with the
+    approach intact. What the gesture may not do is land somewhere the
+    phrase has not asked for: the half cadence rests on the root of the
+    V, the final bar on the tonic or its third (`closing_degree`, whose
+    chord degrees are 0 and 2). A start whose closing tone falls outside
+    that has no closing degree, and the caller drops it.
+    """
+    degree = closing_degree + offset
+    allowed = (0,) if half_cadence else (0, CHORD_TONE_DEGREES)
+    return degree if degree % 7 in allowed else None
+
+
+def _close_bar(
+    slots: list[BarSlot],
+    *,
+    degree: int | None,
+    ticks: int | None,
+) -> list[BarSlot]:
+    """Give a bar's last slot the phrase's closing gesture.
+
+    A half cadence lands on the chord's root, the final bar on the tonic
+    or its third, a breathing bar simply shortens what it had. The
+    gesture is applied to the *degrees*, before the licence pass runs,
+    so the pass approves the notes that are actually sounded — writing
+    the closing pitch in afterwards is what left a licensed passing tone
+    a leap away from the note it was licensed to step into.
+
+    `degree` arrives in the bar's own frame, the one the walk was shaped
+    in (see `_closing_tone`), not in the chord's: the degrees the slots
+    carry are already shifted by whatever tone of the chord the bar
+    starts on, and a closing degree that ignored that shift would be
+    written a chord tone or two below the line it has to step out of.
+    """
+    if not slots or (degree is None and ticks is None):
+        return slots
+    offset, duration, last_degree, tie = slots[-1]
+    closing = last_degree if degree is None else degree
+    out = list(slots)
+    if closing != last_degree and len(out) >= 2 and out[-2][3]:
+        # The gesture moved the note the bar ends on, so a tie into it is
+        # off: a tie holds one pitch and this one now lands elsewhere. The
+        # cadence is what the phrase asked for, so the tie yields.
+        head = out[-2]
+        out[-2] = (head[0], head[1], head[2], 0)
+    out[-1] = (offset, duration if ticks is None else ticks, closing, tie)
+    return out
+
+
+def _land_on_chord(
+    degrees: list[int],
+    durations: list[int],
+    *,
+    tone_count: int,
+    closing_degree: int | None,
+) -> tuple[list[int], list[int]]:
+    """Add the step that carries a bar's last note onto a chord tone.
+
+    A bar ends on the harmony: its last note has nothing after it to be
+    a passing tone *to*, so the licence cannot cover a non-chord tone
+    there. The composer's move is not to rewrite that note but to keep
+    walking — a line that has stepped down to A over a C chord takes one
+    more step to G — so the repair is one extra note, and the note it
+    was built to serve keeps the pitch the motif gave it.
+
+    One step always suffices: a non-chord tone is one degree from a
+    chord tone in a chord scale, so the landing is the note one degree
+    further along the line. A bar that already ends on a chord tone —
+    including every bar whose closing gesture put it there — is left
+    alone.
+    """
+    if not degrees or closing_degree is not None:
+        return degrees, durations
+    remainders = chord_tone_degrees(tone_count)
+    last = degrees[-1]
+    if last % 7 in remainders:
+        return degrees, durations
+    forward = -1 if len(degrees) < 2 or last <= degrees[-2] else 1
+    landing = last + forward
+    if landing % 7 not in remainders:
+        landing = last - forward
+    half = durations[-1] // 2
+    return [*degrees, landing], [*durations[:-1], durations[-1] - half, half]
+
+
+def _start_offsets(anchor: int, tone_count: int) -> tuple[int, ...]:
+    """Every chord tone a bar could be restated on, the drawn one first.
+
+    A bar is one line on one chord, and every tone of that chord is a
+    place the line can begin: restating it from the third or the fifth is
+    how a composer moves a phrase into another register without rewriting
+    a note of it. The offsets are the chord's own degrees — the ones
+    congruent to a chord tone modulo 7 — so the restatement keeps every
+    note of the line a chord tone of the bar (`_legal_slots` then has
+    nothing to snap and the line survives intact), and its reach is an
+    octave either way, which is as far as the tessitura band can use.
+
+    The drawn anchor leads the tuple because the caller keeps it when
+    nothing else fits better; the rest of the lattice is what lets a bar
+    come in by step when its own register would have made it leap.
+    """
+    drawn = CHORD_TONE_DEGREES * anchor
+    return (drawn, *(o for o in _chord_lattice(anchor, tone_count) if o != drawn))
+
+
+def _apex_starts(anchor: int, tone_count: int) -> tuple[int, ...]:
+    """The higher tones a section's peak bar may be restated on.
+
+    The apex is the one bar whose register is chosen rather than fitted,
+    and a *lift* is what makes it the peak: the line goes up a tone or
+    two of its own chord — a third or a fourth, the interval a phrase
+    rises by — while every other bar is placed where its entrance is
+    plainest. That bound is the whole point. Restating the bar an octave
+    up is the same statement made by a leap the listener has to recover
+    from, and it is what used to make the section's peak arrive as a
+    twelve-semitone jump rather than as the top of a climb.
+
+    The set is therefore the lattice's offsets strictly above the drawn
+    anchor and strictly inside the octave: never empty (any six
+    consecutive degrees hold two tones of a triad), and never a jump.
+    """
+    drawn = CHORD_TONE_DEGREES * anchor
+    return tuple(o for o in _chord_lattice(anchor, tone_count) if drawn < o < drawn + 7)
+
+
+def _chord_lattice(anchor: int, tone_count: int) -> tuple[int, ...]:
+    """The degrees congruent to a tone of the bar's chord, within reach."""
+    remainders = chord_tone_degrees(tone_count)
+    reach = _START_REACH_DEGREES
+    return tuple(
+        offset for offset in range(-reach, reach + 1) if offset % 7 in remainders
+    )
+
+
+def _entrance_cost(entrance: int | None, prev_leap: int | None) -> int:
+    """What it costs a bar to be entered the way a shift makes it enter.
+
+    A step into the bar is what a melody does and it is free. A skip — a
+    third or a fourth — still moves and still comes back easily, so it
+    is next. A repeat leaves the line where it was, which is a note the
+    bar did not need and a repeat the score counts. A leap is the one
+    entrance a bar should avoid, because a leap is what the *listener*
+    has to recover from.
+
+    When what ran into this bar was itself a leap, the entrance is the
+    note that answers it, so a step back the other way is the one
+    entrance that is free and every other way in is a fault: a step
+    carrying on the same way never answers, and a repeat is the line
+    refusing to move at all, which the score reads the same way. A skip
+    is no better there — a leap wants a step, and a third is not one.
+
+    The caller ranks equal costs by the size of the entrance, so the
+    grades are deliberately few: what matters is that a skip outranks a
+    repeat and both outrank a leap, not that the numbers are spaced.
+    """
+    if entrance is None:
+        return 0
+    distance = abs(entrance)
+    if prev_leap is not None and abs(prev_leap) >= LEAP_MIN_SEMITONES:
+        if 0 < distance <= STEP_MAX_SEMITONES and (entrance > 0) != (prev_leap > 0):
+            return 0
+        return 3
+    if distance == 0:
+        return 2
+    if distance <= STEP_MAX_SEMITONES:
+        return 0
+    return 1 if distance < LEAP_MIN_SEMITONES else 3
+
+
+def _opening_step(pitches: Sequence[int], slots: Sequence[BarSlot]) -> int | None:
+    """The bar's first *sounding* move, or None if it has only one note.
+
+    A tied continuation is not struck, so the interval the ear hears
+    first is the one out of the tie, not the one between the tied
+    noteheads. Both the seam's answer (`_entry_answer`) and the
+    placement's ranking ask whether the bar's opening move answers the
+    leap it came in on, and a tied opening read as a repeat answers
+    nothing — which would have the bar turn a seam it has already
+    answered and leave the answer unheard.
+    """
+    if len(pitches) < 2:
+        return None
+    index = 1
+    while index < len(pitches) and slots[index - 1][3]:
+        index += 1
+    return None if index >= len(pitches) else pitches[index] - pitches[0]
+
+
+def _answered(entrance: int | None, opening: int | None) -> bool:
+    """Whether a bar's opening move answers the leap it was entered on.
+
+    The rule the score measures is the same one a listener hears: a leap
+    is recovered by the step after it, and the step has to go back the
+    way the leap came. `opening` is the bar's own first interval, so a
+    bar entered by a step — or entered by nothing, at the top of the
+    piece — has nothing to answer and is trivially fine.
+    """
+    if entrance is None or abs(entrance) < LEAP_MIN_SEMITONES:
+        return True
+    if opening is None:
+        return False
+    return 0 < abs(opening) <= STEP_MAX_SEMITONES and (opening > 0) != (entrance > 0)
+
+
+def _entry_answer(entrance: int | None, opening: int | None) -> int | None:
+    """The degree step that answers a leap into the bar, or None if none is owed.
+
+    A leap across a bar line is a leap: the line has to come back, and
+    the note that comes back is the bar's second. One degree the other
+    way is a semitone or a whole tone in the opposite direction, which is
+    exactly what `_answered` asks for — the same repair `_answer_leaps`
+    makes inside a bar, applied to the one seam that pass cannot see.
+    """
+    if _answered(entrance, opening):
+        return None
+    assert entrance is not None
+    return -1 if entrance > 0 else 1
+
+
+def _place_bar(
+    pitches: list[int],
+    *,
+    prev_pitch: int | None,
+    apex: bool,
+    bass_pitches: tuple[int, ...] = (),
+    chord_pcs: frozenset[int] = frozenset(),
+    prev_leap: int | None = None,
+    opening: int | None = None,
+) -> tuple[tuple[float, ...], int, int, int, int]:
+    """Choose the octave a bar's line sits in, and how well the bar fits it.
+
+    The shift is applied to the whole bar, so the bar's intervals — its
+    motif — come through unchanged. The only interval the choice can
+    damage is the one into the bar from the previous bar's last note,
+    which is why the octaves are ranked by that interval once the
+    register is right (`_entrance_cost`).
+
+    `bass_pitches` is what the bar sounds against. A melody note a
+    semitone or a major seventh from a sounding bass note is the one
+    collision the linter refuses, and register is the honest way to
+    settle it: the note keeps its pitch class and moves away from the
+    bass an octave at a time, which no rewrite of the line can do. So a
+    shift that clears those is preferred to one that does not, after the
+    tessitura and before the approach — the band is not negotiable, the
+    collision is.
+
+    `chord_pcs` are the pitch classes of the bar's own chord, and they
+    are what keeps that count honest: the linter exempts a note that is a
+    chord tone of its bar, because two tones of the bar's chord are a
+    voicing and not a clash — a seventh chord may sound its own seventh
+    against its root. Only the notes off the chord are counted, and those
+    are the ones the licence pass would snap away from the bass anyway.
+
+    `opening` is the bar's first *sounding* move, which is the caller's
+    to know: a tied continuation is not struck, so the move the ear hears
+    is the one out of the tie. It is the interval the seam is judged on
+    and the octave cannot change it, so it is passed in rather than read
+    off the first two notes, which a tie leaves at one pitch.
+
+    An `apex` bar is the section's peak, and its height is already in
+    its start (`_apex_starts` lifts the line by a tone or two of its own
+    chord), so what is left for the octave here is only the band: the
+    smallest displacement that fits it wins, and a bar that would fit
+    where it stands is never raised an octave to reach a top it has not
+    earned. Among placements that fit, a bounded entrance outranks the
+    height, and the height outranks the entrance's grade: one bar per
+    section chooses its register rather than being fitted to it, and the
+    one interval it may not be bought with is the one wider than any
+    answer can cover.
+
+    Whether the entrance *is* answered is weighed before the height,
+    though, and that is not the same key as the entrance's grade: a
+    whole bar's line is the choice here, so a variant that comes back
+    from the leap into it at the price of a semitone or two of the
+    bar's top has bought the one thing the apex owes the phrase — the
+    peak is a peak because it is arrived at and left, not because it
+    is the highest note in a line that stalled on it.
+
+    Every other bar weighs its entrance first: a step is free, a repeat
+    is a note the bar did not need, a leap is what the listener has to
+    recover from — and a leap the bar's own opening step answers is
+    better than one it does not.
+
+    Returns the ranking the placement earned, in the order the keys were
+    weighed, then the shift itself, the number of notes it leaves outside
+    the band — zero for every bar the walk's own fold did not already
+    strain — the number of notes it still leaves rubbing the bass, and
+    what its entrance costs. The ranking is handed back so the caller
+    that chooses between *starts* ranks them on the same scale the
+    octaves were ranked on, rather than on a second one of its own.
+    """
+    best: tuple[tuple[float, ...], int, int, int, int] | None = None
+    for octave in range(-3, 4):
+        shift = 12 * octave
+        shifted = [pitch + shift for pitch in pitches]
+        outside = sum(
+            1 for pitch in shifted if not MELODY_LOW_MIDI <= pitch <= MELODY_HIGH_MIDI
+        )
+        rubbing = sum(
+            1
+            for pitch in shifted
+            if pitch % 12 not in chord_pcs
+            for bass in bass_pitches
+            if abs(pitch - bass) in DISSONANT_INTERVALS
+        )
+        step_into_bar = None if prev_pitch is None else shifted[0] - prev_pitch
+        entrance = _entrance_cost(step_into_bar, prev_leap)
+        # Among entrances of the same grade the smaller one wins: the
+        # octave grid can leave a bar with nothing but leaps to choose
+        # between, and a bar entered a fifth away is a bar entered well
+        # next to one entered a tenth away.
+        gap = 0 if step_into_bar is None else abs(step_into_bar)
+        # An entrance wider than an octave is a fault whatever else is on
+        # offer: the line is lost before the step that recovers it can
+        # arrive. So it is weighed before the entrance's grade — a repeat
+        # the score counts is the smaller price — and, for the apex,
+        # before the height, which may not be bought at that price.
+        within = 0 if gap <= _MAX_ENTRANCE_SEMITONES else 1
+        answered = 0 if _answered(step_into_bar, opening) else 1
+        if apex:
+            rank: tuple[float, ...] = (
+                outside,
+                rubbing,
+                abs(octave),
+                within,
+                answered,
+                -max(shifted),
+                entrance,
+                gap,
+            )
+        else:
+            rank = (
+                outside,
+                rubbing,
+                within,
+                entrance,
+                answered,
+                gap,
+                abs(shifted[0] - _MELODY_CENTRE_MIDI),
+            )
+        if best is None or rank < best[0]:
+            best = (rank, shift, outside, rubbing, entrance)
+    assert best is not None
+    return best[0], best[1], best[2], best[3], best[4]
+
+
+def _pickup_pitch(
+    *,
+    root: int,
+    tones: tuple[int, ...],
+    nearby: int | None,
+    bass_pitches: tuple[int, ...],
+) -> int | None:
+    """The anacrusis pitch leading into the next bar, or None if none fits.
+
+    A pickup is a chord tone of the bar it leads into, placed in the
+    tessitura band near the note it follows — the register it must
+    approach from, not an octave above it. Candidates that would sound a
+    close m2/M7 against the sounding bass are skipped; when every
+    candidate clashes the pickup is dropped rather than played against a
+    clash.
+
+    Among the playable ones the pickup is a *step* from the note it
+    follows — never that note itself, and never a leap. A pickup that
+    cannot step is not a pickup: the figure exists to leave the melody
+    before the downbeat, and a chord tone a third or more from the note
+    it follows would be a leap into the bar line with nothing after it
+    to answer it, which is worse than no anacrusis at all.
+    """
+    target = nearby if nearby is not None else _MELODY_CENTRE_MIDI
+    candidates = sorted(
+        (root + tone + 12 * octave for tone in tones for octave in range(-3, 4)),
+        key=lambda pitch: abs(pitch - target),
+    )
+    steps = [
+        candidate
+        for candidate in candidates
+        if MELODY_LOW_MIDI <= candidate <= MELODY_HIGH_MIDI
+        and 0 < abs(candidate - target) <= STEP_MAX_SEMITONES
+        and all(abs(candidate - bass) not in DISSONANT_INTERVALS for bass in bass_pitches)
+    ]
+    return steps[0] if steps else None
+
+
 def _melody_bar(
     *,
     variant: MotifVariant,
     chord_root: int,
     chord_tones: tuple[int, ...],
+    scale: tuple[int, ...],
     anchor: int,
+    prev_pitch: int | None,
     start_tick: int,
     bar_ticks: int,
     rng: random.Random,
@@ -1163,19 +2099,31 @@ def _melody_bar(
     half_cadence: bool = False,
     apex: bool = False,
     breathe: bool = False,
-    pickup_pitch: int | None = None,
+    pickup: tuple[int, tuple[int, ...]] | None = None,
+    bass_pitches: tuple[int, ...] = (),
+    prev_leap: int | None = None,
 ) -> list[NoteEvent]:
     """Render one bar of melody from a motif variant.
 
-    The motif is walked in chord-tone index space starting at `anchor`,
-    so the same shape lands correctly on every chord. When `repeat` is
-    set (the sequence operation) the motif keeps replaying from the top
-    — anchor advancing one tone per cycle — until the bar is full. The
-    bar's slots are then re-voiced through the mood's rhythm library
-    (`motif.apply_rhythm`): dotted figures, 16th subdivisions, ties.
+    The motif is walked in *scale degrees* of `scale` — the bar's own
+    chord scale, spelled from `chord_root` — so a step is a semitone or a
+    whole tone and the same shape lands correctly on every chord of the
+    template. When `repeat` is set (the sequence operation) the motif
+    keeps replaying from the top, the walk advancing one chord tone per
+    cycle, until the bar is full. The bar's slots are then re-voiced
+    through the mood's rhythm library (`motif.apply_rhythm`): dotted
+    figures, 16th subdivisions, ties, which move durations and never
+    pitches.
 
-    Phrase shape (carried over from the arpeggio walk):
-    - an `apex` bar is lifted an octave (capped to range) with a
+    Which of the chord's tones the bar starts on is then chosen: the
+    drawn `anchor` when it leaves the bar sounding, and another tone of
+    the same chord when it would force a leap into the bar from the
+    previous one. Each candidate is walked, snapped to the passing-tone
+    licence (`_legal_slots`) and placed in the tessitura, so the choice
+    is made on a bar that is already legal and in register.
+
+    Phrase shape:
+    - an `apex` bar is placed at the top of the tessitura, with a
       velocity lift — the section's melodic peak;
     - a `half_cadence` bar ends early on the chord's root, leaving a
       rest (the phrase breathes on the V);
@@ -1183,64 +2131,251 @@ def _melody_bar(
     - the `is_final_bar` of the piece resolves onto the tonic or its
       third, held to the bar line;
     - when the bar leaves at least an eighth of space at its end and
-      `pickup_pitch` is given (the next bar's anchor tone), an anacrusis
+      `pickup` is given (the next bar's root and tones), an anacrusis
       pickup note sounds on the last eighth, leading into the next bar.
+
+    `prev_leap` is the interval the previous bar ended on, when it was a
+    leap: this bar's entrance is the note that answers it, so the choice
+    of octave is told which way the answer has to go.
     """
-    # Collect (offset, duration, tone_index) slots first, then resolve
-    # pitches — the bar's last note can be replaced wholesale by the
-    # cadence/breath shape.
-    slots: list[tuple[int, int, int]] = []
-    offset = 0
-    cycle_anchor = anchor % len(chord_tones)
-    while offset < bar_ticks:
-        tone_index = cycle_anchor
-        for cell in variant.motif:
-            if offset >= bar_ticks:
-                break
-            duration = min(cell.length_ticks, bar_ticks - offset)
-            slots.append((offset, duration, tone_index))
-            offset += cell.length_ticks
-            tone_index += cell.step
-        if not variant.repeat:
-            break
-        cycle_anchor += 1
+    # The closing gesture's degree is decided before the walk is built:
+    # the walk has to know which note the bar lands on so its leap
+    # answering can approach that note by step. Its durations come later,
+    # because the rhythm library re-voices the bar's slots first.
+    closing_degree: int | None = None
+    if is_final_bar:
+        # The piece ends at home: tonic or its third.
+        closing_degree = 0 if rng.random() < 0.6 else CHORD_TONE_DEGREES
+    elif half_cadence:
+        closing_degree = 0
+
+    # Degrees first: a slot's pitch depends on the bar's octave, which
+    # depends on the whole bar. So the walk is settled in degree space
+    # before any pitch is spelled — walked, answered, and landed on a
+    # chord tone, which is what most of the passing-tone licence needs
+    # and what the rhythm library then dresses.
+    degrees, durations = _walk_shape(
+        variant,
+        bar_ticks=bar_ticks,
+        tone_count=len(chord_tones),
+        closing_degree=closing_degree,
+    )
+    degrees, durations = _land_on_chord(
+        degrees,
+        durations,
+        tone_count=len(chord_tones),
+        closing_degree=closing_degree,
+    )
+    slots = [
+        (sum(durations[:index]), duration, degrees[index])
+        for index, duration in enumerate(durations)
+    ]
     rhythm_slots: list[BarSlot]
     if is_final_bar:
         # The closing bar keeps the motif's own rhythm: the resolution
         # is the one event that should not be dressed up.
         rhythm_slots = [(o, d, t, False) for o, d, t in slots]
     else:
-        rhythm_slots = apply_rhythm(slots, rng=rng, mood=mood)
+        rhythm_slots = apply_rhythm(
+            slots,
+            rng=rng,
+            mood=mood,
+            remainders=chord_tone_degrees(len(chord_tones)),
+        )
+
+    # The gesture's durations are the last word on the bar, so they are
+    # taken after the rhythm library has re-voiced it.
+    closing_ticks: int | None = None
+    if rhythm_slots:
+        last_offset, last_duration, _last_degree, _last_tie = rhythm_slots[-1]
+        if is_final_bar:
+            # Held to the bar line.
+            closing_ticks = bar_ticks - last_offset
+        elif half_cadence or breathe:
+            # Lifted early, so a rest follows.
+            closing_ticks = last_duration // 2
+
+    # An apex bar is placed by height, not by its approach: it is the
+    # section's peak, and the top of the band is worth a wide interval
+    # into it. Every other bar tries each of the chord's tones as its
+    # start, cheapest approach winning, and keeps the drawn one when
+    # none of them makes the approach cheaper.
+    #
+    # The bar is placed before it is repaired. Register is the cheap fix
+    # for a rub against the sounding bass — a note a semitone from the
+    # bass a tenth below is the same note a semitone from it an octave
+    # up — and moving the whole bar never touches the line. Only a bar
+    # that rubs at every octave the tessitura allows is handed to the
+    # licence pass with the bass's pitch classes to steer around, and
+    # that pass rewrites the line, so a bar reaches it only when nothing
+    # else can be done.
+    drawn = CHORD_TONE_DEGREES * anchor
+    starts = (
+        _apex_starts(anchor, len(chord_tones))
+        if apex
+        else _start_offsets(anchor, len(chord_tones))
+    )
+    if closing_degree is not None:
+        # The closing gesture is a chord tone of the bar, and the bar it
+        # closes is one of the chord's tones tall. Which *one* is not
+        # free: the half cadence rests on the root of the V and the
+        # final bar on the tonic or its third, so a start whose closing
+        # tone lands elsewhere is not a candidate. This is also what
+        # keeps the landing a step away: the walk was shaped around the
+        # closing degree, so shifting the bar by the start's own offset
+        # moves the two together and the approach survives.
+        starts = tuple(
+            offset
+            for offset in starts
+            if _closing_tone(closing_degree, offset, half_cadence=half_cadence) is not None
+        ) or (drawn,)
+    bass_pcs = frozenset(pitch % 12 for pitch in bass_pitches)
+    chord_pcs = frozenset((chord_root + tone) % 12 for tone in chord_tones)
+    remainders = chord_tone_degrees(len(chord_tones))
+
+    def build(
+        start: int,
+        entry: int | None,
+        avoid_pcs: frozenset[int],
+    ) -> tuple[tuple[float, ...], int, list[BarSlot], int | None, int | None]:
+        """One start's bar: its line, its register, and how well it fits.
+
+        `entry` forces the bar's opening two moves (see `_entry_answer`) —
+        the turn that answers a leap into the bar — and is applied before
+        the closing gesture and the licence pass, so what is placed and
+        ranked is the line the bar will sound. A tie the rhythm library
+        drew is held across those rewrites (`_hold_tied_pairs`), so a
+        turn written onto a tied note comes out as the move *out of* the
+        tie, which is the only move the bar has there. The last two
+        elements are the interval the bar is entered on and the interval
+        it opens with, which together say whether the entrance was
+        answered.
+        """
+        closing = (
+            None
+            if closing_degree is None
+            else _closing_tone(closing_degree, start, half_cadence=half_cadence)
+        )
+        degrees = [
+            degree + start
+            for _offset, _duration, degree, _tie in rhythm_slots
+        ]
+        if entry is not None and len(degrees) > 2:
+            if rhythm_slots[0][3]:
+                # The bar opens on a tie: its first notehead sounds
+                # through the second, so the seam hears one move where two
+                # are written, and the turn goes on the move out of the
+                # tie. Writing it twice would put the turn's second step
+                # on a note the ear never hears struck and leave a third
+                # standing at the seam with nothing to answer it.
+                degrees[2] = degrees[0] + entry
+            else:
+                degrees[1] = degrees[0] + entry
+                degrees[2] = degrees[1] + entry
+        closed = _close_bar(
+            [
+                (offset, duration, degrees[index], tie)
+                for index, (offset, duration, _degree, tie) in enumerate(rhythm_slots)
+            ],
+            degree=closing,
+            ticks=closing_ticks,
+        )
+        # The closing gesture is written onto the last slot after the
+        # line has been shaped, which can leave the note before it a
+        # third away rather than a step. Bending the line toward the
+        # landing is the same repair the walk took, and it is the only
+        # one the bar's last note is allowed to need.
+        bent = _licit_line(
+            [slot[2] for slot in closed],
+            remainders=remainders,
+            fixed_tail=1 if closing_degree is not None else 0,
+        )
+        candidate = _legal_slots(
+            _hold_tied_pairs(
+                [
+                    (offset, duration, bent[index], tie)
+                    for index, (offset, duration, _degree, tie) in enumerate(closed)
+                ]
+            ),
+            tone_count=len(chord_tones),
+            chord_root=chord_root,
+            scale=scale,
+            avoid_pcs=avoid_pcs,
+        )
+        pitches = [
+            scale_walk(degree, chord_root, scale) for _o, _d, degree, _t in candidate
+        ]
+        opening = _opening_step(pitches, candidate)
+        rank, shift, _outside, _rubbing, _entrance = _place_bar(
+            pitches,
+            prev_pitch=prev_pitch,
+            apex=apex,
+            bass_pitches=bass_pitches,
+            chord_pcs=chord_pcs,
+            prev_leap=prev_leap,
+            opening=opening,
+        )
+        approach = None if prev_pitch is None else pitches[0] + shift - prev_pitch
+        # Everything the seam is judged on is already in the placement's
+        # ranking; the only key left is which tone of the chord the bar
+        # was drawn on, and it is last because a restatement is a device,
+        # not a preference — it is kept when nothing about the bar's fit
+        # makes it worse.
+        return (
+            (*rank, 0 if start == drawn else 1),
+            shift,
+            candidate,
+            approach,
+            opening,
+        )
+
+    def choose(
+        avoid_pcs: frozenset[int],
+    ) -> tuple[tuple[float, ...], int, list[BarSlot], int | None, int | None]:
+        best: tuple[tuple[float, ...], int, list[BarSlot], int | None, int | None] | None = None
+        for start in starts:
+            here = build(start, None, avoid_pcs)
+            entry = _entry_answer(here[3], here[4])
+            if entry is not None:
+                # The bar came in on a leap it does not answer, and the
+                # step that would answer it is a cheap, local repair —
+                # so the bar is built twice and the better of the two
+                # kept, which leaves the placement free to prefer the
+                # natural line when that is the better one.
+                turned = build(start, entry, avoid_pcs)
+                if turned[0] < here[0]:
+                    here = turned
+            if best is None or here[0] < best[0]:
+                best = here
+        assert best is not None
+        return best
+
+    chosen = choose(frozenset())
+    if chosen[0][_RANK_RUBBING] and bass_pcs:
+        # A note rubbing the bass is the fault no voicing can undo: the
+        # rank weighs the line's own shape ahead of it, and the line was
+        # shaped without knowing what the bass plays under it. So when the
+        # winner rubs, the same bar is built once more with the licence
+        # pass steered around the bass's pitch classes, and the better of
+        # the two is kept. A bar that needed no steering comes back as the
+        # same line, so this pass reaches only the bars that had no other
+        # way out.
+        steered = choose(bass_pcs)
+        if steered[0] < chosen[0]:
+            chosen = steered
+    shift, rhythm_slots = chosen[1], chosen[2]
 
     notes: list[NoteEvent] = []
-    for slot_index, slot in enumerate(rhythm_slots):
-        bar_offset, duration, tone_index, tie = slot
+    for bar_offset, duration, degree, tie in rhythm_slots:
         tick = start_tick + bar_offset
-        if slot_index == len(rhythm_slots) - 1 and is_final_bar:
-            # The piece ends at home: tonic or its third, held to the
-            # bar line.
-            pitch = chord_root if rng.random() < 0.6 else chord_root + chord_tones[1]
-            duration = bar_ticks - bar_offset
-        else:
-            pitch = chord_root + chord_tones[tone_index % len(chord_tones)]
-            if slot_index == len(rhythm_slots) - 1 and half_cadence:
-                # Land on the chord's root, lifted early so a rest
-                # follows.
-                pitch = chord_root + chord_tones[0]
-                duration = duration // 2
-            elif slot_index == len(rhythm_slots) - 1 and breathe:
-                duration = duration // 2
-            if apex:
-                pitch += 12
-            # Cap melody at piano range.
-            if pitch > 107:
-                pitch -= 12
-            if pitch < 22:
-                pitch += 12
         notes.append(
             NoteEvent(
                 voice_id=VOICE_MELODY,
-                pitch_midi=pitch,
+                pitch_midi=_fold_into_band(
+                    scale_walk(degree, chord_root, scale) + shift,
+                    MELODY_LOW_MIDI,
+                    MELODY_HIGH_MIDI,
+                ),
                 tick=tick,
                 duration_ticks=duration,
                 velocity=_shaped_velocity(
@@ -1255,28 +2390,40 @@ def _melody_bar(
         )
 
     # Anacrusis: the bar left room at its end, so an eighth-note pickup
-    # on the next chord's anchor tone leads into the next downbeat.
+    # on the next chord leads into the next downbeat.
     if (
-        pickup_pitch is not None
+        pickup is not None
         and not is_final_bar
         and notes
         and notes[-1].tick + notes[-1].duration_ticks <= start_tick + bar_ticks - PPQ // 2
     ):
-        notes.append(
-            NoteEvent(
-                voice_id=VOICE_MELODY,
-                pitch_midi=pickup_pitch,
-                tick=start_tick + bar_ticks - PPQ // 2,
-                duration_ticks=PPQ // 2,
-                velocity=max(1, _shaped_velocity(
-                    base=DEFAULT_VELOCITY + 8,
-                    position=position,
-                    tick=start_tick + bar_ticks - PPQ // 2,
-                    ticks_per_bar=ticks_per_bar,
-                    rng_seed=seed_for_variation + start_tick,
-                ) - 8),
-            )
+        pickup_pitch = _pickup_pitch(
+            root=pickup[0],
+            tones=pickup[1],
+            nearby=notes[-1].pitch_midi,
+            bass_pitches=bass_pitches,
         )
+        if pickup_pitch is not None:
+            pickup_tick = start_tick + bar_ticks - PPQ // 2
+            notes.append(
+                NoteEvent(
+                    voice_id=VOICE_MELODY,
+                    pitch_midi=pickup_pitch,
+                    tick=pickup_tick,
+                    duration_ticks=PPQ // 2,
+                    velocity=max(
+                        1,
+                        _shaped_velocity(
+                            base=DEFAULT_VELOCITY + 8,
+                            position=position,
+                            tick=pickup_tick,
+                            ticks_per_bar=ticks_per_bar,
+                            rng_seed=seed_for_variation + start_tick,
+                        )
+                        - 8,
+                    ),
+                )
+            )
     return notes
 
 

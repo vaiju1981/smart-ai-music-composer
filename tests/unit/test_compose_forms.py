@@ -5,20 +5,24 @@ from __future__ import annotations
 import pytest
 
 from saimc.compose.forms import (
+    LEAP_MIN_SEMITONES,
     MOOD_PROFILES,
     PHRASE_SIZES,
     STEP_MAX_SEMITONES,
     TEMPO_RANGE_BPM,
     ChordSlot,
     ChordTemplate,
-    degree_to_midi,
+    bar_scale_intervals,
+    chord_tone_degrees,
     get_mood_profile,
     get_template_for_form,
     key_root_midi,
     key_scale_pcs,
     key_signature_from_spec_key,
+    scale_intervals,
     scale_pitch_offset,
     scale_semitones,
+    scale_walk,
 )
 from saimc.compose.score import KeySignature
 from saimc.spec import WesternKey
@@ -132,21 +136,73 @@ class TestScaleTables:
     def test_scale_pitch_offset_accepts_negative_degrees(self) -> None:
         assert scale_pitch_offset(-1, "major") == 11
 
-    def test_degree_to_midi_carries_the_octave(self) -> None:
-        assert degree_to_midi(0, 60, "major") == 60
-        assert degree_to_midi(7, 60, "major") == 72
-        assert degree_to_midi(2, 60, "major") == 64
+    def test_scale_intervals_covers_one_octave_from_its_root(self) -> None:
+        intervals = scale_intervals(0, "major")
+        assert intervals == (0, 2, 4, 5, 7, 9, 11)
+        assert scale_intervals(0, "minor") == (0, 2, 3, 5, 7, 8, 10)
 
-    def test_degree_to_midi_descends_below_the_tonic(self) -> None:
-        # Degree -1 is the leading tone *below* the tonic, not degree 6 of
+    def test_scale_intervals_rotates_the_mode_onto_its_new_root(self) -> None:
+        # Spelled from the V of major the scale is mixolydian, and from
+        # major's sixth it is the natural minor: a bar's chord and the
+        # line over it have to be the same seven tones, so the table the
+        # walk reads is a rotation of the mode and not the mode itself.
+        assert scale_intervals(4, "major") == (0, 2, 4, 5, 7, 9, 10)
+        assert scale_intervals(5, "major") == (0, 2, 3, 5, 7, 8, 10)
+
+    def test_scale_intervals_ascends_within_the_octave(self) -> None:
+        for mode in ("major", "minor"):
+            for degree in range(7):
+                intervals = scale_intervals(degree, mode)
+                assert intervals[0] == 0
+                assert len(intervals) == 7
+                assert all(0 <= step < 12 for step in intervals)
+                assert list(intervals) == sorted(set(intervals))
+
+    def test_scale_walk_carries_the_octave(self) -> None:
+        intervals = scale_intervals(0, "major")
+        assert scale_walk(0, 60, intervals) == 60
+        assert scale_walk(2, 60, intervals) == 64
+        assert scale_walk(7, 60, intervals) == 72
+
+    def test_scale_walk_descends_below_the_root(self) -> None:
+        # Degree -1 is the scale tone *below* the root, not degree 6 of
         # the octave above: a melody has to be able to walk under its
         # starting note without the modulo flipping it up.
-        assert degree_to_midi(-1, 60, "major") == 59
-        assert degree_to_midi(-7, 60, "major") == 48
+        intervals = scale_intervals(0, "major")
+        assert scale_walk(-1, 60, intervals) == 59
+        assert scale_walk(-7, 60, intervals) == 48
 
-    def test_degree_to_midi_follows_the_mode(self) -> None:
-        assert degree_to_midi(2, 60, "major") == 64
-        assert degree_to_midi(2, 60, "minor") == 63
+    def test_scale_walk_follows_the_mode_it_is_given(self) -> None:
+        # The same degree is a semitone lower in minor, which is the
+        # whole reason the intervals are a parameter and not a mode name.
+        assert scale_walk(2, 60, scale_intervals(0, "major")) == 64
+        assert scale_walk(2, 60, scale_intervals(0, "minor")) == 63
+
+    def test_scale_walk_walks_the_bar_scale_from_its_chord_root(self) -> None:
+        # A bar on the V: its own scale spelled from its root, so a
+        # degree walked over it is a tone of that rotation and not of
+        # the key. Degree 0 is the chord root itself.
+        key = KeySignature(root="C", mode="major")
+        intervals = bar_scale_intervals(4, key)
+        assert scale_walk(0, 67, intervals) == 67
+        assert scale_walk(1, 67, intervals) == 69
+        assert scale_walk(7, 67, intervals) == 79
+
+    def test_a_borrowed_bar_walks_the_parallel_mode(self) -> None:
+        # bVI in a major key is built from the parallel minor's table,
+        # and the line over it has to read that same table or its steps
+        # would leave the chord's own scale.
+        key = KeySignature(root="C", mode="major")
+        assert bar_scale_intervals(5, key, borrowed=True) == scale_intervals(5, "minor")
+        assert bar_scale_intervals(5, key) == scale_intervals(5, "major")
+
+    def test_chord_tone_degrees_are_every_other_degree(self) -> None:
+        # The chord tables take a triad's tones from the bar scale's
+        # degrees 0, 2, 4 and a seventh's from 0, 2, 4, 6, so "is this
+        # note a chord tone" is a question about degree parity and not
+        # about pitch classes.
+        assert chord_tone_degrees(3) == (0, 2, 4)
+        assert chord_tone_degrees(4) == (0, 2, 4, 6)
 
     def test_key_scale_pcs_covers_the_mode(self) -> None:
         assert key_scale_pcs(KeySignature(root="C", mode="major")) == frozenset(
@@ -166,6 +222,14 @@ class TestScaleTables:
         # against this one number; if it moved, passing tones the licence
         # admits would be scored as leaps.
         assert STEP_MAX_SEMITONES == 2
+
+    def test_a_leap_is_a_fourth_or_wider(self) -> None:
+        # The generator's recovery pass and the scorecard's leap ratio
+        # have to call the same intervals leaps, and a third has to be
+        # neither: it is the one interval the two tests cannot disagree
+        # about without the disagreement reading as a composition bug.
+        assert LEAP_MIN_SEMITONES == 5
+        assert LEAP_MIN_SEMITONES > STEP_MAX_SEMITONES + 1
 
 
 class TestMoodRegistry:

@@ -22,11 +22,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from saimc.compose.duration import bar_ticks
-from saimc.compose.forms import PHRASE_BARS, STEP_MAX_SEMITONES, key_root_midi, key_scale_pcs
+from saimc.compose.forms import PHRASE_BARS, STEP_MAX_SEMITONES, bar_diatonic_pcs, key_root_midi
 from saimc.compose.score import (
     VOICE_MELODY,
     VOICE_PERCUSSION,
-    KeySignature,
     NotationScore,
     NoteEvent,
 )
@@ -291,7 +290,7 @@ def legal_non_chord_tone(
     nxt: NoteEvent | None,
     bar_start_tick: int,
     ppq: int,
-    key: KeySignature,
+    diatonic_pcs: frozenset[int],
 ) -> bool:
     """Whether a non-chord tone is a legitimate passing or neighbour tone.
 
@@ -305,8 +304,9 @@ def legal_non_chord_tone(
     - **Short.** It lasts no longer than a quarter note (`ppq` ticks). A
       brief tone is a passing tone by definition; a long unprepared
       dissonance is the unmodelled device again.
-    - **Diatonic.** It belongs to the key's scale, so it cannot clash
-      chromatically with the prevailing harmony.
+    - **Diatonic.** It belongs to the scale the bar's harmony belongs to
+      (`forms.bar_diatonic_pcs`), so it cannot clash chromatically with
+      the prevailing harmony.
     - **Approached and left by step, with no rest between.** Both
       neighbours exist in the same voice, each abuts this note exactly,
       and each lies within `STEP_MAX_SEMITONES` of it.
@@ -326,7 +326,7 @@ def legal_non_chord_tone(
         return False
     if note.duration_ticks > ppq:
         return False
-    if note.pitch_midi % 12 not in key_scale_pcs(key):
+    if note.pitch_midi % 12 not in diatonic_pcs:
         return False
     if prev is None or nxt is None:
         return False
@@ -386,6 +386,9 @@ def _check_chord_tones(
     issues: list[LintIssue] = []
     starts = _measure_starts(score)
     neighbours = _voice_neighbours(score)
+    # Per bar, not per note: the scale a bar's harmony belongs to is a
+    # property of the bar, and recovering it scans 24 candidate scales.
+    diatonic = [bar_diatonic_pcs(tuple(bar), score.key) for bar in chord_bars]
     for position, note in enumerate(score.notes):
         if note.voice_id == VOICE_PERCUSSION:
             continue
@@ -410,7 +413,7 @@ def _check_chord_tones(
             nxt=nxt,
             bar_start_tick=measure.start_tick,
             ppq=score.ppq,
-            key=score.key,
+            diatonic_pcs=diatonic[bar],
         ):
             continue
         issues.append(
