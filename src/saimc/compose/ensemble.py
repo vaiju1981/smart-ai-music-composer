@@ -36,7 +36,6 @@ from saimc.spec import (
     ROLE_ORDER,
     CompositionSpec,
     Instrument,
-    InstrumentationEntry,
     Mood,
     VoiceRole,
 )
@@ -86,6 +85,14 @@ class Ensemble:
     harmony: str | None
     bass: str | None
     percussion: str | None
+    additional_harmonies: tuple[str, ...] = ()
+
+    @property
+    def harmonies(self) -> tuple[str, ...]:
+        """All harmony instruments, in their requested order."""
+        if self.harmony is None:
+            return self.additional_harmonies
+        return (self.harmony, *self.additional_harmonies)
 
     def voice_instruments(self) -> dict[int, str]:
         """Map engine voice ids to instrument names.
@@ -98,8 +105,8 @@ class Ensemble:
             voices[0] = self.bass
         if self.percussion is not None:
             voices[2] = self.percussion
-        if self.harmony is not None:
-            voices[3] = self.harmony
+        for offset, instrument in enumerate(self.harmonies):
+            voices[3 + offset] = instrument
         return voices
 
 
@@ -116,6 +123,7 @@ def resolve_ensemble(spec: CompositionSpec) -> Ensemble:
         percussion=by_role[VoiceRole.PERCUSSION][0]
         if by_role.get(VoiceRole.PERCUSSION)
         else None,
+        additional_harmonies=tuple(harmony[1:]),
     )
 
 
@@ -223,10 +231,13 @@ def _fill_missing_roles(
             # Never fill a role with the melody's own instrument.
             entries.append(_entry(VoiceRole.HARMONY, DEFAULT_HARMONY[mood_fallback]))
             roles_present.add(VoiceRole.HARMONY.value)
-    if VoiceRole.BASS.value not in roles_present and not dedicated:
-        if DEFAULT_BASS[mood_fallback] != melody:
-            entries.append(_entry(VoiceRole.BASS, DEFAULT_BASS[mood_fallback]))
-            roles_present.add(VoiceRole.BASS.value)
+    if (
+        VoiceRole.BASS.value not in roles_present
+        and not dedicated
+        and DEFAULT_BASS[mood_fallback] != melody
+    ):
+        entries.append(_entry(VoiceRole.BASS, DEFAULT_BASS[mood_fallback]))
+        roles_present.add(VoiceRole.BASS.value)
     return entries, roles_present
 
 

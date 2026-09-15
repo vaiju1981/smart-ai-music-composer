@@ -57,7 +57,12 @@ class TestCreateJob:
         client = TestClient(create_app(jobs_root=tmp_path), raise_server_exceptions=False)
         resp = client.post("/jobs", json={"prompt": "x"})
         assert resp.status_code == 503
-        assert "retry" in resp.json()["detail"]
+        assert "was not queued" in resp.json()["detail"]
+        jobs = list(JobStorage(tmp_path).list_all())
+        assert len(jobs) == 1
+        assert jobs[0].state == JobState.FAILED
+        assert jobs[0].error is not None
+        assert jobs[0].error.error_code == "queue_unavailable"
 
     def test_empty_prompt_rejected(self, client: TestClient) -> None:
         resp = client.post("/jobs", json={"prompt": ""})
@@ -94,6 +99,33 @@ class TestGetJob:
     def test_unknown_job_returns_404(self, client: TestClient) -> None:
         resp = client.get("/jobs/does-not-exist")
         assert resp.status_code == 404
+
+
+class TestJobEvents:
+    def test_terminal_job_streams_one_update_and_closes(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        create = client.post("/jobs", json={"prompt": "x"}).json()
+        job_id = create["job_id"]
+        storage = JobStorage(tmp_path)
+        job = storage.get(job_id)
+        job.state = JobState.COMPLETE
+        job.progress = 1.0
+        job.current_stage = JobState.COMPLETE.value
+        storage.save(job)
+
+        with client.stream("GET", f"/jobs/{job_id}/events") as resp:
+            payload = "".join(resp.iter_text())
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert resp.headers["cache-control"] == "no-cache, no-transform"
+        assert payload.startswith("data: ")
+        assert f'"job_id":"{job_id}"' in payload
+        assert '"state":"complete"' in payload
+
+    def test_unknown_job_stream_returns_404(self, client: TestClient) -> None:
+        assert client.get("/jobs/does-not-exist/events").status_code == 404
 
 
 class TestArtifactEndpoint:
@@ -177,6 +209,7 @@ class TestIndexPage:
         resp = client.get("/")
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/html")
+        assert resp.headers["cache-control"] == "no-store, max-age=0"
         text = resp.text
         # The page drives the same JSON routes the API exposes.
         assert "/jobs" in text
@@ -186,6 +219,7 @@ class TestIndexPage:
         assert "audio_ogg" in text  # preview
         assert "animation" in text  # preview
         assert "download" in text  # downloads
+        assert "EventSource" in text  # live progress does not rely on timers
 
     def test_index_does_not_shadow_api_docs(self, client: TestClient) -> None:
         assert client.get("/docs").status_code == 200
@@ -280,3 +314,29 @@ class TestMeta:
         assert set(INSTRUMENT_FAMILIES) == expected
         for instrument in expected:
             soundfont_for_instrument(instrument)  # must resolve without error
+
+
+class TestHealth:
+    def test_health_exposes_worker_readiness(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            saimc.jobs.api,
+            "_service_health",
+            lambda: {"status": "ready", "broker": "ready", "workers": 1, "queue_depth": 2},
+        )
+        assert client.get("/health").json() == {
+            "status": "ready",
+            "broker": "ready",
+            "workers": 1,
+            "queue_depth": 2,
+        }
+
+    def test_worker_pid_liveness_rejects_missing_process(self) -> None:
+        assert saimc.jobs.api._local_worker_process_alive(None) is False
+        assert saimc.jobs.api._local_worker_process_alive(2_147_483_647) is False
+
+    def test_worker_pid_liveness_accepts_current_process(self) -> None:
+        import os
+
+        assert saimc.jobs.api._local_worker_process_alive(os.getpid()) is True

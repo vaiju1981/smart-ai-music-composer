@@ -256,7 +256,12 @@ class OllamaAdapter:
         sys = (
             "You convert natural-language music requests into a strict JSON "
             "CompositionSpec. Output ONLY the JSON object. Do not wrap it in "
-            "markdown fences. Do not include commentary. The schema is enforced."
+            "markdown fences. Do not include commentary. The schema is enforced. "
+            "Preserve every explicitly requested instrument, assigning exactly one "
+            "melody, at most one bass, at most one drum_set percussion part, and up "
+            "to two complementary harmony parts. Requests for a professional, "
+            "cinematic, natural, polished, or human performance should use "
+            "humanization='expressive'."
         )
         if prompted:
             sys += " The JSON object MUST match this schema exactly: " + json.dumps(

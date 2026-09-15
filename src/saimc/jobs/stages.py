@@ -166,7 +166,7 @@ def parse_stage(
     )
 
 
-def _composer_for_ensemble(ensemble: "Ensemble") -> Callable[[Any], Any]:
+def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
     """Resolve the composer for a spec's ensemble.
 
     The registry is the Phase 2 seam for dedicated engines (e.g. a
@@ -310,10 +310,9 @@ def render_audio_stage(
     `soundfont_path` overrides the per-job resolution (handy in
     tests); otherwise `resolve_job_soundfont()` resolves the single SF2
     the whole ensemble renders under.
-    `fluidsynth_bin` and `ffmpeg_bin`
-    default to the env vars `$SAIMC_FLUIDSYNTH_BIN` /
-    `$SAIMC_FFMPEG_BIN`, falling back to PATH lookup inside
-    `render_audio`.
+    `fluidsynth_bin` and `ffmpeg_bin` default to the env vars
+    `$SAIMC_RENDER_FLUIDSYNTH` / `$SAIMC_RENDER_FFMPEG`, falling back
+    to PATH lookup inside `render_audio`.
 
     Module-level so tests can monkeypatch it.
     """
@@ -368,6 +367,8 @@ def render_audio_stage(
         }
         if ensemble.harmony is not None:
             voice_instruments[VOICE_HARMONY] = ensemble.harmony
+        for offset, instrument in enumerate(ensemble.additional_harmonies, start=1):
+            voice_instruments[VOICE_HARMONY + offset] = instrument
         if ensemble.percussion == "drum_set":
             voice_instruments[VOICE_PERCUSSION] = "drum_set"
     # One font loads per job; the ensemble must agree on it. Font-only

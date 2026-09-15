@@ -1053,6 +1053,38 @@ class TestHarmonyVoice:
         sidecar = {v.voice_id: v.instrument for v in out.voice_instruments}
         assert sidecar == {0: "cello", 1: "piano", 3: "pizzicato_strings"}
 
+    def test_two_requested_harmonies_both_reach_the_score_and_sidecar(self) -> None:
+        out = compose(
+            _spec(
+                Mood.ELECTRIFYING,
+                duration=300,
+                instrumentation=[
+                    {"role": "melody", "instrument": "trumpet"},
+                    {"role": "harmony", "instrument": "brass_section"},
+                    {"role": "harmony", "instrument": "strings"},
+                    {"role": "bass", "instrument": "contrabass"},
+                    {"role": "percussion", "instrument": "drum_set"},
+                ],
+            )
+        )
+        sidecar = {v.voice_id: v.instrument for v in out.voice_instruments}
+        assert sidecar == {
+            0: "contrabass",
+            1: "trumpet",
+            2: "drum_set",
+            3: "brass_section",
+            4: "strings",
+        }
+        voices = {n.voice_id for n in out.notation_score.notes}
+        assert voices == {0, 1, 2, 3, 4}
+        # Brass punctuates; the secondary strings form the long bed.
+        assert {n.duration_ticks for n in out.notation_score.notes if n.voice_id == 3} == {
+            out.notation_score.ppq
+        }
+        assert {n.duration_ticks for n in out.notation_score.notes if n.voice_id == 4} == {
+            bar_ticks(out.time_signature)
+        }
+
     def test_drum_set_piece_has_no_harmony_voice(self) -> None:
         out = compose(
             _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")

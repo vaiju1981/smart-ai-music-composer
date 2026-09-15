@@ -20,11 +20,14 @@ artifact URLs are opaque tokens scoped to the job ID itself.
 
 from __future__ import annotations
 
+import asyncio
+import os
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from saimc.jobs.state import JobState, JobStateMachine
@@ -32,9 +35,10 @@ from saimc.jobs.storage import (
     DEFAULT_JOBS_DIR,
     ArtifactRecord,
     Job,
+    JobError,
     JobStorage,
 )
-from saimc.jobs.worker import enqueue_job
+from saimc.jobs.worker import DEFAULT_QUEUE, enqueue_job
 from saimc.spec import CompositionSpec
 
 router = APIRouter()
@@ -132,26 +136,90 @@ def _serialize_job(job: Job) -> JobResponse:
     )
 
 
-def _enqueue(job: Job) -> None:
+def _service_health() -> dict[str, Any]:
+    """Return a small operational snapshot for the local studio UI."""
+    from rq import Queue, Worker
+
+    from saimc.jobs.worker import _redis_from_url
+
+    url = os.environ.get("SAIMC_VALKEY_URL") or "valkey://127.0.0.1:6379/0"
+    try:
+        connection = _redis_from_url(url)
+        connection.ping()
+        workers = [
+            worker
+            for worker in Worker.all(connection=connection)
+            if connection.ttl(worker.key) > 0 and _local_worker_process_alive(worker.pid)
+        ]
+        return {
+            "status": "ready" if workers else "waiting_for_worker",
+            "broker": "ready",
+            "workers": len(workers),
+            "queue_depth": Queue(DEFAULT_QUEUE, connection=connection).count,
+        }
+    except Exception:
+        return {
+            "status": "unavailable",
+            "broker": "unavailable",
+            "workers": 0,
+            "queue_depth": None,
+        }
+
+
+def _local_worker_process_alive(pid: int | None) -> bool:
+    """Reject RQ registrations left behind by an abruptly killed worker.
+
+    RQ deliberately keeps an idle worker key alive for several minutes.
+    This application runs API and worker on the same machine, so checking
+    the registered PID prevents the UI from calling a stale registration
+    "ready" while newly submitted jobs wait forever.
+    """
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _enqueue(job: Job, storage: JobStorage) -> None:
     """Put the job on the RQ queue, surfacing broker outages as 503.
 
-    The job is already persisted in `queued` state, so a failed enqueue
-    is recoverable: the client can retry the POST and the worker will
-    pick the job up once the broker is back.
+    The job is persisted before enqueueing. If the broker write fails,
+    transition that record to `failed`; leaving it in `queued` would make
+    history (and any client polling the returned retry id) wait forever for
+    a broker entry that does not exist.
     """
     try:
         enqueue_job(job.job_id)
     except Exception as exc:
+        transition = _state_machine.transition(job.state, JobState.FAILED)
+        job.state = transition.state
+        job.progress = transition.progress
+        job.current_stage = transition.current_stage
+        job.error = JobError(
+            error_code="queue_unavailable",
+            message="The job broker was unavailable when this job was submitted.",
+            stage="queued",
+        )
+        storage.save(job)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"job queue unavailable, retry: {job.job_id}",
+            detail=f"job queue unavailable; job {job.job_id} was not queued",
         ) from exc
 
 
 @router.get("/", include_in_schema=False)
 def index() -> FileResponse:
     """Serve the single-page web UI."""
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
@@ -167,7 +235,7 @@ def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
     if body.seed is not None:
         job.seed = body.seed
         storage.save(job)
-    _enqueue(job)
+    _enqueue(job, storage)
     return _serialize_job(job)
 
 
@@ -185,7 +253,7 @@ def create_job_from_spec(body: CreateJobFromSpecRequest, request: Request) -> Jo
         job.seed = body.spec.seed
     job.parser_source = "from-spec"
     storage.save(job)
-    _enqueue(job)
+    _enqueue(job, storage)
     return _serialize_job(job)
 
 
@@ -218,8 +286,8 @@ def get_meta() -> dict[str, Any]:
         DURATION_SECONDS_DEFAULT,
         DURATION_SECONDS_MAX,
         DURATION_SECONDS_MIN,
-        Mood,
         ROLE_ORDER,
+        Mood,
         TimeSignature,
     )
 
@@ -241,6 +309,12 @@ def get_meta() -> dict[str, Any]:
     }
 
 
+@router.get("/health")
+def get_health() -> dict[str, Any]:
+    """Expose broker/worker readiness to the local UI."""
+    return _service_health()
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, request: Request) -> JobResponse:
     storage = _storage(request)
@@ -249,6 +323,54 @@ def get_job(job_id: str, request: Request) -> JobResponse:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
     return _serialize_job(job)
+
+
+@router.get("/jobs/{job_id}/events")
+async def stream_job(job_id: str, request: Request) -> StreamingResponse:
+    """Stream job changes so the UI does not depend on browser timers.
+
+    Some embedded browsers heavily throttle or suspend `setInterval`, which
+    made progress appear frozen until a refresh. This local SSE stream stays
+    open and emits each persisted state change as soon as it is visible.
+    """
+    storage = _storage(request)
+    try:
+        storage.get(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+
+    async def events() -> AsyncIterator[str]:
+        last_updated_at: str | None = None
+        idle_cycles = 0
+        while not await request.is_disconnected():
+            try:
+                job = storage.get(job_id)
+            except KeyError:
+                yield 'event: error\ndata: {"message":"job not found"}\n\n'
+                return
+            response = _serialize_job(job)
+            updated_at = response.updated_at
+            if updated_at != last_updated_at:
+                yield f"data: {response.model_dump_json()}\n\n"
+                last_updated_at = updated_at
+                idle_cycles = 0
+            else:
+                idle_cycles += 1
+                if idle_cycles >= 20:
+                    yield ": keep-alive\n\n"
+                    idle_cycles = 0
+            if job.state in {JobState.COMPLETE, JobState.FAILED, JobState.CANCELLED}:
+                return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/jobs/{job_id}/artifact/{kind}")

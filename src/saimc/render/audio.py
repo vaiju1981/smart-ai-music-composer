@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from saimc.compose.score import (
     PPQ,
     VOICE_BASS,
+    VOICE_HARMONY,
     VOICE_MELODY,
     PerformancePlan,
     TempoMap,
@@ -87,6 +88,8 @@ MASTER_LRA: float = 11.0
 # 64 is centre; ±22 ≈ ±17% of full scale.
 MELODY_CC7: int = 100
 ACCOMPANIMENT_CC7: int = 84
+HARMONY_CC7: int = 76
+PERCUSSION_CC7: int = 90
 MELODY_CC10_PAN: int = 86
 ACCOMPANIMENT_CC10_PAN: int = 42
 CENTER_CC10_PAN: int = 64
@@ -267,8 +270,15 @@ def build_smf(
             cc7, pan = ACCOMPANIMENT_CC7, ACCOMPANIMENT_CC10_PAN
         elif voice_id == VOICE_MELODY and voice_id not in percussion_voices:
             cc7, pan = MELODY_CC7, MELODY_CC10_PAN
+        elif voice_id in percussion_voices:
+            cc7, pan = PERCUSSION_CC7, CENTER_CC10_PAN
+        elif voice_id >= VOICE_HARMONY:
+            # Harmony lives behind the lead and alternates across the
+            # stereo field as layers are added (voice 3 left, 4 right).
+            cc7 = HARMONY_CC7
+            pan = 38 if (voice_id - VOICE_HARMONY) % 2 == 0 else 90
         else:
-            cc7, pan = MELODY_CC7, CENTER_CC10_PAN
+            cc7, pan = ACCOMPANIMENT_CC7, CENTER_CC10_PAN
         track.append(mido.Message("control_change", channel=channel, control=7, value=cc7))
         track.append(mido.Message("control_change", channel=channel, control=10, value=pan))
 

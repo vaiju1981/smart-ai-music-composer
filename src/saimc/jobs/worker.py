@@ -107,7 +107,10 @@ def _sweep_interrupted_jobs(storage: JobStorage) -> int:
     logger = logging.getLogger(__name__)
     swept = 0
     for stale in storage.list_all():
-        if stale.state in TERMINAL_STATES:
+        # A queued job has not started and is safe for RQ to process after
+        # this worker comes online. Only a job that advanced beyond queued
+        # can have been interrupted by the previous worker.
+        if stale.state in TERMINAL_STATES or stale.state == JobState.QUEUED:
             continue
         stale.error = JobError(
             error_code="worker_interrupted",
@@ -146,6 +149,7 @@ def enqueue_job(
     rq_job = queue.enqueue(
         "saimc.jobs.worker.run_job",
         job_id,
+        job_id=job_id,
         job_timeout="30m",
     )
     return rq_job.get_id()

@@ -19,7 +19,7 @@ def storage(tmp_path: Path) -> JobStorage:
 
 
 class TestStartupSweep:
-    def test_non_terminal_jobs_are_marked_failed(self, storage: JobStorage) -> None:
+    def test_started_jobs_are_failed_but_queued_jobs_survive(self, storage: JobStorage) -> None:
         stuck = storage.create("a prompt")
         stuck.state = JobState.RENDERING_ANIMATION
         stuck.current_stage = "rendering_animation"
@@ -28,16 +28,15 @@ class TestStartupSweep:
 
         swept = _sweep_interrupted_jobs(storage)
 
-        assert swept == 2
+        assert swept == 1
         stuck_after = storage.get(stuck.job_id)
         assert stuck_after.state == JobState.FAILED
         assert stuck_after.error is not None
         assert stuck_after.error.error_code == "worker_interrupted"
         assert stuck_after.error.stage == "rendering_animation"
         queued_after = storage.get(queued.job_id)
-        assert queued_after.state == JobState.FAILED
-        assert queued_after.error is not None
-        assert queued_after.error.error_code == "worker_interrupted"
+        assert queued_after.state == JobState.QUEUED
+        assert queued_after.error is None
 
     def test_terminal_jobs_are_untouched(self, storage: JobStorage) -> None:
         done = storage.create("done")

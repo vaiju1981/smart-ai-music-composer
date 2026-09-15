@@ -69,8 +69,7 @@ MIT for our code. Third-party dependencies and assets are tracked in §4 of [`do
 - `OLLAMA_API_KEY` — Bearer key for Cloud; optional/absent for self-hosted.
 - `SAIMC_RENDER_FFMPEG` — path to the locally-built LGPL FFmpeg (release-gate binary; required by the audio/animation renderers).
 - `SAIMC_RENDER_FLUIDSYNTH` — path to the FluidSynth binary.
-- `SAIMC_RENDER_SOUNDONT` — path to the Salamander Grand Piano SF2.
-- `SAIMC_RENDER_BRAVURA` — path to the Bravura SMuFL font.
-- `SAIMC_RENDER_SERVICE_URL` — URL of the local Node notation render service.
+- `SAIMC_RENDER_SERVICE_DIR` — path to the local Node notation renderer project.
+- `SAIMC_NODE_BIN` — path to Node.js (auto-detected from `PATH` or nvm by `run.sh`).
 - `SAIMC_VALKEY_URL` — local Valkey URL (default `valkey://127.0.0.1:6379/0`).
 - `SAIMC_JOBS_DIR` — local job-artifact directory (default `./var/jobs`).

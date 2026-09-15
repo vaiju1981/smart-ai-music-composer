@@ -359,8 +359,8 @@ def preset_for_instrument(instrument: str, soundfont_path: Path) -> tuple[int, i
 __all__ = [
     "FONT_ONLY_INSTRUMENTS",
     "FONT_PRESETS",
-    "GM_BACKED_INSTRUMENTS",
     "GENERAL_SOUNDFONT",
+    "GM_BACKED_INSTRUMENTS",
     "INSTRUMENT_FAMILIES",
     "INSTRUMENT_PROGRAMS",
     "PERCUSSION_INSTRUMENTS",

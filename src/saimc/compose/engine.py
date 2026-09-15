@@ -50,6 +50,7 @@ from saimc.compose.duration import (
     bar_ticks,
     section_seed,
 )
+from saimc.compose.ensemble import Ensemble, resolve_ensemble
 from saimc.compose.forms import (
     PHRASE_BARS,
     ChordSlot,
@@ -97,8 +98,7 @@ from saimc.compose.score import (
     TempoPoint,
     microseconds_at_tick,
 )
-from saimc.compose.ensemble import Ensemble, resolve_ensemble
-from saimc.spec import CompositionSpec, Instrument
+from saimc.spec import CompositionSpec
 
 
 class EngineErrorCode(StrEnum):
@@ -331,6 +331,11 @@ def _build_score(
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
     long_piece = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+    harmony_voices = tuple(
+        (voice_id, instrument)
+        for voice_id, instrument in ensemble.voice_instruments().items()
+        if voice_id >= VOICE_HARMONY
+    )
 
     for section_idx in range(arrangement.repetition_count):
         section_rng = random.Random(section_seed(spec.seed, section_idx))
@@ -370,7 +375,11 @@ def _build_score(
             key_offset=key_offset,
             melody_from_bar=arrangement.intro_bars if section_idx == 0 else 0,
             bars_since_breath=bars_since_breath,
-            harmony=ensemble.harmony is not None,
+            harmony_voices=_active_harmony_voices(
+                harmony_voices,
+                section_index=section_idx,
+                long_piece=long_piece,
+            ),
         )
         section_notes, section_chord_bars, bars_since_breath = section_result
         chord_bars.extend(section_chord_bars)
@@ -417,7 +426,7 @@ def _build_score(
             # force the tonic resolution the way a last section does.
             is_final_section=True,
             bars_since_breath=bars_since_breath,
-            harmony=ensemble.harmony is not None,
+            harmony_voices=harmony_voices,
         )
         coda_notes, coda_chord_bars, _ = coda_result
         chord_bars.extend(coda_chord_bars)
@@ -525,7 +534,7 @@ def _generate_section(
     key_offset: int = 0,
     melody_from_bar: int = 0,
     bars_since_breath: int = 0,
-    harmony: bool = False,
+    harmony_voices: tuple[tuple[int, str], ...] = (),
 ) -> tuple[list[NoteEvent], tuple[tuple[int, ...], ...], int]:
     """Generate the bass + melody notes for one section.
 
@@ -554,9 +563,9 @@ def _generate_section(
     is set the last bar resolves onto the tonic or its third, held to
     the bar line.
 
-    When `harmony` is set, a harmony voice (pad for the calm moods,
-    broken-chord arpeggio for the energetic one) is generated from the
-    same resolved chords, cleared of any note that crowds the melody.
+    Each entry in `harmony_voices` gets an instrument-aware texture
+    generated from the same resolved chords and cleared of any note
+    that crowds the melody.
 
     Returns the section's notes, the chord pitch classes sounding in
     each bar (for the linter's chord-tone gate), and the breath
@@ -799,7 +808,7 @@ def _generate_section(
     # Harmony voice: generated from the same resolved `chords` so its
     # pitch classes cannot drift from the ones the melody and bass
     # were written against.
-    if harmony:
+    for voice_id, instrument in harmony_voices:
         notes.extend(
             _generate_harmony_section(
                 chords=chords,
@@ -810,6 +819,9 @@ def _generate_section(
                 melody_notes=melody_notes,
                 melody_from_bar=melody_from_bar,
                 seed_for_variation=seed_for_variation,
+                voice_id=voice_id,
+                instrument=instrument,
+                layer_index=voice_id - VOICE_HARMONY,
             )
         )
 
@@ -843,6 +855,39 @@ HARMONY_MELODY_CLEARANCE: int = 2
 HARMONY_CROWD_INTERVALS: frozenset[int] = frozenset({0, 1, 2, 10, 11})
 HARMONY_PAD_VELOCITY: int = 46
 HARMONY_ARPEGGIO_VELOCITY: int = 52
+HARMONY_STAB_VELOCITY: int = 58
+HARMONY_STAB_INSTRUMENTS: frozenset[str] = frozenset(
+    {
+        "brass_section",
+        "french_horn",
+        "trumpet",
+        "muted_trumpet",
+        "trombone",
+        "tuba",
+    }
+)
+
+
+def _active_harmony_voices(
+    voices: tuple[tuple[int, str], ...],
+    *,
+    section_index: int,
+    long_piece: bool,
+) -> tuple[tuple[int, str], ...]:
+    """Shape long-form density instead of looping one wall of sound.
+
+    With two harmony colors the opening presents the first, the third
+    section becomes a contrasting breakdown led by the second, and the
+    intervening sections combine them. The four-section arc then repeats.
+    """
+    if not long_piece or len(voices) < 2:
+        return voices
+    phase = section_index % 4
+    if phase == 0:
+        return voices[:1]
+    if phase == 2:
+        return voices[1:]
+    return voices
 
 
 def _into_harmony_register(pitch: int) -> int:
@@ -868,20 +913,23 @@ def _generate_harmony_section(
     melody_notes: list[NoteEvent],
     melody_from_bar: int,
     seed_for_variation: int,
+    voice_id: int = VOICE_HARMONY,
+    instrument: str = "piano",
+    layer_index: int = 0,
 ) -> list[NoteEvent]:
     """Generate the harmony voice for one section from the resolved chords.
 
-    Two textures, chosen by mood: a sustained pad for the calm moods
-    (two chord tones held across each bar, the voicing rotating through
-    root position and inversions) and a broken-chord arpeggio for the
-    energetic one (eighth notes walking the chord tones). Intro bars
-    stay silent — the harmony enters with the melody.
+    Calm music uses a sustained pad. Energetic strings and plucked
+    instruments use a broken-chord ostinato, brass uses spacious chord
+    accents, and additional harmony colors form a quieter sustained bed.
+    Intro bars stay silent — harmony enters with the melody.
 
     The bed is written before the melody-to-harmony clearance pass so
     the RNG draws stay independent of what the tune happens to do.
     """
     notes: list[NoteEvent] = []
-    pad = mood != "electrifying"
+    pad = mood != "electrifying" or layer_index > 0
+    stabs = mood == "electrifying" and instrument in HARMONY_STAB_INSTRUMENTS
     # Which chord tone sits lowest: the rotation (not the bar) decides
     # it, so the section's voicing stays stable instead of churning.
     rotation = rng.randrange(3)
@@ -898,18 +946,39 @@ def _generate_harmony_section(
                 bar_index += 1
                 continue
             position = bar_index / max(1, total_bars)
-            if pad:
+            if stabs:
+                pulse_duration = max(PPQ // 2, min(PPQ, ticks_per_bar // 4))
+                for pulse_index, pulse_tick in enumerate((0, ticks_per_bar // 2)):
+                    low = (bar_index + rotation + pulse_index) % len(chord_tones)
+                    pair = (chord_tones[low], chord_tones[(low + 2) % len(chord_tones)])
+                    for tone in pair:
+                        notes.append(
+                            NoteEvent(
+                                voice_id=voice_id,
+                                pitch_midi=_into_harmony_register(chord_root + tone),
+                                tick=bar_tick + pulse_tick,
+                                duration_ticks=pulse_duration,
+                                velocity=_shaped_velocity(
+                                    base=HARMONY_STAB_VELOCITY,
+                                    position=position,
+                                    tick=bar_tick + pulse_tick,
+                                    ticks_per_bar=ticks_per_bar,
+                                    rng_seed=seed_for_variation + bar_tick * 103 + pulse_index,
+                                ),
+                            )
+                        )
+            elif pad:
                 low = (bar_index + rotation) % len(chord_tones)
                 pair = (chord_tones[low], chord_tones[(low + 2) % len(chord_tones)])
                 for tone in pair:
                     notes.append(
                         NoteEvent(
-                            voice_id=VOICE_HARMONY,
+                            voice_id=voice_id,
                             pitch_midi=_into_harmony_register(chord_root + tone),
                             tick=bar_tick,
                             duration_ticks=ticks_per_bar,
                             velocity=_shaped_velocity(
-                                base=HARMONY_PAD_VELOCITY,
+                                base=HARMONY_PAD_VELOCITY - layer_index * 4,
                                 position=position,
                                 tick=bar_tick,
                                 ticks_per_bar=ticks_per_bar,
@@ -922,7 +991,7 @@ def _generate_harmony_section(
                     tone = chord_tones[(step + rotation) % len(chord_tones)]
                     notes.append(
                         NoteEvent(
-                            voice_id=VOICE_HARMONY,
+                            voice_id=voice_id,
                             pitch_midi=_into_harmony_register(chord_root + tone),
                             tick=bar_tick + step * eighth,
                             duration_ticks=eighth,
@@ -1495,10 +1564,11 @@ def _build_performance_plan(
     melody_instrument = "drum_set" if drum_set_legacy else voice_instruments.get(
         VOICE_MELODY, "piano"
     )
-    harmony_instrument = voice_instruments.get(VOICE_HARMONY)
-    harmony_sustained = (
-        harmony_instrument is not None and harmony_instrument in SUSTAINED_INSTRUMENTS
-    )
+    harmony_instruments = {
+        voice: instrument
+        for voice, instrument in voice_instruments.items()
+        if voice >= VOICE_HARMONY
+    }
 
     # Legato: sustained instruments let each note of a line ring a
     # little past the next attack so the release tail blurs into the
@@ -1509,9 +1579,9 @@ def _build_performance_plan(
         voice
         for voice, instrument in (
             (VOICE_MELODY, melody_instrument),
-            (VOICE_HARMONY, harmony_instrument),
+            *harmony_instruments.items(),
         )
-        if instrument is not None and instrument in SUSTAINED_INSTRUMENTS
+        if instrument in SUSTAINED_INSTRUMENTS
     ]
     for voice in legato_voices:
         voice_sorted_idx = sorted(
@@ -1548,8 +1618,11 @@ def _build_performance_plan(
         ticks_per_bar = max(1, score.measures[0].end_tick - score.measures[0].start_tick)
         phrase_ticks = PHRASE_BARS * ticks_per_bar
         swell_voices = [VOICE_MELODY]
-        if harmony_sustained:
-            swell_voices.append(VOICE_HARMONY)
+        swell_voices.extend(
+            voice
+            for voice, instrument in harmony_instruments.items()
+            if instrument in SUSTAINED_INSTRUMENTS
+        )
         for measure in score.measures:
             position = measure.start_tick / total_ticks
             phrase_position = (measure.start_tick % phrase_ticks) / phrase_ticks
@@ -1581,9 +1654,9 @@ def _build_performance_plan(
             voice
             for voice, instrument in (
                 (VOICE_MELODY, melody_instrument),
-                (VOICE_HARMONY, harmony_instrument),
+                *harmony_instruments.items(),
             )
-            if instrument is not None and instrument in PEDAL_INSTRUMENTS
+            if instrument in PEDAL_INSTRUMENTS
         ]
         for voice in pedal_voices:
             for i, measure in enumerate(score.measures):
@@ -1615,7 +1688,7 @@ def _build_performance_plan(
         perc_timing_us = PERCUSSION_TIMING_US.get(humanization, PERCUSSION_TIMING_US["light"])
         humanized: list[PerformanceNoteEvent] = []
         for event in events:
-            if event.voice_id in (VOICE_MELODY, VOICE_HARMONY):
+            if event.voice_id == VOICE_MELODY or event.voice_id in harmony_instruments:
                 offset = round(rng.uniform(-1.0, 1.0) * timing_us)
                 velocity = max(1, min(127, round(64 + (event.velocity - 64) * velocity_span)))
                 humanized.append(

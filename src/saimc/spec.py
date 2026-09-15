@@ -413,22 +413,22 @@ class SpecError(BaseModel):
 
 
 __all__ = [
+    "DEDICATED_FONT_INSTRUMENTS",
     "DURATION_SECONDS_DEFAULT",
     "DURATION_SECONDS_MAX",
     "DURATION_SECONDS_MIN",
+    "ENSEMBLE_MAX_VOICES",
+    "ROLE_ORDER",
     "SPEC_SCHEMA_VERSION",
     "TEMPO_BPM_MAX",
     "TEMPO_BPM_MIN",
     "CompositionSpec",
-    "DEDICATED_FONT_INSTRUMENTS",
-    "ENSEMBLE_MAX_VOICES",
     "Instrument",
     "InstrumentationEntry",
     "Mood",
     "RequestKind",
-    "ROLE_ORDER",
     "SpecError",
-    "VoiceRole",
     "TimeSignature",
+    "VoiceRole",
     "WesternKey",
 ]

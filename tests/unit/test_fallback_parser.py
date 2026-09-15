@@ -15,7 +15,6 @@ from saimc.spec import (
     SpecError,
 )
 
-
 # The ensemble a scalar piano spec expands to, per mood
 # (`SCALAR_HARMONY`/`SCALAR_BASS` in saimc.compose.ensemble).
 _SCALAR_PIANO_ENSEMBLE = {

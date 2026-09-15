@@ -29,6 +29,7 @@ from saimc.render.audio import (
     ACCOMPANIMENT_CC7,
     ACCOMPANIMENT_CC10_PAN,
     CENTER_CC10_PAN,
+    HARMONY_CC7,
     MASTER_LOUDNESS_LUFS,
     MASTER_TRUE_PEAK_DBTP,
     MELODY_CC7,
@@ -144,6 +145,28 @@ class TestSmfChannelMix:
         )
         smf = build_smf(plan, bpm=120.0, voice_instruments={2: "drum_set"})
         assert self._cc(smf, 10)[9] == CENTER_CC10_PAN
+
+    def test_harmony_layers_are_quieter_and_spread_across_stereo(self) -> None:
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=3, pitch_midi=60, start_us=0, duration_us=500_000, velocity=64
+                ),
+                PerformanceNoteEvent(
+                    voice_id=4, pitch_midi=67, start_us=0, duration_us=500_000, velocity=64
+                ),
+            ],
+        )
+        smf = build_smf(
+            plan,
+            bpm=120.0,
+            voice_instruments={3: "brass_section", 4: "strings"},
+        )
+        cc7 = self._cc(smf, 7)
+        cc10 = self._cc(smf, 10)
+        assert cc7[3] == cc7[4] == HARMONY_CC7
+        assert cc10[3] < 64 < cc10[4]
 
 
 class TestLoudnormFilter:

@@ -382,10 +382,10 @@ def render_animation(
 __all__ = [
     "DEFAULT_ANIM_FPS",
     "DEFAULT_ANIM_TIMEOUT_S",
+    "VOICE_COLORS",
     "AnimationArtifact",
     "AnimationRenderError",
     "AnimationRenderErrorCode",
-    "VOICE_COLORS",
     "build_roll",
     "encode_webm",
     "iter_roll_frames",

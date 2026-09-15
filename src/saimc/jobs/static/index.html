@@ -3,679 +3,581 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Smart AI Music Composer</title>
+<meta name="theme-color" content="#090b12">
+<title>SAIMC Studio</title>
 <style>
   :root {
-    --bg: #0c1016;
-    --panel: #141a23;
-    --panel-2: #1a222e;
-    --border: #29323f;
-    --text: #e8edf4;
-    --muted: #94a1b0;
-    --faint: #5f6b78;
-    --accent: #7aa2ff;
-    --accent-strong: #4f83f7;
-    --ok: #46c98f;
-    --err: #ef6a62;
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
+    --bg: #090b12;
+    --surface: #10131d;
+    --surface-raised: #151925;
+    --surface-soft: #1a1f2d;
+    --border: #272d3d;
+    --border-bright: #373e52;
+    --text: #f5f6fb;
+    --muted: #a1a8ba;
+    --faint: #6f778a;
+    --violet: #9b87f5;
+    --violet-strong: #8067ec;
+    --cyan: #5dd8d0;
+    --success: #57d39b;
+    --warning: #f0b35d;
+    --danger: #f07878;
+    --shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
   }
   * { box-sizing: border-box; }
   html { -webkit-font-smoothing: antialiased; }
   body {
+    min-height: 100vh;
     margin: 0;
-    background:
-      radial-gradient(1200px 500px at 50% -10%, rgba(79, 131, 247, 0.14), transparent 60%),
-      var(--bg);
     color: var(--text);
-    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background:
+      radial-gradient(900px 500px at 12% -10%, rgba(128, 103, 236, 0.18), transparent 62%),
+      radial-gradient(700px 430px at 90% 4%, rgba(93, 216, 208, 0.08), transparent 62%),
+      var(--bg);
+    font: 16px/1.55 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
-  main { max-width: 880px; margin: 0 auto; padding: 40px 20px 80px; }
-
-  header { text-align: center; margin-bottom: 32px; }
-  .logo {
-    display: inline-flex; align-items: center; gap: 10px;
-    font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em;
+  button, textarea { font: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  button:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible {
+    outline: 3px solid rgba(155, 135, 245, 0.34);
+    outline-offset: 2px;
   }
-  .logo .mark {
-    width: 34px; height: 34px; border-radius: 9px;
-    background: linear-gradient(135deg, var(--accent-strong), var(--accent));
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 1.05rem; color: #0b0e13;
+  .topbar {
+    width: min(1180px, calc(100% - 40px));
+    min-height: 76px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    border-bottom: 1px solid rgba(55, 62, 82, 0.72);
   }
-  .tagline { color: var(--muted); margin: 6px 0 0; font-size: 0.95rem; }
-  .tagline b { color: var(--text); font-weight: 600; }
-
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: var(--shadow);
-    padding: 22px;
-    margin-bottom: 18px;
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
+    color: #0b0c12; background: linear-gradient(145deg, #b6a9ff, var(--violet-strong));
+    box-shadow: 0 8px 24px rgba(128, 103, 236, 0.28); font-size: 1.1rem; font-weight: 900;
   }
-
-  label.field-label {
-    display: block; font-size: 0.8rem; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--muted); margin-bottom: 8px;
+  .brand-copy { display: flex; flex-direction: column; line-height: 1.16; }
+  .brand-name { font-size: 1rem; font-weight: 760; letter-spacing: -0.02em; }
+  .brand-sub { margin-top: 4px; color: var(--faint); font-size: 0.75rem; letter-spacing: 0.04em; }
+  .service-pill {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 6px 11px;
+    color: var(--muted); background: rgba(16, 19, 29, 0.72); border: 1px solid var(--border);
+    border-radius: 999px; font-size: 0.78rem; white-space: nowrap;
   }
-  .prompt-row { display: flex; gap: 10px; }
-  #prompt {
-    flex: 1; background: var(--panel-2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; font-size: 1rem;
+  .service-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 4px rgba(111, 119, 138, 0.1); }
+  .service-pill.ready .service-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(87, 211, 155, 0.1); }
+  .service-pill.warning .service-dot { background: var(--warning); box-shadow: 0 0 0 4px rgba(240, 179, 93, 0.1); }
+  .service-pill.offline .service-dot { background: var(--danger); box-shadow: 0 0 0 4px rgba(240, 120, 120, 0.1); }
+  .workspace {
+    width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 38px 0 72px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start;
   }
-  #prompt::placeholder { color: var(--faint); }
-  #prompt:focus { outline: none; border-color: var(--accent-strong); box-shadow: 0 0 0 3px rgba(79, 131, 247, 0.25); }
-  button.primary {
-    background: linear-gradient(135deg, var(--accent-strong), var(--accent));
-    color: #0b0e13; border: 0; border-radius: 10px;
-    padding: 12px 22px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+  .main-column, .side-column { min-width: 0; }
+  .side-column { position: sticky; top: 20px; }
+  .eyebrow { margin: 0 0 7px; color: var(--violet); font-size: 0.75rem; font-weight: 760; letter-spacing: 0.14em; text-transform: uppercase; }
+  h1 { margin: 0; max-width: 720px; font-size: clamp(2rem, 5vw, 3.65rem); line-height: 1.02; letter-spacing: -0.055em; font-weight: 780; }
+  .intro { max-width: 670px; margin: 17px 0 25px; color: var(--muted); font-size: 1rem; }
+  .intro strong { color: var(--text); font-weight: 650; }
+  .panel {
+    position: relative; overflow: hidden; padding: 22px; margin-bottom: 18px;
+    background: linear-gradient(150deg, rgba(21, 25, 37, 0.98), rgba(16, 19, 29, 0.98));
+    border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow);
   }
-  button.primary:disabled { opacity: 0.45; cursor: default; }
-  button.ghost {
-    background: transparent; color: var(--err);
-    border: 1px solid rgba(239, 106, 98, 0.5); border-radius: 10px;
-    padding: 12px 16px; font-size: 0.9rem; cursor: pointer;
-  }
-  .examples { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .examples span.try { color: var(--faint); font-size: 0.85rem; }
-  .chip {
-    border: 1px solid var(--border); background: var(--panel-2);
-    color: var(--muted); border-radius: 999px; padding: 5px 12px;
-    font-size: 0.82rem; cursor: pointer;
-  }
-  .chip:hover { color: var(--text); border-color: var(--accent-strong); }
-
-  .alert {
-    border: 1px solid rgba(239, 106, 98, 0.45); background: rgba(239, 106, 98, 0.08);
-    border-radius: 10px; padding: 10px 14px; margin-top: 14px;
-    color: var(--err); font-size: 0.9rem; white-space: pre-wrap;
-  }
+  .composer-panel::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, var(--violet), var(--cyan), transparent 88%); }
+  .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  .section-head h2, .result-title { margin: 0; font-size: 0.98rem; font-weight: 690; letter-spacing: -0.015em; }
+  .section-kicker { margin: 3px 0 0; color: var(--faint); font-size: 0.78rem; }
+  .shortcut { color: var(--faint); font-size: 0.72rem; white-space: nowrap; }
+  .prompt-shell { padding: 14px; background: var(--surface-soft); border: 1px solid var(--border-bright); border-radius: 14px; transition: border-color 160ms ease, box-shadow 160ms ease; }
+  .prompt-shell:focus-within { border-color: var(--violet); box-shadow: 0 0 0 4px rgba(155, 135, 245, 0.1); }
+  #prompt { display: block; width: 100%; min-height: 112px; padding: 0; resize: vertical; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 1rem; line-height: 1.55; }
+  #prompt::placeholder { color: #737b8f; }
+  .prompt-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .character-count { color: var(--faint); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .prompt-actions { display: flex; gap: 9px; }
+  button { border: 0; border-radius: 10px; cursor: pointer; transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, opacity 140ms ease; }
+  button:active { transform: translateY(1px); }
+  button:disabled { cursor: not-allowed; opacity: 0.48; }
+  button.primary { min-height: 42px; padding: 9px 18px; color: white; background: linear-gradient(135deg, var(--violet-strong), #6c55d8); box-shadow: 0 8px 22px rgba(128, 103, 236, 0.23); font-size: 0.9rem; font-weight: 720; }
+  button.primary:hover:not(:disabled) { background: linear-gradient(135deg, #8e77f2, #765dde); }
+  button.ghost, button.secondary { min-height: 40px; padding: 8px 13px; color: var(--muted); background: transparent; border: 1px solid var(--border-bright); font-size: 0.82rem; font-weight: 620; }
+  button.ghost { color: var(--danger); border-color: rgba(240, 120, 120, 0.35); }
+  button.secondary:hover, button.ghost:hover { color: var(--text); border-color: var(--violet); }
+  .examples { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .examples-label { color: var(--faint); font-size: 0.78rem; }
+  .chip { padding: 6px 10px; color: var(--muted); background: rgba(26, 31, 45, 0.72); border: 1px solid var(--border); border-radius: 999px; font-size: 0.76rem; }
+  .chip:hover { color: var(--text); border-color: var(--violet); }
+  .alert { margin: 13px 0 0; padding: 11px 13px; color: #ffaaaa; background: rgba(240, 120, 120, 0.08); border: 1px solid rgba(240, 120, 120, 0.28); border-radius: 10px; font-size: 0.84rem; white-space: pre-wrap; }
   .alert:empty { display: none; }
-
-  /* ---- pipeline stepper ---- */
-  .stepper { display: flex; align-items: flex-start; margin-top: 4px; }
-  .step { flex: 1; text-align: center; position: relative; }
-  .step .dot {
-    width: 26px; height: 26px; border-radius: 50%;
-    border: 2px solid var(--border); background: var(--panel-2);
-    color: var(--faint); font-size: 0.72rem; font-weight: 700;
-    display: inline-flex; align-items: center; justify-content: center;
-    position: relative; z-index: 1;
-  }
-  .step .bar {
-    position: absolute; top: 12px; left: -50%; width: 100%; height: 2px;
-    background: var(--border); z-index: 0;
-  }
+  .state-badge { display: inline-flex; align-items: center; padding: 5px 9px; color: var(--violet); background: rgba(155, 135, 245, 0.09); border: 1px solid rgba(155, 135, 245, 0.25); border-radius: 999px; font-size: 0.7rem; font-weight: 760; letter-spacing: 0.06em; text-transform: uppercase; }
+  .state-badge.complete { color: var(--success); background: rgba(87, 211, 155, 0.08); border-color: rgba(87, 211, 155, 0.25); }
+  .state-badge.failed, .state-badge.cancelled { color: var(--danger); background: rgba(240, 120, 120, 0.08); border-color: rgba(240, 120, 120, 0.25); }
+  .stepper { display: flex; align-items: flex-start; margin: 3px 0 0; }
+  .step { flex: 1; min-width: 0; text-align: center; position: relative; }
+  .step .dot { position: relative; z-index: 1; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; color: var(--faint); background: var(--surface-soft); border: 2px solid var(--border-bright); border-radius: 50%; font-size: 0.68rem; font-weight: 800; }
+  .step .bar { position: absolute; z-index: 0; top: 13px; left: -50%; width: 100%; height: 2px; background: var(--border); }
   .step:first-child .bar { display: none; }
-  .step.done .dot { border-color: var(--ok); background: rgba(70, 201, 143, 0.15); color: var(--ok); }
-  .step.done .bar { background: var(--ok); }
-  .step.active .dot { border-color: var(--accent-strong); color: var(--text); }
-  .step.active .bar { background: var(--ok); }
-  .step.active .dot::after {
-    content: ""; position: absolute; inset: -7px; border-radius: 50%;
-    border: 2px solid rgba(79, 131, 247, 0.35);
-    animation: pulse 1.4s ease-out infinite;
-  }
-  @keyframes pulse {
-    0% { transform: scale(0.7); opacity: 1; }
-    100% { transform: scale(1.25); opacity: 0; }
-  }
-  .step .lbl {
-    display: block; margin-top: 8px; font-size: 0.72rem;
-    color: var(--faint); letter-spacing: 0.02em;
-  }
-  .step.done .lbl, .step.active .lbl { color: var(--muted); }
-  .step.active .lbl { color: var(--text); font-weight: 600; }
-
-  .status-line { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
-  .stage-note { color: var(--muted); font-size: 0.92rem; }
-  .percent { color: var(--muted); font-size: 0.85rem; margin-left: auto; font-variant-numeric: tabular-nums; }
-  .progress {
-    height: 5px; background: var(--border); border-radius: 3px;
-    margin-top: 10px; overflow: hidden;
-  }
-  .progress > div {
-    height: 100%; width: 0; border-radius: 3px;
-    background: linear-gradient(90deg, var(--accent-strong), var(--accent));
-    transition: width 0.5s ease;
-  }
-  .job-meta { color: var(--faint); font-size: 0.78rem; word-break: break-all; margin: 14px 0 0; }
-  .cancel-row { margin-top: 12px; }
-  .job-actions { display: flex; gap: 10px; margin-top: 12px; }
-  button.secondary {
-    background: transparent; color: var(--accent); border: 1px solid var(--border);
-    border-radius: 9px; padding: 8px 14px; font-size: 0.85rem; cursor: pointer;
-  }
-  button.secondary:hover { border-color: var(--accent-strong); }
-
-  /* ---- error detail ---- */
-  .error-raw { color: var(--faint); font-size: 0.78rem; margin-top: 8px; }
+  .step.done .dot { color: #07140f; background: var(--success); border-color: var(--success); }
+  .step.done .bar, .step.active .bar { background: var(--success); }
+  .step.active .dot { color: white; border-color: var(--violet); background: var(--violet-strong); }
+  .step.active .dot::after { content: ""; position: absolute; inset: -7px; border: 2px solid rgba(155, 135, 245, 0.28); border-radius: 50%; animation: pulse 1.6s ease-out infinite; }
+  .step .lbl { display: block; margin-top: 8px; overflow: hidden; color: var(--faint); font-size: 0.69rem; text-overflow: ellipsis; white-space: nowrap; }
+  .step.active .lbl { color: var(--text); font-weight: 680; }
+  .step.done .lbl { color: var(--muted); }
+  @keyframes pulse { from { transform: scale(.72); opacity: 1; } to { transform: scale(1.3); opacity: 0; } }
+  .status-line { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
+  .stage-note { color: var(--muted); font-size: 0.88rem; }
+  .percent { margin-left: auto; color: var(--text); font-size: 0.82rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .progress { height: 7px; margin-top: 10px; overflow: hidden; background: #242938; border-radius: 999px; }
+  .progress > div { width: 0; height: 100%; background: linear-gradient(90deg, var(--violet-strong), var(--cyan)); border-radius: inherit; transition: width 500ms ease; }
+  .job-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .job-meta { margin: 15px 0 0; color: var(--faint); font: 0.7rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  .error-raw { margin-top: 10px; color: var(--faint); font-size: 0.76rem; }
   .error-raw summary { cursor: pointer; color: var(--muted); }
-  .error-raw code { white-space: pre-wrap; word-break: break-all; }
-
-  /* ---- history ---- */
-  #history-list { list-style: none; margin: 0; padding: 0; }
-  .history-item {
-    display: flex; align-items: center; gap: 12px;
-    padding: 10px 4px; border-top: 1px solid var(--border);
-  }
-  .history-item:first-child { border-top: 0; }
-  .history-item .h-prompt {
-    flex: 1; color: var(--text); font-size: 0.9rem;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .history-item .h-time { color: var(--faint); font-size: 0.75rem; white-space: nowrap; }
-  .badge {
-    font-size: 0.7rem; font-weight: 600; border-radius: 999px;
-    padding: 3px 9px; border: 1px solid var(--border); color: var(--muted);
-    white-space: nowrap;
-  }
-  .badge.complete { color: var(--ok); border-color: rgba(70, 201, 143, 0.5); }
-  .badge.failed { color: var(--err); border-color: rgba(239, 106, 98, 0.5); }
-  .badge.running { color: var(--accent); border-color: rgba(79, 131, 247, 0.5); }
-  a.h-link { all: unset; cursor: pointer; display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
-  a.h-link:hover .h-prompt { color: var(--accent); }
-
-  /* ---- results ---- */
+  .error-raw code { display: block; margin-top: 7px; white-space: pre-wrap; word-break: break-word; }
   #previews { display: none; }
-  .ready-banner {
-    display: flex; align-items: center; gap: 10px;
-    border: 1px solid rgba(70, 201, 143, 0.4); background: rgba(70, 201, 143, 0.08);
-    color: var(--ok); border-radius: 12px; padding: 12px 16px;
-    font-weight: 600; margin-bottom: 18px;
-  }
-  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  .result-card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 14px; padding: 18px; box-shadow: var(--shadow);
-  }
+  .result-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 26px 0 13px; }
+  .ready-mark { display: inline-flex; align-items: center; gap: 8px; color: var(--success); font-size: 0.82rem; font-weight: 700; }
+  .ready-mark::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+  .result-summary { color: var(--faint); font-size: 0.78rem; }
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .result-card { min-width: 0; padding: 17px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
   .result-card.wide { grid-column: 1 / -1; }
-  .result-card h2 {
-    margin: 0 0 12px; font-size: 0.8rem; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
-  }
-  audio, video { width: 100%; border-radius: 8px; display: block; }
-  .sheet-wrap {
-    background: #f7f4ee; border-radius: 10px; padding: 14px;
-    max-height: 460px; overflow: auto;
-  }
-  #sheet-holder svg { width: 100%; height: auto; display: block; }
-  .downloads { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-  .downloads a {
-    color: var(--text); text-decoration: none;
-    border: 1px solid var(--border); background: var(--panel-2);
-    border-radius: 9px; padding: 8px 14px; font-size: 0.85rem;
-  }
-  .downloads a:hover { border-color: var(--accent-strong); color: var(--accent); }
-  footer {
-    text-align: center; color: var(--faint); font-size: 0.78rem;
-    margin-top: 40px; line-height: 1.7;
-  }
+  .result-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+  .format-label { color: var(--faint); font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  audio, video { display: block; width: 100%; border-radius: 10px; background: #06070b; }
+  video { aspect-ratio: 16 / 9; }
+  .sheet-wrap { max-height: 560px; overflow: auto; padding: 16px; background: #f7f4ee; border-radius: 10px; }
+  #sheet-holder svg { display: block; width: 100%; height: auto; }
+  .downloads { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .downloads a { padding: 8px 12px; color: var(--muted); text-decoration: none; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; font-size: 0.78rem; font-weight: 620; }
+  .downloads a:hover { color: var(--text); border-color: var(--violet); }
+  .library-panel { box-shadow: none; }
+  #history-list { list-style: none; margin: 0; padding: 0; }
+  .history-item { border-top: 1px solid var(--border); }
+  .history-item:first-child { border-top: 0; }
+  a.h-link { display: block; padding: 12px 2px; color: inherit; text-decoration: none; }
+  .h-top { display: flex; align-items: center; gap: 10px; }
+  .h-prompt { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font-size: 0.83rem; font-weight: 590; text-overflow: ellipsis; white-space: nowrap; }
+  .h-bottom { display: flex; align-items: center; gap: 8px; margin-top: 5px; color: var(--faint); font-size: 0.7rem; }
+  a.h-link:hover .h-prompt { color: #c5baff; }
+  .badge { padding: 3px 7px; color: var(--muted); border: 1px solid var(--border-bright); border-radius: 999px; font-size: 0.62rem; font-weight: 740; text-transform: capitalize; }
+  .badge.complete { color: var(--success); border-color: rgba(87, 211, 155, 0.25); }
+  .badge.failed { color: var(--danger); border-color: rgba(240, 120, 120, 0.25); }
+  .badge.running { color: var(--violet); border-color: rgba(155, 135, 245, 0.25); }
+  .empty-library { margin: 3px 0 0; padding: 22px 6px; color: var(--faint); border-top: 1px solid var(--border); font-size: 0.8rem; }
+  .studio-note { padding: 16px 18px; color: var(--faint); background: rgba(16, 19, 29, 0.55); border: 1px solid rgba(39, 45, 61, 0.72); border-radius: 14px; font-size: 0.74rem; line-height: 1.65; }
+  .studio-note strong { color: var(--muted); font-weight: 650; }
+  @media (max-width: 900px) { .workspace { grid-template-columns: 1fr; } .side-column { position: static; } }
   @media (max-width: 640px) {
+    .topbar, .workspace { width: min(100% - 24px, 1180px); }
+    .topbar { min-height: 66px; }
+    .brand-sub { display: none; }
+    .workspace { padding-top: 26px; }
+    .panel { padding: 17px; border-radius: 15px; }
+    .prompt-footer { align-items: flex-end; }
+    .prompt-actions { flex-direction: column-reverse; align-items: stretch; }
+    .prompt-actions button { min-width: 112px; }
     .result-grid { grid-template-columns: 1fr; }
-    .prompt-row { flex-direction: column; }
+    .result-card.wide { grid-column: auto; }
     .step .lbl { font-size: 0.62rem; }
+    .shortcut { display: none; }
   }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <div class="logo"><span class="mark">♪</span> Smart AI Music Composer</div>
-    <p class="tagline">Describe a <b>mood</b> and a length — the studio renders audio, sheet music, and an animation.</p>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">♪</span>
+      <span class="brand-copy"><span class="brand-name">SAIMC Studio</span><span class="brand-sub">Local generative music workspace</span></span>
+    </div>
+    <div class="service-pill" id="service-pill" role="status" aria-live="polite"><span class="service-dot" aria-hidden="true"></span><span id="service-text">Checking studio…</span></div>
   </header>
-
-  <section class="card">
-    <form id="compose-form">
-      <label class="field-label" for="prompt">Your prompt</label>
-      <div class="prompt-row">
-        <input id="prompt" type="text" maxlength="4096" required autocomplete="off"
-               placeholder="e.g. build me a 30 second calming piece with piano and strings">
-        <button id="compose" class="primary" type="submit">Compose</button>
-        <button id="cancel" class="ghost" type="button" hidden>Cancel</button>
-      </div>
-      <div class="examples">
-        <span class="try">Try:</span>
-        <button type="button" class="chip">calming piano music</button>
-        <button type="button" class="chip">build me a 5 min electrifying piece with lots of instruments</button>
-        <button type="button" class="chip">sleepy lullaby, ten minutes</button>
-      </div>
-      <p class="alert" id="form-error" role="alert"></p>
-    </form>
-  </section>
-
-  <section class="card" id="status-panel" hidden>
-    <div class="stepper" id="stepper"></div>
-    <div class="status-line">
-      <span class="stage-note" id="stage-note" aria-live="polite"></span>
-      <span class="percent" id="percent">0%</span>
+  <main class="workspace">
+    <div class="main-column">
+      <p class="eyebrow">New composition</p>
+      <h1>Turn an idea into a finished piece.</h1>
+      <p class="intro">Describe the <strong>mood, length, tempo, and instruments</strong>. The studio produces mastered audio, engraved sheet music, and an animated performance.</p>
+      <section class="panel composer-panel">
+        <form id="compose-form">
+          <div class="section-head">
+            <div><h2>Creative brief</h2><p class="section-kicker">Specific musical direction produces the strongest result.</p></div>
+            <span class="shortcut">⌘ / Ctrl + Enter</span>
+          </div>
+          <div class="prompt-shell">
+            <textarea id="prompt" maxlength="4096" required autocomplete="off" aria-label="Composition prompt" placeholder="Compose a 90-second calming piano piece in C major at 76 BPM, with strings for harmony and cello for bass…"></textarea>
+            <div class="prompt-footer">
+              <span class="character-count" id="character-count">0 / 4096</span>
+              <div class="prompt-actions"><button id="cancel" class="ghost" type="button" hidden>Cancel</button><button id="compose" class="primary" type="submit">Create piece</button></div>
+            </div>
+          </div>
+          <div class="examples" aria-label="Prompt examples">
+            <span class="examples-label">Start with</span>
+            <button type="button" class="chip">90-second calming piano in C major at 76 BPM</button>
+            <button type="button" class="chip">2-minute professional cinematic piece at 128 BPM: trumpet melody, brass accents, string harmony, contrabass, drums, expressive performance</button>
+            <button type="button" class="chip">60-second sleep lullaby with piano and cello</button>
+          </div>
+          <p class="alert" id="form-error" role="alert"></p>
+        </form>
+      </section>
+      <section class="panel" id="status-panel" hidden>
+        <div class="section-head">
+          <div><h2>Production progress</h2><p class="section-kicker">Longer pieces spend most of their time rendering video.</p></div>
+          <span class="state-badge" id="state-badge">Queued</span>
+        </div>
+        <div class="stepper" id="stepper"></div>
+        <div class="status-line"><span class="stage-note" id="stage-note" aria-live="polite"></span><span class="percent" id="percent">0%</span></div>
+        <div class="progress" id="progress-track" role="progressbar" aria-label="Composition progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-bar"></div></div>
+        <p class="alert" id="job-error" role="alert"></p>
+        <details class="error-raw" id="error-detail" hidden><summary>Technical details</summary><code id="error-raw"></code></details>
+        <div class="job-actions">
+          <button id="cancel2" class="ghost" type="button" hidden>Cancel job</button>
+          <button id="remix" class="secondary" type="button" hidden>Remix prompt</button>
+          <button id="reproduce" class="secondary" type="button" hidden>Reproduce with same seed</button>
+        </div>
+        <p class="job-meta" id="job-id"></p>
+      </section>
+      <section id="previews">
+        <div class="result-heading">
+          <div><div class="ready-mark">Master complete</div><h2 class="result-title">Your finished piece</h2></div>
+          <span class="result-summary" id="result-summary"></span>
+        </div>
+        <div class="result-grid">
+          <article class="result-card"><div class="result-card-head"><h3 class="result-title">Audio master</h3><span class="format-label">OGG / WAV</span></div><audio id="audio-player" controls preload="metadata"></audio></article>
+          <article class="result-card"><div class="result-card-head"><h3 class="result-title">Performance</h3><span class="format-label">WebM</span></div><video id="animation-player" controls preload="metadata"></video></article>
+          <article class="result-card wide"><div class="result-card-head"><h3 class="result-title">Conductor score</h3><span class="format-label">SVG</span></div><div class="sheet-wrap"><div id="sheet-holder"></div></div></article>
+        </div>
+        <div class="downloads" id="downloads" aria-label="Download files"></div>
+      </section>
     </div>
-    <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
-    <p class="alert" id="job-error"></p>
-    <details class="error-raw" id="error-detail" hidden>
-      <summary>Technical details</summary>
-      <code id="error-raw"></code>
-    </details>
-    <div class="cancel-row"><button id="cancel2" class="ghost" type="button" hidden>Cancel this job</button></div>
-    <div class="job-actions">
-      <button id="remix" class="secondary" type="button" hidden>✎ Remix this prompt</button>
-      <button id="reproduce" class="secondary" type="button" hidden>⟳ Reproduce (same seed)</button>
-    </div>
-    <p class="job-meta" id="job-id"></p>
-  </section>
-
-  <section class="card" id="history-panel" hidden>
-    <label class="field-label">Recent pieces</label>
-    <ul id="history-list"></ul>
-  </section>
-
-  <section id="previews">
-    <div class="ready-banner">✓ Your piece is ready — listen below</div>
-    <div class="result-grid">
-      <div class="result-card">
-        <h2>Audio</h2>
-        <audio id="audio-player" controls preload="none"></audio>
-      </div>
-      <div class="result-card">
-        <h2>Animation</h2>
-        <video id="animation-player" controls preload="none"></video>
-      </div>
-      <div class="result-card wide">
-        <h2>Sheet music</h2>
-        <div class="sheet-wrap"><div id="sheet-holder"></div></div>
-      </div>
-    </div>
-    <div class="downloads" id="downloads"></div>
-  </section>
-
-  <footer>
-    Rendered locally with FluidSynth + Salamander Grand Piano (CC BY 3.0) ·
-    FFmpeg (LGPL) · OpenSheetMusicDisplay · Attribution in THIRD_PARTY_NOTICES.md
-  </footer>
-</main>
-
+    <aside class="side-column">
+      <section class="panel library-panel" id="history-panel">
+        <div class="section-head"><div><h2>Recent pieces</h2><p class="section-kicker">Your local studio library</p></div></div>
+        <ul id="history-list"></ul>
+        <p class="empty-library" id="empty-library">Your completed and in-progress pieces will appear here.</p>
+      </section>
+      <div class="studio-note"><strong>Private by design.</strong> Composition and rendering happen on this machine. Five-minute pieces can take several minutes because audio, notation, and every animation frame are produced separately.</div>
+    </aside>
+  </main>
 <script>
 (function () {
   "use strict";
-
   var POLL_MS = 1500;
-
-  // The five pipeline steps shown in the stepper, and which job states
-  // map to each. Anything outside this table is terminal/unknown.
+  var HEALTH_MS = 5000;
   var STEPS = [
-    { label: "Queued",   states: ["queued"] },
-    { label: "Prompt",   states: ["parsing"] },
-    { label: "Compose",  states: ["composing"] },
-    { label: "Render",   states: ["rendering_audio", "rendering_sheet", "rendering_animation"] },
-    { label: "Done",     states: ["complete"] }
+    { label: "Queued", states: ["queued"] },
+    { label: "Interpret", states: ["parsing"] },
+    { label: "Compose", states: ["composing", "validating"] },
+    { label: "Render", states: ["rendering_audio", "rendering_sheet", "rendering_animation"] },
+    { label: "Ready", states: ["complete"] }
   ];
   var STAGE_NOTES = {
-    queued: "Waiting for a free worker…",
-    parsing: "Understanding your prompt…",
-    composing: "Composing the score…",
-    rendering_audio: "Recording the ensemble…",
-    rendering_sheet: "Engraving the sheet music…",
-    rendering_animation: "Rendering the animation — the slowest step, hang tight…",
-    complete: "Everything is ready.",
-    failed: "Something went wrong.",
-    cancelled: "Cancelled."
+    queued: "Queued — production will begin shortly.",
+    parsing: "Interpreting the musical direction…",
+    composing: "Writing harmony, melody, rhythm, and dynamics…",
+    validating: "Checking the score for musical consistency…",
+    rendering_audio: "Recording and mastering the ensemble…",
+    rendering_sheet: "Engraving the conductor score…",
+    rendering_animation: "Rendering the performance video — this is the longest stage…",
+    complete: "All formats are ready.",
+    failed: "Production stopped before completion.",
+    cancelled: "This production was cancelled."
   };
-  var ARTIFACT_LABELS = {
-    audio: "audio.wav", audio_ogg: "audio.ogg",
-    sheet: "sheet.svg", animation: "animation.webm"
-  };
+  var STATE_LABELS = { rendering_audio: "Audio render", rendering_sheet: "Score render", rendering_animation: "Video render" };
+  var ARTIFACT_LABELS = { audio: "Download WAV", audio_ogg: "Download OGG", sheet: "Download score", animation: "Download video" };
   var CANCELLABLE_STATES = ["queued", "parsing", "composing"];
-
-  // What each failure code means for the person holding the prompt.
-  // Anything unmapped falls back to the server's message.
   var ERROR_HINTS = {
-    out_of_vocabulary:
-      "Phase 1 understands three moods — calming, electrifying, and sleep — plus a duration (e.g. “a 5 minute electrifying piece”). Try rephrasing with one of those.",
-    empty_prompt: "The prompt was empty — type what you’d like to hear.",
-    famous_piece: "Named pieces are out of scope for Phase 1; describe the mood and length instead.",
-    llm_unreachable: "The language model could not be reached. Check that Ollama is running, then try again.",
-    llm_invalid_json: "The language model returned something we couldn’t read. Trying again usually fixes it.",
-    llm_invalid_response: "The language model returned something we couldn’t read. Trying again usually fixes it.",
-    schema_invalid: "The language model produced an invalid request. It gets up to two automatic fixes; if this persists, try rephrasing.",
-    duration_unfulfillable: "That combination of mood and length can’t be composed within tolerance. Try a duration between 30 and 600 seconds.",
-    soundfont_missing: "A soundfont needed by this ensemble is not installed on the server.",
-    fluidsynth_missing: "FluidSynth is not installed on the server.",
-    ffmpeg_missing: "The FFmpeg binary is not configured on the server.",
-    worker_interrupted: "The server restarted mid-job and the job made no progress. Submit it again.",
-    cancel_not_allowed: "This job has already started rendering and can no longer be cancelled."
+    out_of_vocabulary: "Use a supported mood—calming, electrifying, or sleep—and a duration between 30 seconds and 10 minutes.",
+    empty_prompt: "Add a creative brief before starting production.",
+    famous_piece: "Describe an original mood and arrangement instead of requesting a named piece.",
+    llm_unreachable: "The prompt interpreter could not be reached. Check Ollama and try again.",
+    llm_invalid_json: "The prompt interpreter returned an unreadable response. Try again or simplify the brief.",
+    llm_invalid_response: "The prompt interpreter returned an unreadable response. Try again or simplify the brief.",
+    schema_invalid: "The brief could not be converted into a valid musical plan. Try naming a mood, length, and instruments.",
+    duration_unfulfillable: "This arrangement cannot fit the requested duration. Try a length between 30 seconds and 10 minutes.",
+    soundfont_missing: "A sound library required by this arrangement is not installed.",
+    fluidsynth_missing: "The audio renderer is not available.",
+    ffmpeg_missing: "The mastering and video renderer is not configured.",
+    queue_unavailable: "The production queue is unavailable. Check the studio status above and try again.",
+    worker_interrupted: "Production was interrupted by a restart. Submit the brief again.",
+    cancel_not_allowed: "Rendering has already started, so this job can no longer be cancelled."
   };
-
-  // Progress ceilings per pipeline step — the interpolator creeps the
-  // bar toward these between real server updates so a long render
-  // never looks frozen.
-  var STAGE_CEILINGS = {
-    queued: 3, parsing: 15, composing: 30,
-    rendering_audio: 50, rendering_sheet: 62, rendering_animation: 95
-  };
-
   var el = function (id) { return document.getElementById(id); };
-  var stepperEl = el("stepper"), stageNoteEl = el("stage-note"), percentEl = el("percent");
-  var barEl = el("progress-bar"), jobErrEl = el("job-error");
-  var statusPanel = el("status-panel"), previews = el("previews");
-  var composeBtn = el("compose"), formErrEl = el("form-error");
-  var cancelBtns = [el("cancel"), el("cancel2")];
-  var remixBtn = el("remix"), reproduceBtn = el("reproduce");
-  var historyPanel = el("history-panel"), historyList = el("history-list");
-
   var jobId = null;
   var lastJob = null;
   var pollTimer = null;
+  var jobStream = null;
+  var pollGeneration = 0;
   var pollFailures = 0;
-  var displayedPct = 0;
-  var lastProgressAt = 0;
+  var health = null;
+  var stepperEl = el("stepper");
+  var stageNoteEl = el("stage-note");
+  var percentEl = el("percent");
+  var barEl = el("progress-bar");
+  var progressTrack = el("progress-track");
+  var jobErrEl = el("job-error");
+  var statusPanel = el("status-panel");
+  var previews = el("previews");
+  var composeBtn = el("compose");
+  var formErrEl = el("form-error");
+  var cancelBtns = [el("cancel"), el("cancel2")];
+  var remixBtn = el("remix");
+  var reproduceBtn = el("reproduce");
 
   function setJob(id) {
     jobId = id;
-    // The hash is the permalink: reload/share lands on the same job.
-    if (window.location.hash !== "#/job/" + id) {
-      window.history.replaceState(null, "", "#/job/" + id);
-    }
+    if (window.location.hash !== "#/job/" + id) { window.history.replaceState(null, "", "#/job/" + id); }
     try { localStorage.setItem("saimc.job_id", id); } catch (e) { /* private mode */ }
   }
-
   function jobFromHash() {
-    var m = window.location.hash.match(/^#\/job\/([a-zA-Z0-9-]+)$/);
-    return m ? m[1] : null;
+    var match = window.location.hash.match(/^#\/job\/([a-zA-Z0-9-]+)$/);
+    return match ? match[1] : null;
   }
-
   function startPolling() {
-    if (pollTimer !== null) { return; }
-    pollTimer = window.setInterval(poll, POLL_MS);
-    poll();
+    stopPolling();
+    var generation = pollGeneration;
+    var requestedJobId = jobId;
+    if (window.EventSource && requestedJobId) {
+      jobStream = new window.EventSource("/jobs/" + encodeURIComponent(requestedJobId) + "/events");
+      jobStream.onmessage = function (event) {
+        if (generation !== pollGeneration || requestedJobId !== jobId) { return; }
+        try {
+          pollFailures = 0;
+          renderJob(JSON.parse(event.data));
+        } catch (error) {
+          jobErrEl.textContent = "The live status stream returned an unreadable update.";
+        }
+      };
+      jobStream.onerror = function () {
+        if (generation !== pollGeneration || requestedJobId !== jobId) { return; }
+        jobStream.close();
+        jobStream = null;
+        poll(generation, requestedJobId);
+      };
+      return;
+    }
+    poll(generation, requestedJobId);
   }
-
   function stopPolling() {
-    if (pollTimer !== null) { window.clearInterval(pollTimer); pollTimer = null; }
+    if (pollTimer !== null) { window.clearTimeout(pollTimer); pollTimer = null; }
+    if (jobStream !== null) { jobStream.close(); jobStream = null; }
+    pollGeneration += 1;
   }
-
-  function artifactUrl(kind) {
-    return "/jobs/" + encodeURIComponent(jobId) + "/artifact/" + kind;
+  function schedulePoll(generation, requestedJobId) {
+    if (generation !== pollGeneration || requestedJobId !== jobId) { return; }
+    pollTimer = window.setTimeout(function () {
+      pollTimer = null;
+      poll(generation, requestedJobId);
+    }, POLL_MS);
   }
-
+  function artifactUrl(kind) { return "/jobs/" + encodeURIComponent(jobId) + "/artifact/" + kind; }
   function renderStepper(state) {
     var activeIdx = -1;
-    STEPS.forEach(function (step, i) {
-      if (step.states.indexOf(state) !== -1) { activeIdx = i; }
-    });
-    var failed = state === "failed" || state === "cancelled";
+    STEPS.forEach(function (step, index) { if (step.states.indexOf(state) !== -1) { activeIdx = index; } });
+    var terminalFailure = state === "failed" || state === "cancelled";
     stepperEl.innerHTML = "";
-    STEPS.forEach(function (step, i) {
-      var div = document.createElement("div");
-      div.className = "step";
-      var dotCls = "dot";
-      var text = String(i + 1);
-      var stepDone = i < activeIdx || state === "complete";
-      var stepActive = i === activeIdx && !failed && state !== "complete";
-      if (failed && i === STEPS.length - 1) { text = "!"; }
-      else if (stepDone) { dotCls = "dot done"; text = "✓"; }
-      else if (stepActive) { dotCls = "dot active"; }
-      if (stepDone) { div.className += " done"; }
-      if (stepActive) { div.className += " active"; }
-      div.innerHTML =
-        '<span class="bar"></span>' +
-        '<span class="' + dotCls + '">' + text + "</span>" +
-        '<span class="lbl">' + step.label + "</span>";
-      stepperEl.appendChild(div);
+    STEPS.forEach(function (step, index) {
+      var item = document.createElement("div");
+      var dot = document.createElement("span");
+      var label = document.createElement("span");
+      var bar = document.createElement("span");
+      var done = index < activeIdx || state === "complete";
+      var active = index === activeIdx && !terminalFailure && state !== "complete";
+      item.className = "step" + (done ? " done" : "") + (active ? " active" : "");
+      bar.className = "bar";
+      dot.className = "dot";
+      dot.textContent = done ? "✓" : String(index + 1);
+      label.className = "lbl";
+      label.textContent = step.label;
+      item.appendChild(bar); item.appendChild(dot); item.appendChild(label); stepperEl.appendChild(item);
     });
   }
-
-  function setCancelVisible(show) {
-    cancelBtns.forEach(function (b) { b.hidden = !show; });
+  function setCancelVisible(show) { cancelBtns.forEach(function (button) { button.hidden = !show; }); }
+  function stageMessage(job) {
+    if (job.state === "queued" && health && health.workers === 0) {
+      return health.broker === "ready" ? "Queued — start a worker with ./run.sh start worker." : "The production queue is offline. Run ./run.sh start.";
+    }
+    if (job.state === "queued" && health && health.queue_depth > 1) { return "Queued behind " + (health.queue_depth - 1) + " other production" + (health.queue_depth === 2 ? "." : "s."); }
+    return STAGE_NOTES[job.state] || job.current_stage || job.state;
   }
-
   function renderJob(job) {
     statusPanel.hidden = false;
     lastJob = job;
     renderStepper(job.state);
-    stageNoteEl.textContent = STAGE_NOTES[job.state] || job.current_stage || job.state;
+    stageNoteEl.textContent = stageMessage(job);
     renderProgress(job);
-    el("job-id").textContent = "job " + job.job_id;
+    el("state-badge").textContent = STATE_LABELS[job.state] || job.state.replace(/_/g, " ");
+    el("state-badge").className = "state-badge " + job.state;
+    el("job-id").textContent = "JOB  " + job.job_id;
     renderError(job);
-
-    var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
-    // A rendering job must not block composing the next one.
+    var running = ["complete", "failed", "cancelled"].indexOf(job.state) === -1;
     composeBtn.disabled = false;
     remixBtn.hidden = !job.input_prompt || job.input_prompt === "(from-spec)";
     reproduceBtn.hidden = job.seed === null || job.seed === undefined;
     setCancelVisible(CANCELLABLE_STATES.indexOf(job.state) !== -1);
-
-    if (job.state === "complete") {
-      stopPolling();
-      renderArtifacts(job);
-      refreshHistory();
-    } else if (!running) {
-      stopPolling();
-    }
+    if (job.state === "complete") { stopPolling(); renderArtifacts(job); refreshHistory(); }
+    else if (!running) { stopPolling(); previews.style.display = "none"; refreshHistory(); }
   }
-
   function renderProgress(job) {
-    var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
-    var serverPct = Math.round((job.progress || 0) * 100);
-    if (running) {
-      // Interpolate between real updates: while the stage is still the
-      // same and the server hasn't moved the bar, creep toward the
-      // stage's ceiling so a long render doesn't look frozen. A real
-      // server update always wins.
-      var ceiling = STAGE_CEILINGS[job.state] !== undefined ? STAGE_CEILINGS[job.state] : 99;
-      var now = Date.now();
-      if (serverPct > displayedPct) {
-        displayedPct = serverPct;
-        lastProgressAt = now;
-      }
-      var crept = Math.min(ceiling, displayedPct + (now - lastProgressAt) / 1000 * 0.4);
-      var pct = Math.round(Math.max(serverPct, crept));
-      percentEl.textContent = pct + "%";
-      barEl.style.width = pct + "%";
-    } else {
-      displayedPct = serverPct;
-      percentEl.textContent = serverPct + "%";
-      barEl.style.width = serverPct + "%";
-    }
+    var serverPct = Math.round(Math.max(0, Math.min(1, job.progress || 0)) * 100);
+    percentEl.textContent = serverPct + "%";
+    barEl.style.width = serverPct + "%";
+    progressTrack.setAttribute("aria-valuenow", String(serverPct));
   }
-
   function renderError(job) {
-    if (!job.error) {
-      jobErrEl.textContent = "";
-      el("error-detail").hidden = true;
-      return;
-    }
-    var hint = ERROR_HINTS[job.error.error_code];
-    jobErrEl.textContent = hint || job.error.message;
+    if (!job.error) { jobErrEl.textContent = ""; el("error-detail").hidden = true; return; }
+    jobErrEl.textContent = ERROR_HINTS[job.error.error_code] || job.error.message;
     el("error-detail").hidden = false;
-    el("error-raw").textContent =
-      job.error.error_code + " (stage: " + job.error.stage + ")\n" + job.error.message;
+    el("error-raw").textContent = job.error.error_code + " (stage: " + job.error.stage + ")\n" + job.error.message;
   }
-
   function renderArtifacts(job) {
     previews.style.display = "block";
     var kinds = Object.keys(job.artifacts || {});
-    var audioKind = kinds.indexOf("audio_ogg") !== -1 ? "audio_ogg"
-      : kinds.indexOf("audio") !== -1 ? "audio" : null;
+    var audioKind = kinds.indexOf("audio_ogg") !== -1 ? "audio_ogg" : kinds.indexOf("audio") !== -1 ? "audio" : null;
     if (audioKind) { el("audio-player").src = artifactUrl(audioKind); }
-    if (kinds.indexOf("animation") !== -1) {
-      el("animation-player").src = artifactUrl("animation");
-    }
-    // The sheet artifact is an HTML fragment wrapping the SVG (OSMD
-    // canvas markup), so it is embedded as markup, not via <img>.
+    if (kinds.indexOf("animation") !== -1) { el("animation-player").src = artifactUrl("animation"); }
     if (kinds.indexOf("sheet") !== -1) {
       window.fetch(artifactUrl("sheet"))
-        .then(function (res) { return res.text(); })
-        .then(function (html) { el("sheet-holder").innerHTML = html; });
+        .then(function (response) { if (!response.ok) { throw new Error("score unavailable"); } return response.text(); })
+        .then(function (markup) { el("sheet-holder").innerHTML = markup; })
+        .catch(function () { el("sheet-holder").textContent = "The score preview could not be loaded."; });
     }
+    if (job.input_spec) {
+      var duration = job.input_spec.duration_seconds;
+      el("result-summary").textContent = job.input_spec.mood + " · " + Math.floor(duration / 60) + ":" + String(duration % 60).padStart(2, "0");
+    } else { el("result-summary").textContent = ""; }
     var downloads = el("downloads");
     downloads.innerHTML = "";
     kinds.forEach(function (kind) {
-      var a = document.createElement("a");
-      a.href = artifactUrl(kind);
-      a.download = ARTIFACT_LABELS[kind] || kind;
-      a.textContent = "⤓ " + (ARTIFACT_LABELS[kind] || kind);
-      downloads.appendChild(a);
+      var link = document.createElement("a");
+      link.href = artifactUrl(kind); link.download = ""; link.textContent = ARTIFACT_LABELS[kind] || ("Download " + kind); downloads.appendChild(link);
     });
   }
-
-  function poll() {
-    window.fetch("/jobs/" + encodeURIComponent(jobId))
-      .then(function (res) {
-        if (res.status === 404) { throw new Error("job not found"); }
-        if (!res.ok) { throw new Error("status " + res.status); }
-        return res.json();
+  function poll(generation, requestedJobId) {
+    if (!requestedJobId || generation !== pollGeneration) { return; }
+    window.fetch("/jobs/" + encodeURIComponent(requestedJobId), { cache: "no-store" })
+      .then(function (response) {
+        if (response.status === 404) { throw new Error("job not found"); }
+        if (!response.ok) { throw new Error("status " + response.status); }
+        return response.json();
       })
       .then(function (job) {
+        if (generation !== pollGeneration || requestedJobId !== jobId) { return; }
         pollFailures = 0;
         renderJob(job);
       })
-      .catch(function (err) {
-        // A transient failure (server restart, brief network drop)
-        // must not freeze the page: keep the interval alive and show
-        // what happened. Only a missing job is terminal.
+      .catch(function (error) {
+        if (generation !== pollGeneration || requestedJobId !== jobId) { return; }
         pollFailures += 1;
-        if (err.message === "job not found") { stopPolling(); }
-        jobErrEl.textContent = pollFailures > 1
-          ? "Still retrying — could not load the job: " + err.message
-          : "Reconnecting after: " + err.message;
-      });
+        if (error.message === "job not found") { stopPolling(); }
+        jobErrEl.textContent = pollFailures > 1 ? "Still reconnecting to the studio: " + error.message : "Reconnecting: " + error.message;
+      })
+      .then(function () { schedulePoll(generation, requestedJobId); });
   }
-
+  function renderHealth(snapshot) {
+    health = snapshot;
+    var pill = el("service-pill");
+    var text = el("service-text");
+    if (snapshot.status === "ready") {
+      pill.className = "service-pill ready";
+      text.textContent = snapshot.queue_depth > 0 ? "Studio ready · " + snapshot.queue_depth + " queued" : "Studio ready";
+    } else if (snapshot.status === "waiting_for_worker") {
+      pill.className = "service-pill warning"; text.textContent = "Worker offline";
+    } else {
+      pill.className = "service-pill offline"; text.textContent = "Studio unavailable";
+    }
+    if (lastJob && lastJob.state === "queued") { stageNoteEl.textContent = stageMessage(lastJob); }
+  }
+  function refreshHealth() {
+    window.fetch("/health", { cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(renderHealth)
+      .catch(function () { renderHealth({ status: "unavailable", broker: "unavailable", workers: 0, queue_depth: null }); });
+  }
   var pendingSeed = null;
-
-  el("compose-form").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    formErrEl.textContent = "";
+  el("compose-form").addEventListener("submit", function (event) {
+    event.preventDefault(); formErrEl.textContent = "";
     var prompt = el("prompt").value.trim();
     if (!prompt) { return; }
     composeBtn.disabled = true;
     var body = { prompt: prompt };
     if (pendingSeed !== null) { body.seed = pendingSeed; }
     pendingSeed = null;
-    window.fetch("/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    })
-      .then(function (res) {
-        if (res.status === 503) { throw new Error("job queue unavailable — try again shortly"); }
-        if (!res.ok) {
-          return res.json().then(function (body) {
-            throw new Error(body.detail || ("status " + res.status));
-          });
-        }
-        return res.json();
+    window.fetch("/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (response) {
+        if (!response.ok) { return response.json().then(function (payload) { throw new Error(payload.detail || ("status " + response.status)); }); }
+        return response.json();
       })
       .then(function (job) {
-        previews.style.display = "none";
-        setJob(job.job_id);
-        renderJob(job);
-        startPolling();
-        refreshHistory();
+        previews.style.display = "none"; setJob(job.job_id); renderJob(job); startPolling(); refreshHistory(); refreshHealth();
       })
-      .catch(function (err) {
-        composeBtn.disabled = false;
-        formErrEl.textContent = err.message;
-      });
+      .catch(function (error) { composeBtn.disabled = false; formErrEl.textContent = error.message; });
   });
-
-  // Example chips fill the prompt box without submitting, so the user
-  // can tweak before composing.
+  el("prompt").addEventListener("input", function () { el("character-count").textContent = this.value.length + " / 4096"; });
+  el("prompt").addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); el("compose-form").requestSubmit(); }
+  });
   Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (chip) {
-    chip.addEventListener("click", function () {
-      el("prompt").value = chip.textContent;
-      el("prompt").focus();
-    });
+    chip.addEventListener("click", function () { el("prompt").value = chip.textContent; el("prompt").dispatchEvent(new window.Event("input")); el("prompt").focus(); });
   });
-
-  cancelBtns.forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      if (!window.confirm("Cancel this job? The partial render is discarded.")) { return; }
+  cancelBtns.forEach(function (button) {
+    button.addEventListener("click", function () {
+      if (!window.confirm("Cancel this composition?")) { return; }
       window.fetch("/jobs/" + encodeURIComponent(jobId) + "/cancel", { method: "POST" })
-        .then(function (res) { return res.json(); })
-        .then(renderJob)
-        .catch(function (err) { formErrEl.textContent = "Cancel failed: " + err.message; });
+        .then(function (response) { return response.json(); }).then(renderJob)
+        .catch(function (error) { formErrEl.textContent = "Cancel failed: " + error.message; });
     });
   });
-
-  // Remix: take this job's prompt back into the box and go again.
-  // Reproduce: same prompt AND same seed, for a deterministic re-render.
   remixBtn.addEventListener("click", function () {
     if (!lastJob) { return; }
-    el("prompt").value = lastJob.input_prompt;
-    el("prompt").focus();
-    el("compose-form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+    el("prompt").value = lastJob.input_prompt; el("prompt").dispatchEvent(new window.Event("input")); el("prompt").focus();
   });
   reproduceBtn.addEventListener("click", function () {
     if (!lastJob) { return; }
-    el("prompt").value = lastJob.input_prompt;
-    pendingSeed = lastJob.seed;
-    el("compose-form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+    el("prompt").value = lastJob.input_prompt; el("prompt").dispatchEvent(new window.Event("input")); pendingSeed = lastJob.seed; el("compose-form").requestSubmit();
   });
-
-  // ---- history panel ----
   function refreshHistory() {
-    window.fetch("/jobs?limit=15")
-      .then(function (res) { return res.ok ? res.json() : []; })
+    window.fetch("/jobs?limit=12", { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : []; })
       .then(function (jobs) {
-        if (!jobs.length) { return; }
-        historyPanel.hidden = false;
-        historyList.innerHTML = "";
+        var list = el("history-list");
+        list.innerHTML = "";
+        el("empty-library").hidden = jobs.length > 0;
         jobs.forEach(function (job) {
-          var li = document.createElement("li");
-          li.className = "history-item";
-          var a = document.createElement("a");
-          a.className = "h-link";
-          a.href = "#/job/" + job.job_id;
-          var running = job.state !== "complete" && job.state !== "failed" && job.state !== "cancelled";
-          var badgeCls = job.state === "complete" ? "complete"
-            : job.state === "failed" || job.state === "cancelled" ? "failed" : "running";
-          a.innerHTML =
-            '<span class="h-prompt"></span>' +
-            '<span class="h-time"></span>' +
-            '<span class="badge ' + badgeCls + '">' + job.state.replace(/^rendering_/, "") + "</span>";
-          a.querySelector(".h-prompt").textContent = job.input_prompt;
-          a.querySelector(".h-time").textContent = new Date(job.created_at).toLocaleString();
-          a.addEventListener("click", function (ev) {
-            // Intercept so the hash change drives the switch cleanly.
-            ev.preventDefault();
-            window.location.hash = "#/job/" + job.job_id;
-          });
-          li.appendChild(a);
-          historyList.appendChild(li);
+          var item = document.createElement("li");
+          var link = document.createElement("a");
+          var top = document.createElement("span");
+          var prompt = document.createElement("span");
+          var badge = document.createElement("span");
+          var bottom = document.createElement("span");
+          var running = ["complete", "failed", "cancelled"].indexOf(job.state) === -1;
+          var badgeClass = job.state === "complete" ? "complete" : (job.state === "failed" || job.state === "cancelled") ? "failed" : "running";
+          link.className = "h-link"; link.href = "#/job/" + job.job_id; top.className = "h-top";
+          prompt.className = "h-prompt"; prompt.textContent = job.input_prompt === "(from-spec)" ? "Generated composition" : job.input_prompt;
+          badge.className = "badge " + badgeClass; badge.textContent = STATE_LABELS[job.state] || job.state.replace(/_/g, " ");
+          bottom.className = "h-bottom"; bottom.textContent = new Date(job.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+          if (job.input_spec) { bottom.textContent += " · " + job.input_spec.duration_seconds + " sec · " + job.input_spec.mood; }
+          top.appendChild(prompt); top.appendChild(badge); link.appendChild(top); link.appendChild(bottom);
+          link.addEventListener("click", function (event) { event.preventDefault(); window.location.hash = "#/job/" + job.job_id; });
+          item.className = "history-item" + (running ? " active" : ""); item.appendChild(link); list.appendChild(item);
         });
       })
-      .catch(function () { /* history is a nice-to-have */ });
+      .catch(function () { el("empty-library").textContent = "The local library could not be loaded."; });
   }
-
   window.addEventListener("hashchange", function () {
     var id = jobFromHash();
-    if (id && id !== jobId) {
-      previews.style.display = "none";
-      setJob(id);
-      startPolling();
-    }
+    if (id && id !== jobId) { previews.style.display = "none"; setJob(id); startPolling(); }
   });
-
-  // Boot: the permalink wins over the last-tracked job.
   var bootId = jobFromHash();
-  if (!bootId) {
-    try { bootId = localStorage.getItem("saimc.job_id"); } catch (e) { /* private mode */ }
-  }
-  if (bootId) {
-    setJob(bootId);
-    startPolling();
-  }
-  refreshHistory();
-
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && jobId !== null) { poll(); }
-  });
-  window.addEventListener("focus", function () {
-    if (jobId !== null) { poll(); }
-  });
+  if (!bootId) { try { bootId = localStorage.getItem("saimc.job_id"); } catch (e) { /* private mode */ } }
+  if (bootId) { setJob(bootId); startPolling(); }
+  refreshHealth(); window.setInterval(refreshHealth, HEALTH_MS); refreshHistory();
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { refreshHealth(); if (jobId) { startPolling(); } } });
+  window.addEventListener("focus", function () { refreshHealth(); if (jobId) { startPolling(); } });
 })();
 </script>
 </body>

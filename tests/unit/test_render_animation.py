@@ -11,9 +11,9 @@ import pytest
 
 from saimc.compose.score import PerformanceNoteEvent, PerformancePlan
 from saimc.render.animation import (
+    VOICE_COLORS,
     AnimationRenderError,
     AnimationRenderErrorCode,
-    VOICE_COLORS,
     build_roll,
     encode_webm,
     iter_roll_frames,

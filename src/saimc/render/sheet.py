@@ -154,7 +154,7 @@ M21_INSTRUMENTS: Mapping[str, tuple[str | None, str]] = {
 }
 
 
-def _m21_instrument_for(instrument_name: str) -> "M21Instrument":
+def _m21_instrument_for(instrument_name: str) -> M21Instrument:
     """Build the music21 instrument a voice's part carries.
 
     Falls back to a named generic part for instruments music21 does not
@@ -186,8 +186,8 @@ def notation_score_to_musicxml(
     Measures come 1:1 from the canonical measures (empty bars get whole
     rests), and simultaneous same-voice notes collapse into chords.
     """
-    from music21 import meter, stream, tempo
     from music21 import key as m21key
+    from music21 import meter, stream, tempo
 
     instruments = dict(voice_instruments or {})
     ppq = score.ppq
