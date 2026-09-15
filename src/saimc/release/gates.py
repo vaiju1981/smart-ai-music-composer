@@ -18,6 +18,10 @@ Every gate returns a `GateResult` and asserts one criterion:
   spec's `duration_seconds` (§8/§10 #5).
 - `gate_render_time_budget` — a render's wall-clock fits the <=3x
   real-time budget (§8); the real-binary measurement uses this.
+- `gate_musical_quality` — the matrix clears every musical-quality
+  threshold in `saimc.quality`: stepwise melody, recovered leaps, a
+  melody that sits above its accompaniment, a bass that is not one bar
+  looped. This is the gate behind §8's "not a hot pot of instruments".
 
 The gates deliberately encode the roadmap's thresholds as constants so
 a roadmap change forces a code change.
@@ -25,6 +29,7 @@ a roadmap change forces a code change.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -33,6 +38,7 @@ from saimc.canonical import canonical_dumps
 from saimc.compose.engine import EngineOutput, compose
 from saimc.compose.linter import lint
 from saimc.compose.score import PPQ, NotationScore, PerformancePlan, TempoPoint
+from saimc.quality import QUALITY_THRESHOLDS, score_corpus, score_piece
 from saimc.render.audio import build_smf
 from saimc.spec import CompositionSpec
 
@@ -243,6 +249,48 @@ def gate_render_time_budget(elapsed_s: float, piece_seconds: float) -> GateResul
     )
 
 
+def gate_musical_quality(scores: Sequence[NotationScore]) -> GateResult:
+    """The matrix clears every `saimc.quality` threshold (§8, "not a hot pot").
+
+    Judged over the whole matrix rather than one piece at a time: a single
+    piece's interval statistics are noisy, and several metrics do not apply
+    to every arrangement (a solo has no harmony to separate from), so the
+    corpus mean is the honest unit. An empty matrix fails rather than
+    passing vacuously.
+
+    This gate fails on today's generator, and it is meant to. The melody is
+    driven by chord-tone *index* steps, so it leaps instead of moving by
+    step, sits over two octaves, and the bass repeats one bar. Keeping the
+    gate in the run is what stops that from being forgotten — every
+    threshold the corpus misses is named in the detail, and `saimc.quality`
+    names the engine knob that moves each one.
+    """
+    if not scores:
+        return GateResult(
+            "musical_quality", False, "no pieces to score; the gate needs a non-empty matrix"
+        )
+
+    report = score_corpus(
+        "release-gate",
+        [score_piece(score, piece=f"piece-{index}") for index, score in enumerate(scores)],
+    )
+    if not report.passed:
+        # Every reason is a one-line "metric measured vs bar", so they all
+        # fit; naming them is the whole point of the gate.
+        missed = len(report.failure_reasons)
+        return GateResult(
+            "musical_quality",
+            False,
+            f"{missed} of {len(QUALITY_THRESHOLDS)} thresholds missed over "
+            f"{report.piece_count} piece(s): " + "; ".join(report.failure_reasons),
+        )
+    return GateResult(
+        "musical_quality",
+        True,
+        f"{len(QUALITY_THRESHOLDS)} thresholds cleared over {report.piece_count} piece(s)",
+    )
+
+
 __all__ = [
     "DURATION_TOLERANCE",
     "ONSET_TOLERANCE_US",
@@ -252,6 +300,7 @@ __all__ = [
     "gate_composition_correctness",
     "gate_duration_tolerance",
     "gate_midi_parseable_and_onsets",
+    "gate_musical_quality",
     "gate_musicxml_structural",
     "gate_render_time_budget",
     "gate_spec_round_trip",
@@ -262,10 +311,12 @@ __all__ = [
 def run_all_gates(specs: list[CompositionSpec]) -> list[GateResult]:
     """Run every engine-level gate over a spec matrix; returns all results."""
     results: list[GateResult] = []
+    scores: list[NotationScore] = []
     for spec in specs:
         results.append(gate_canonical_reproducibility(spec))
         results.append(gate_spec_round_trip(spec))
         output = compose(spec)
+        scores.append(output.notation_score)
         results.append(gate_composition_correctness(output))
         results.append(gate_musicxml_structural(output.notation_score))
         results.append(
@@ -276,4 +327,7 @@ def run_all_gates(specs: list[CompositionSpec]) -> list[GateResult]:
             )
         )
         results.append(gate_duration_tolerance(spec, output))
+    # The quality gate judges the matrix as a whole, so it runs once at the
+    # end rather than per spec.
+    results.append(gate_musical_quality(scores))
     return results

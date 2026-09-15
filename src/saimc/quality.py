@@ -425,12 +425,14 @@ def score_corpus(label: str, pieces: Iterable[PieceQuality]) -> QualityReport:
     """
     measured_pieces = tuple(pieces)
     metrics: dict[str, float | None] = {}
+    counts: dict[str, int] = {}
     for threshold in QUALITY_THRESHOLDS:
         values = [
             value
             for value in (p.as_dict().get(threshold.metric) for p in measured_pieces)
             if value is not None
         ]
+        counts[threshold.metric] = len(values)
         metrics[threshold.metric] = sum(values) / len(values) if values else None
 
     failures: list[str] = []
@@ -438,7 +440,8 @@ def score_corpus(label: str, pieces: Iterable[PieceQuality]) -> QualityReport:
         value = metrics.get(threshold.metric)
         if value is None or not threshold.violated_by(value):
             continue
-        failures.append(f"{threshold.describe(value)} (mean over {len(measured_pieces)} pieces)")
+        scope = _mean_scope(counts[threshold.metric], len(measured_pieces))
+        failures.append(f"{threshold.describe(value)} ({scope})")
 
     findings = tuple(f for p in measured_pieces for f in p.findings())
     return QualityReport(
@@ -450,6 +453,18 @@ def score_corpus(label: str, pieces: Iterable[PieceQuality]) -> QualityReport:
         findings=findings,
         pieces=measured_pieces,
     )
+
+
+def _mean_scope(measured: int, corpus: int) -> str:
+    """How many pieces a corpus mean was taken over.
+
+    A metric only applies to some arrangements — a solo piece has no bass
+    figure to count — so a mean over one of four pieces must not read as a
+    corpus-wide number.
+    """
+    if measured == corpus:
+        return f"mean over {measured} {'piece' if measured == 1 else 'pieces'}"
+    return f"mean over the {measured} of {corpus} piece(s) with this metric"
 
 
 def _voice_notes(score: NotationScore, voice_id: int) -> list[NoteEvent]:

@@ -13,11 +13,20 @@ from pathlib import Path
 import pytest
 
 from saimc.compose.engine import compose
+from saimc.compose.score import (
+    PPQ,
+    VOICE_MELODY,
+    KeySignature,
+    Measure,
+    NotationScore,
+    NoteEvent,
+)
 from saimc.release import (
     gate_canonical_reproducibility,
     gate_composition_correctness,
     gate_duration_tolerance,
     gate_midi_parseable_and_onsets,
+    gate_musical_quality,
     gate_musicxml_structural,
     gate_render_time_budget,
     gate_spec_round_trip,
@@ -99,6 +108,93 @@ class TestReleaseGates:
         output = compose(spec)
         result = gate_duration_tolerance(spec, output)
         assert result.passed, result.detail
+
+
+BAR_TICKS = 1920
+
+
+def _solo_melody(pitches: list[int]) -> NotationScore:
+    """A solo melody, one note per quarter at three note values.
+
+    Written by hand so the gate's answer is known by construction: a solo
+    clears the metrics that need an accompaniment by not having one.
+    """
+    durations = (480, 960, 1920)
+    return NotationScore.make(
+        ppq=PPQ,
+        key=KeySignature(root="C", mode="major"),
+        time_signature="4/4",
+        tempo_bpm=80.0,
+        measures=[
+            Measure(
+                index=index,
+                start_tick=index * BAR_TICKS,
+                end_tick=(index + 1) * BAR_TICKS,
+                time_signature="4/4",
+            )
+            for index in range(3)
+        ],
+        notes=[
+            NoteEvent(
+                voice_id=VOICE_MELODY,
+                pitch_midi=pitch,
+                tick=index * 480,
+                duration_ticks=durations[index % len(durations)],
+            )
+            for index, pitch in enumerate(pitches)
+        ],
+    )
+
+
+# A stepwise major scale over an octave: every interval is a step, no
+# leap to recover from, no repeat, three note values.
+_STEPWISE = _solo_melody([60, 62, 64, 65, 67, 69, 71, 72])
+
+
+class TestMusicalQualityGate:
+    def test_a_stepwise_corpus_clears_every_threshold(self) -> None:
+        result = gate_musical_quality([_STEPWISE])
+        assert result.passed, result.detail
+
+    def test_the_gate_is_active_not_vacuous(self) -> None:
+        """A leaping line must fail the same gate the stepwise one passes.
+
+        Without this, a gate that measured nothing — or measured the
+        wrong voice — would report success on any input.
+        """
+        leaping = _solo_melody([60, 84, 60, 84, 60, 84, 60, 84])
+        result = gate_musical_quality([leaping])
+        assert not result.passed
+        assert "step_ratio" in result.detail
+        assert "max_leap_semitones" in result.detail
+
+    def test_an_empty_matrix_fails_rather_than_passing_vacuously(self) -> None:
+        # A corpus report of nothing meets every bar by having nothing to
+        # measure; the gate is the caller that has to refuse that.
+        result = gate_musical_quality([])
+        assert not result.passed
+        assert "non-empty matrix" in result.detail
+
+    def test_the_generator_does_not_clear_the_bar_yet(self) -> None:
+        """Documents the current gap as a measured fact, not an aspiration.
+
+        The generator misses several bars today — the melody is driven by
+        chord-tone index steps, so it leaps instead of moving by step.
+        This test exists so that gap stays visible and, when the composer
+        is fixed, so that the change shows up here as a failing assertion
+        that asks to be read, rather than as a silent improvement.
+        """
+        specs = [
+            CompositionSpec(mood=Mood.CALMING, seed=42, duration_seconds=30),
+            CompositionSpec(mood=Mood.SLEEP, seed=11, duration_seconds=30),
+        ]
+        scores = [compose(spec).notation_score for spec in specs]
+        result = gate_musical_quality(scores)
+        assert not result.passed, (
+            "the generator now clears the quality bar — re-read this test, "
+            "confirm the music genuinely improved, and drop the assertion"
+        )
+        assert "step_ratio" in result.detail
 
 
 class TestRenderTimeBudgetGate:

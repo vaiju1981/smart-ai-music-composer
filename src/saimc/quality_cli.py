@@ -87,7 +87,11 @@ def _label(index: int, spec: CompositionSpec) -> str:
 @app.command()
 def main(
     spec: Path | None = typer.Option(
-        None, "--spec", exists=True, readable=True, help="Measure one spec JSON instead of the matrix."
+        None,
+        "--spec",
+        exists=True,
+        readable=True,
+        help="Measure one spec JSON instead of the matrix.",
     ),
     label: str = typer.Option("matrix", "--label", help="Label written into the report."),
     output: Path | None = typer.Option(

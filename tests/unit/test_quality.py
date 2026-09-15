@@ -323,7 +323,23 @@ class TestCorpusReport:
         assert any("distinct_durations" in reason for reason in report.failure_reasons)
         # Every reason names the mean it came from, so a mixed corpus does
         # not read as a single bad piece.
-        assert all("mean over 2 pieces" in reason for reason in report.failure_reasons)
+        assert all("mean over" in reason for reason in report.failure_reasons)
+
+    def test_a_reason_names_a_partial_mean_as_partial(self) -> None:
+        # Only one of the two pieces has a bass voice, so the bass mean is
+        # over half the corpus — reporting it as "mean over 2 pieces" would
+        # overstate what the number was taken from.
+        report = score_corpus("test", self._pieces())
+        bass = next(r for r in report.failure_reasons if "bass_onset_patterns" in r)
+        assert "mean over the 1 of 2 piece(s) with this metric" in bass
+        # Every piece reports distinct durations, so that mean covers all.
+        durations = next(r for r in report.failure_reasons if "distinct_durations" in r)
+        assert "mean over 2 pieces" in durations
+
+    def test_a_single_piece_reason_reads_as_one_piece(self) -> None:
+        solo = score_piece(_score(_melody([60, 63, 96])))
+        report = score_corpus("solo", [solo])
+        assert any("mean over 1 piece)" in reason for reason in report.failure_reasons)
 
     def test_findings_carry_the_offending_pieces_not_the_mean(self) -> None:
         report = score_corpus("test", self._pieces())
