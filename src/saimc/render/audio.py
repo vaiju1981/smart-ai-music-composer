@@ -94,6 +94,21 @@ MELODY_CC10_PAN: int = 86
 ACCOMPANIMENT_CC10_PAN: int = 42
 CENTER_CC10_PAN: int = 64
 
+# Sort keys for events that share an absolute tick (the merged timeline
+# is ordered by `(tick, order)`). The order is not cosmetic:
+#
+# - a tempo switch retimes everything after it, so it goes first;
+# - a pedal press or bend must be in force for the note it belongs to;
+# - a note-off releases every voice matching its channel AND key, so it
+#   must be written before a note-on at the same tick. A repeated
+#   same-pitch note whose predecessor's release lands on its own onset
+#   (the legato pass caps a same-pitch neighbour's release at exactly
+#   the next onset) is otherwise silenced by that release.
+_EVENT_ORDER_TEMPO: int = -2
+_EVENT_ORDER_CONTROLLER: int = -1
+_EVENT_ORDER_NOTE_OFF: int = 0
+_EVENT_ORDER_NOTE_ON: int = 1
+
 
 class AudioRenderErrorCode:
     """Stable error codes for the audio renderer."""
@@ -184,13 +199,13 @@ def build_smf(
 
     # Tempo: microseconds per quarter note. bpm = 60_000_000 / us_per_quarter.
     # The tempo map's points land as set_tempo events at their ticks;
-    # they sort ahead of anything else at the same tick (order -2).
+    # they sort ahead of anything else at the same tick.
     us_per_quarter = round(60_000_000 / bpm)
     track.append(mido.MetaMessage("set_tempo", tempo=us_per_quarter, time=0))
     events: list[tuple[int, int, mido.Message]] = [
         (
             point.tick,
-            -2,
+            _EVENT_ORDER_TEMPO,
             mido.MetaMessage("set_tempo", tempo=round(60_000_000 / point.bpm)),
         )
         for point in tempo.changes
@@ -290,16 +305,14 @@ def build_smf(
     # tempo map so a ritardando lands where the plan says it does.
     # SMF event times are DELTAS from the previous event on the track,
     # and the plan's voices overlap, so collect all events on an
-    # absolute-tick timeline and delta-encode in order (note_on before
-    # note_off at the same tick). Tempo changes sort at order -2 and
-    # controller changes / pitch bends at -1 so a tempo switch (or a
-    # pedal press) precedes the note sounding at the same tick.
+    # absolute-tick timeline and delta-encode in sorted order (see the
+    # _EVENT_ORDER_* keys above for why the order matters).
     for controller in plan.controllers:
         controller_tick = ticks_at_microsecond(controller.start_us, tempo)
         events.append(
             (
                 controller_tick,
-                -1,
+                _EVENT_ORDER_CONTROLLER,
                 mido.Message(
                     "control_change",
                     channel=_channel_for_voice(
@@ -316,7 +329,7 @@ def build_smf(
         events.append(
             (
                 bend_tick,
-                -1,
+                _EVENT_ORDER_CONTROLLER,
                 mido.Message(
                     "pitchwheel",
                     channel=_channel_for_voice(
@@ -338,7 +351,7 @@ def build_smf(
         events.append(
             (
                 on_tick,
-                0,
+                _EVENT_ORDER_NOTE_ON,
                 mido.Message(
                     "note_on",
                     channel=channel,
@@ -350,7 +363,7 @@ def build_smf(
         events.append(
             (
                 off_tick,
-                1,
+                _EVENT_ORDER_NOTE_OFF,
                 mido.Message(
                     "note_off",
                     channel=channel,

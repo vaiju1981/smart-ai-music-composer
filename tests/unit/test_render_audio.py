@@ -1017,6 +1017,33 @@ class TestSmfExpressionEvents:
         )
         assert pedal_index < first_note_on
 
+    def test_release_precedes_onset_of_a_repeated_same_pitch_note(self) -> None:
+        # A repeated note whose predecessor's release lands exactly on its
+        # own onset (the legato pass caps a same-pitch neighbour's release
+        # at the next onset). A note-off releases every voice matching its
+        # channel AND key, so if it is written after the note-on it
+        # silences the new note instead of the old one. At 120 bpm the
+        # 500 ms note ends on tick 480, where the next one starts.
+        plan = PerformancePlan.make(
+            sample_rate=44100,
+            notes=[
+                PerformanceNoteEvent(
+                    voice_id=1, pitch_midi=60, start_us=0, duration_us=500_000, velocity=64
+                ),
+                PerformanceNoteEvent(
+                    voice_id=1, pitch_midi=60, start_us=500_000, duration_us=500_000, velocity=64
+                ),
+            ],
+        )
+        smf = build_smf(plan, bpm=120.0, voice_instruments={1: "piano"})
+        at_tick_480: list[str] = []
+        absolute = 0
+        for msg in smf.tracks[0]:
+            absolute += msg.time
+            if absolute == 480 and msg.type in {"note_on", "note_off"}:
+                at_tick_480.append(msg.type)
+        assert at_tick_480 == ["note_off", "note_on"]
+
 
 class TestSmfTempoMap:
     """S8: the SMF reproduces a piecewise tempo map (the outro rit)."""
