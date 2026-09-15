@@ -78,6 +78,13 @@ class ManifestInputs:
     assets: Mapping[str, AssetRecord] = field(default_factory=dict)
     dependencies: Mapping[str, str] = field(default_factory=dict)
     license_obligations: Mapping[str, str] = field(default_factory=dict)
+    quality: Mapping[str, Any] | None = None
+    """The musical-quality scorecard for this render (`saimc.quality`).
+
+    Optional so a manifest can still be emitted when the engine-output
+    sidecar is unavailable; the field is omitted rather than filled
+    with a placeholder that would read as a measurement.
+    """
 
 
 def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
@@ -130,7 +137,7 @@ def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
         for kind, a in inputs.assets.items()
     }
 
-    return {
+    payload: dict[str, Any] = {
         "job_id": job.job_id,
         "created_at": job.created_at.isoformat(),
         "completed_at": inputs.completed_at.isoformat(),
@@ -146,6 +153,9 @@ def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
         "dependencies": dict(inputs.dependencies),
         "license_obligations": dict(inputs.license_obligations),
     }
+    if inputs.quality is not None:
+        payload["quality"] = dict(inputs.quality)
+    return payload
 
 
 def write_manifest(job: Job, inputs: ManifestInputs, jobs_root: Path) -> Path:
@@ -177,6 +187,7 @@ def emit_manifest(job: Job, jobs_root: Path) -> Path:
     from importlib.metadata import version as dist_version
 
     from saimc.compose.serialization import read_engine_output
+    from saimc.quality import score_piece
     from saimc.render.attribution import (
         attribution_for_soundfont,
         license_obligations,
@@ -184,12 +195,17 @@ def emit_manifest(job: Job, jobs_root: Path) -> Path:
 
     notation_score_sha = ""
     performance_plan_sha = ""
+    quality: dict[str, Any] | None = None
     if job.input_spec is not None:
         sidecar = jobs_root / job.job_id / "engine_output.json"
         if sidecar.exists():
             output = read_engine_output(sidecar)
             notation_score_sha = output.notation_score.compute_hash()
             performance_plan_sha = output.performance_plan.compute_hash()
+            # The scorecard is recorded per render so quality can be
+            # trended across a corpus without re-composing anything.
+            measured = score_piece(output.notation_score, piece=job.job_id)
+            quality = measured.entry()
 
     toolchain_by_kind: dict[str, ToolchainRecord] = {}
     for kind, art in job.artifacts.items():
@@ -264,6 +280,7 @@ def emit_manifest(job: Job, jobs_root: Path) -> Path:
             assets=assets,
             dependencies=dependencies,
             license_obligations=license_obligations(),
+            quality=quality,
         ),
         jobs_root,
     )

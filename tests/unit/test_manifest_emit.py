@@ -156,6 +156,53 @@ def test_emit_manifest_records_installed_dependency_versions(tmp_path: Path) -> 
     assert deps["music21"] != "unknown"  # music21 is a hard dependency
 
 
+def test_emit_manifest_records_the_quality_scorecard(tmp_path: Path) -> None:
+    store, job = _completed_job(tmp_path)
+    emit_manifest(job, store.root)
+    payload = json.loads((store.root / job.job_id / "manifest.json").read_text(encoding="utf-8"))
+
+    # The scorecard is recorded per render, so quality can be trended
+    # across a corpus without re-composing anything.
+    quality = payload["quality"]
+    assert quality["piece"] == job.job_id
+
+    metrics = {
+        "step_ratio",
+        "repeat_ratio",
+        "leap_recovery_ratio",
+        "max_leap_semitones",
+        "range_semitones",
+        "distinct_durations",
+        "texture_hierarchy",
+        "register_separation_semitones",
+        "tessitura_overlap_semitones",
+        "bass_onset_patterns",
+    }
+    assert metrics <= set(quality)
+
+    # The fixture is a piano-led mood piece, so the melody was found and
+    # measured — a metric that does not apply would show as null, and a
+    # block of nulls would mean the score arrived without a melody voice.
+    assert quality["melody_notes"] > 0
+    assert quality["melody_bars"] > 0
+    assert isinstance(quality["step_ratio"], float)
+
+
+def test_emit_manifest_quality_block_records_measurements_not_a_verdict(tmp_path: Path) -> None:
+    """The manifest carries raw numbers; the pass/fail lives in the report.
+
+    A verdict baked into a manifest would be read against whatever the
+    thresholds were on the day it was written, so re-tuning a bar would
+    silently invalidate every manifest already on disk. Keeping the
+    manifest to measurements lets the same numbers be re-judged.
+    """
+    store, job = _completed_job(tmp_path)
+    emit_manifest(job, store.root)
+    payload = json.loads((store.root / job.job_id / "manifest.json").read_text(encoding="utf-8"))
+    assert "passed" not in payload["quality"]
+    assert "findings" not in payload["quality"]
+
+
 def test_emit_manifest_without_sidecar_leaves_hashes_empty(tmp_path: Path) -> None:
     store = JobStorage(tmp_path)
     job = store.create("p")
@@ -181,6 +228,9 @@ def test_emit_manifest_without_sidecar_leaves_hashes_empty(tmp_path: Path) -> No
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["notation_score_sha256"] == ""
     assert payload["assets"]["soundfont"]["sha256"] == ""
+    # No sidecar means no scorecard: the field is omitted rather than
+    # filled with a placeholder that would read as a measurement.
+    assert "quality" not in payload
 
 
 def test_emit_manifest_rejects_incomplete_job(tmp_path: Path) -> None:

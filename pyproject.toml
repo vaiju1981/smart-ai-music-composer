@@ -54,6 +54,7 @@ benchmark = [
 
 [project.scripts]
 saimc-benchmark = "saimc.benchmark_cli:main"
+saimc-quality = "saimc.quality_cli:main"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
 saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
@@ -95,6 +96,7 @@ ignore = [
 "tests/**/*.py" = ["B008", "PT011"]
 "src/saimc/llm/**/*.py" = ["E501"]
 "src/saimc/benchmark_cli.py" = ["B008"]
+"src/saimc/quality_cli.py" = ["B008"]
 
 [tool.ruff.format]
 quote-style = "double"
