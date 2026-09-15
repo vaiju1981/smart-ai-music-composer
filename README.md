@@ -60,6 +60,7 @@ MIT for our code. Third-party dependencies and assets are tracked in §4 of [`do
 - `scripts/` — repo-level ops scripts (benchmark runner, etc.)
 - `docs/roadmap.md` — architecture and release gates
 - `docs/parser-benchmark.md` — benchmark corpus process
+- `docs/model-fine-tuning.md` — what model work can and cannot change about the music
 - `MODELS.md` — model registry (release gate per §10 #3)
 
 ## Environment variables
