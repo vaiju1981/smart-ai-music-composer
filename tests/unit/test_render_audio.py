@@ -43,6 +43,7 @@ from saimc.render.audio import (
     find_ffmpeg,
     find_fluidsynth,
     render_audio,
+    render_sketch,
 )
 from saimc.render.instruments import (
     GENERAL_SOUNDFONT,
@@ -576,6 +577,151 @@ def _write_wav(path: Path) -> None:
         wf.writeframes(b"\x00\x00")
 
 
+class TestEncodeOpusMaster:
+    """The loudnorm master is optional, and skipping it skips both passes.
+
+    The two-pass master is the whole cost of an encode: the measurement
+    pass decodes the whole WAV to compute loudness, and the encode pass
+    then applies the result. A sketch must drop the measurement as well
+    as the filter — leaving the filter on and merely unmeasured would
+    still be two ffmpeg invocations, and would still be dynamically
+    normalising a preview nobody level-matches against anything.
+    """
+
+    @staticmethod
+    def _encode(tmp_path: Path, *, master: bool) -> tuple[list[list[str]], MagicMock]:
+        wav = tmp_path / "audio.wav"
+        _write_wav(wav)
+        fake_ff = tmp_path / "ffmpeg"
+        fake_ff.write_text("#!/bin/sh\n")
+        fake_ff.chmod(0o755)
+
+        seen_cmds: list[list[str]] = []
+
+        def _fake_safe_run(cmd, *, timeout_s, **kw):
+            seen_cmds.append(list(cmd))
+            Path(cmd[-1]).write_bytes(b"OggS\x00\x00fake-opus")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("shutil.which", return_value=str(fake_ff)),
+            patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
+            patch("saimc.render.audio.safe_run", side_effect=_fake_safe_run),
+            patch("saimc.render.audio._loudnorm_measure") as measure,
+        ):
+            mock_audit.return_value = MagicMock(
+                ok=True,
+                version="8.1.2",
+                binary_sha256="a" * 64,
+                configuration_line="--enable-libopus",
+            )
+            measure.return_value = {
+                "input_i": "-20.0",
+                "input_tp": "-3.0",
+                "input_lra": "8.0",
+                "input_thresh": "-30.0",
+                "target_offset": "0.0",
+            }
+            encode_opus(wav, tmp_path / "audio.ogg", ffmpeg_bin=str(fake_ff), master=master)
+        return seen_cmds, measure
+
+    def test_the_default_still_masters(self, tmp_path: Path) -> None:
+        """`master=True` is the default, so existing callers are unaffected."""
+        cmds, measure = self._encode(tmp_path, master=True)
+        measure.assert_called_once()
+        assert "-af" in cmds[-1]
+        assert "linear=true" in " ".join(cmds[-1])
+
+    def test_a_sketch_measures_nothing_and_filters_nothing(self, tmp_path: Path) -> None:
+        cmds, measure = self._encode(tmp_path, master=False)
+        measure.assert_not_called()
+        assert "-af" not in cmds[-1]
+
+    def test_a_sketch_is_still_a_real_encode(self, tmp_path: Path) -> None:
+        """The master is what is skipped — not the encoding.
+
+        Without this, `master=False` could return an empty file and the
+        two tests above would still pass.
+        """
+        cmds, _ = self._encode(tmp_path, master=False)
+        assert len(cmds) == 1
+        assert "libopus" in cmds[-1]
+        assert (tmp_path / "audio.ogg").read_bytes() == b"OggS\x00\x00fake-opus"
+
+
+class TestRenderSketch:
+    """A sketch is the same music as a full render, minus the mastering.
+
+    These assertions stop at the command line, because that is all a
+    mocked ffmpeg can honestly show. That the two OGGs actually differ in
+    their bytes is asserted against the real binary in
+    `tests/integration/test_sketch_render.py`.
+    """
+
+    def test_sketch_and_full_share_a_wav_and_differ_in_the_commands(self, tmp_path: Path) -> None:
+        """The property that makes a preview trustworthy.
+
+        A sketch the user approves must be the piece they get, so the
+        WAV — font, gain, note data, everything FluidSynth produces —
+        has to be byte-identical to the full render's. The encode
+        commands differ, and that difference is the whole of it.
+        """
+        sf = tmp_path / "Salamander.sf2"
+        sf.write_bytes(b"RIFF" * 100)
+
+        def _fake_safe_run(cmd, *, timeout_s, **kw):
+            for arg in cmd:
+                path = Path(arg)
+                if path.suffix == ".wav" and path.parent.exists():
+                    _write_wav(path)
+                elif path.suffix == ".ogg" and path.parent.exists():
+                    path.write_bytes(b"OggS\x00\x00fake-opus")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        def _render(kind: str) -> tuple[bytes, list[str]]:
+            out_dir = tmp_path / kind
+            seen: list[list[str]] = []
+
+            def _record(cmd, *, timeout_s, **kw):
+                seen.append(list(cmd))
+                return _fake_safe_run(cmd, timeout_s=timeout_s)
+
+            with (
+                patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
+                patch("saimc.render.audio.safe_run", side_effect=_record),
+                patch("saimc.render.audio._loudnorm_measure", return_value=None),
+            ):
+                mock_audit.return_value = MagicMock(
+                    ok=True,
+                    version="8.1.2",
+                    binary_sha256="a" * 64,
+                    configuration_line="--enable-libopus",
+                )
+                render = render_sketch if kind == "sketch" else render_audio
+                artifact = render(
+                    _plan_with_notes(),
+                    bpm=120.0,
+                    soundfont_path=sf,
+                    out_dir=out_dir,
+                    job_id="sketch-job",
+                    fluidsynth_bin="/bin/sh",
+                    ffmpeg_bin="/bin/sh",
+                )
+            encode = next(cmd for cmd in seen if str(cmd[-1]).endswith(".ogg"))
+            return artifact.primary_path.read_bytes(), encode
+
+        sketch_wav, sketch_encode = _render("sketch")
+        full_wav, full_encode = _render("full")
+
+        assert sketch_wav == full_wav, "a sketch must preview the delivered audio"
+        assert "-af" not in sketch_encode
+        assert "-af" in full_encode
+        # Bitrate is the other sketch setting; without this it could be
+        # dropped from `render_sketch` and the flag test would not notice.
+        assert "64k" in sketch_encode
+        assert "128k" in full_encode
+
+
 class TestEncodeOpusAuditFailure:
     def test_audit_failure_raises(self, tmp_path: Path) -> None:
         wav = tmp_path / "audio.wav"
@@ -624,27 +770,19 @@ class TestJobSoundfontResolution:
 
     def test_piano_with_kit_still_loads_the_salamander_grand(self) -> None:
         (self.sf_dir.parent / "Salamander.sf2").write_bytes(b"RIFF")
-        assert (
-            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
-            == PIANO_SOUNDFONT
-        )
-        assert (
-            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
-            == PIANO_SOUNDFONT
-        )
+        assert resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"}) == PIANO_SOUNDFONT
+        assert resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"}) == PIANO_SOUNDFONT
 
     def test_mixed_gm_ensemble_loads_the_general_font(self) -> None:
         (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
         assert (
-            resolve_job_soundfont({0: "contrabass", 1: "piano", 3: "strings"})
-            == GENERAL_SOUNDFONT
+            resolve_job_soundfont({0: "contrabass", 1: "piano", 3: "strings"}) == GENERAL_SOUNDFONT
         )
 
     def test_single_installed_font_only_voice_loads_its_font(self) -> None:
         (self.sf_dir / "Wetthasinghe_Harmonium.sf2").write_bytes(b"RIFF")
         assert (
-            resolve_job_soundfont({1: "harmonium"})
-            == SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2"
+            resolve_job_soundfont({1: "harmonium"}) == SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2"
         )
 
     def test_mixed_font_only_files_fall_back_to_the_general_font(self) -> None:
@@ -1011,9 +1149,7 @@ class TestSmfExpressionEvents:
         order = [m.type for m in smf.tracks[0]]
         first_note_on = order.index("note_on")
         pedal_index = next(
-            i
-            for i, m in enumerate(smf.tracks[0])
-            if m.type == "control_change" and m.control == 64
+            i for i, m in enumerate(smf.tracks[0]) if m.type == "control_change" and m.control == 64
         )
         assert pedal_index < first_note_on
 
