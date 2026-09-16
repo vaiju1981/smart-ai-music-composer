@@ -91,6 +91,35 @@ class TestParseStage:
         assert result.job.seed == 42
         assert client.calls == 1
 
+    def test_carries_the_model_identifier_off_the_parse_result(self, store: JobStorage) -> None:
+        """The adapter reports the model in `extra`; the job keeps it.
+
+        §9 requires the manifest to name the model alongside the parser
+        source, and this is the only point at which it is available.
+        """
+        job = store.create("calming piano")
+        transition_to(job, JobState.PARSING)
+        spec = CompositionSpec.model_validate(_spec_dict())
+        client = _StubLLM(
+            ParseResult(
+                parser_source="llm",
+                spec=spec,
+                extra={"model_identifier": "gemma4:31b-cloud"},
+            )
+        )
+        result = parse_stage(job, client, request_id="t-model")
+        assert result.job.model == "gemma4:31b-cloud"
+
+    def test_records_no_model_when_the_fallback_wrote_the_spec(self, store: JobStorage) -> None:
+        """A hybrid parse is half-LLM, but the spec came from the fallback
+        parser, so there is no model to attribute the notes to."""
+        job = store.create("calming piano")
+        transition_to(job, JobState.PARSING)
+        spec = CompositionSpec.model_validate(_spec_dict())
+        client = _StubLLM(ParseResult(parser_source="fallback", spec=spec))
+        result = parse_stage(job, client, request_id="t-fallback")
+        assert result.job.model is None
+
     def test_failure_returns_failed_state(self, store: JobStorage) -> None:
         job = store.create("angsty piano")
         transition_to(job, JobState.PARSING)

@@ -9,7 +9,9 @@ Required fields (per §9):
 - `job_id`, `created_at`, `completed_at`
 - `input_spec`: the full CompositionSpec (schema_version included) and its sha256
 - `seed`, `engine_version`
-- `parser_source`: `llm` | `fallback`, plus the model identifier when `llm`
+- `parser_source`: `llm` | `fallback` | `hybrid`, plus `model` (the model
+  identifier) when the LLM contributed. `model` is omitted, not nulled, for a
+  fallback-only parse, so its absence reads as "no model was involved".
 - `notation_score_sha256`, `performance_plan_sha256`
 - `artifacts`: per-artifact `{kind, container, codec, path, sha256, size_bytes}`
 - `toolchain`: per-artifact `{engine, version, build_sha, config}`
@@ -153,6 +155,11 @@ def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
         "dependencies": dict(inputs.dependencies),
         "license_obligations": dict(inputs.license_obligations),
     }
+    # §9 requires the model identifier when the LLM contributed to the parse.
+    # Omitted rather than nulled for a fallback-only parse, so its absence
+    # reads as "no model was involved" instead of "the model is unknown".
+    if job.model is not None:
+        payload["model"] = job.model
     if inputs.quality is not None:
         payload["quality"] = dict(inputs.quality)
     return payload

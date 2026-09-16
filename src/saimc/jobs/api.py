@@ -81,6 +81,9 @@ class JobResponse(BaseModel):
     parser_source: str | None
     attempts: int
     seed: int | None
+    model: str | None = None
+    """The LLM that served this job's parse, when one did (§9); None for a
+    fallback-only parse."""
     input_spec: dict[str, Any] | None = None
     """The parsed CompositionSpec, once available (None until parsing succeeds)."""
     artifacts: dict[str, dict[str, Any]]
@@ -112,6 +115,7 @@ def _serialize_job(job: Job) -> JobResponse:
         parser_source=job.parser_source,
         attempts=job.attempts,
         seed=job.seed,
+        model=job.model,
         input_spec=(job.input_spec.model_dump(mode="json") if job.input_spec is not None else None),
         artifacts={
             kind: {

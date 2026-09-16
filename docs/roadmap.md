@@ -229,6 +229,22 @@ This adds a render-service component (a small Node + headless-Chromium process) 
 - Local FastAPI web app: prompt in, job status, preview, downloads.
 - Job model + acceptance criteria implemented from day one (see §7, §8).
 
+*This section is the original Phase 1 plan and is kept as written. Phase 1
+as shipped went well past it, so read the bullets above as history, not as a
+description of the product.* Two divergences matter. **Instrumentation:**
+Phase 1 named a single instrument (piano, Salamander Grand Piano, one
+soundfont); the shipped `schema_version` 3 takes a role-tagged ensemble of up
+to five voices over a fifty-seven instrument palette — §6 records that schema
+history. **Moods:** still the three named above; the engine's musical
+vocabulary (forms, progressions, drum styles) grew underneath them. The
+engine still composes to fixed forms with predefined harmonic templates, and
+still uses no LLM for melodic or harmonic material — those two constraints
+held, and §6/§8 remain the contract. Every acceptance criterion in §8 is
+therefore applied to a considerably larger surface than the one it was
+written against, which is why the instrument-range criterion needs
+per-instrument range data that does not yet exist (see §8, "All notes within
+instrument range").
+
 **Phase 2**
 - Known-piece catalog + transforms (Canon in D, etc.) — **the v1 contradiction with Phase 2 is resolved here**. Each catalog entry must carry **both** a composition-copyright column (is the underlying composition in the public domain in our target jurisdictions?) **and** an edition/file-licensing column (under what terms is the specific MusicXML/MIDI file we're shipping?). Both must be permissive per §4. Public-domain composition + non-permissive file = still fails the audit. Catalog entries without both columns filled in are not shippable.
 - Optional cloud-LLM creative assist for melody/harmony seeds (still Ollama-routed).
@@ -344,9 +360,14 @@ Phase 1 is "done" only when every criterion below is met, measured by an automat
 **Composition correctness:**
 - All notes within instrument range.
 - All measures complete (no dropped beats).
-- Every pitched note sounds a chord tone of its bar (the engine
-  publishes per-bar chord pitch classes to the linter; the anacrusis
-  pickup may anticipate the next chord in the bar's final eighth).
+- Every pitched note sounds a chord tone of its bar, with one licensed
+  exception: an unaccented, diatonic passing or neighbour tone that is
+  approached and left by step, with no rest between and no longer than
+  a quarter note. `compose.linter.legal_non_chord_tone` is the
+  definition of that exception, and it is the only one — every other
+  non-chord tone is a bug. (The engine publishes per-bar chord pitch
+  classes to the linter; the anacrusis pickup may anticipate the next
+  chord in the bar's final eighth.)
 - No close-position m2/M7 collisions between simultaneously sounding
   pitched voices — both tones belonging to the bar's chord is a
   voicing (a maj7 spread), a rubbed second is a bug.
@@ -386,7 +407,11 @@ Every completed job emits a machine-readable `manifest.json` alongside the artif
 - `job_id`, `created_at`, `completed_at`
 - `input_spec`: the full `CompositionSpec` (schema_version included) and its sha256
 - `seed`, `engine_version`
-- `parser_source`: `llm` | `fallback`, plus the model identifier when `llm`
+- `parser_source`: `llm` | `fallback` | `hybrid`, plus the model identifier when
+  the LLM contributed (`llm` or `hybrid`). `hybrid` means the LLM's output never
+  validated and the deterministic fallback parser produced the spec. The field
+  is set on failure paths too, so it records which parser was in play, not that
+  parsing succeeded.
 - `notation_score_sha256`, `performance_plan_sha256`
 - `artifacts`: per-artifact `{kind, container, codec, path, sha256, size_bytes}`
 - `toolchain`: per-artifact `{engine, version, build_sha, config}` — e.g. `fluidsynth 2.x`, `osmd 1.x`, `chromium <revision>`, `ffmpeg <build-sha>` configured with `--enable-libvpx --enable-libopus`

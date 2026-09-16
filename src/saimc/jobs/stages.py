@@ -141,6 +141,12 @@ def parse_stage(
         if result.spec.seed is not None:
             job.seed = result.spec.seed
         job.parser_source = result.parser_source
+        # §9: the manifest records which model served the parse, alongside
+        # the parser source. The adapter puts it in `extra`, and only the
+        # LLM paths have one — a fallback-only parse records None rather
+        # than a stale name.
+        if result.parser_source in ("llm", "hybrid"):
+            job.model = result.extra.get("model_identifier") or None
         job.attempts = result.attempts
         return StageResult(job=job, next_state=JobState.COMPOSING)
 

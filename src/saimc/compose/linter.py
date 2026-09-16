@@ -30,15 +30,24 @@ from saimc.compose.score import (
     NoteEvent,
 )
 
-# Phase 1 is piano-only. The piano range MIDI is 21 (A0) to 108 (C8).
-# We give a 1-note margin at each end to allow idiomatic voicings
-# without forcing the engine to reach the physical extremes.
+# The range gate is the piano's (MIDI 21 A0 to 108 C8, less a one-note
+# margin at each end so idiomatic voicings need not reach the physical
+# extremes), and it is applied to *every* voice regardless of the
+# instrument that voice is assigned. Phase 1 was piano-only; the engine
+# has since widened to a fifty-seven instrument palette without
+# widening this gate. It therefore catches only pitches no instrument
+# could sound at all, not pitches that are unplayable on the voice's
+# actual instrument: a tuba written at E4 passes. A green range check
+# means "physically soundable by something", never "playable as
+# written". Per-instrument ranges are the fix.
 PIANO_MIN_MIDI: int = 22
 PIANO_MAX_MIDI: int = 107
 
-# Maximum simultaneous note count. Piano can't physically play more
-# than 10 notes at once; the engine caps at 8 to leave headroom for
-# the humanizer.
+# Maximum simultaneous note count, justified by a pianist's two hands
+# and applied to every voice — including the single-line winds and
+# brass, which cannot sound more than one note at a time. It is a
+# backstop against pathological voicings, not a playability check.
+# Per-instrument polyphony is the fix.
 MAX_SIMULTANEOUS_NOTES: int = 8
 
 # Close-position dissonances between simultaneously sounding voices:

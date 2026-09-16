@@ -98,6 +98,10 @@ class Job:
     engine_version: str = "0.1.0"
     seed: int | None = None
     parser_source: str | None = None
+    model: str | None = None
+    """The LLM that served this job's parse, when one did (§9: the manifest
+    records the model identifier alongside `parser_source`). None for a
+    fallback-only parse, and for jobs written before this field existed."""
     attempts: int = 0
 
     def is_terminal(self) -> bool:
@@ -281,6 +285,7 @@ class JobStorage:
             "engine_version": job.engine_version,
             "seed": job.seed,
             "parser_source": job.parser_source,
+            "model": job.model,
             "attempts": job.attempts,
         }
 
@@ -331,6 +336,7 @@ class JobStorage:
             engine_version=payload["engine_version"],
             seed=payload.get("seed"),
             parser_source=payload.get("parser_source"),
+            model=payload.get("model"),
             attempts=payload.get("attempts", 0),
         )
 

@@ -258,12 +258,18 @@ def gate_musical_quality(scores: Sequence[NotationScore]) -> GateResult:
     corpus mean is the honest unit. An empty matrix fails rather than
     passing vacuously.
 
-    This gate fails on today's generator, and it is meant to. The melody is
-    driven by chord-tone *index* steps, so it leaps instead of moving by
-    step, sits over two octaves, and the bass repeats one bar. Keeping the
-    gate in the run is what stops that from being forgotten — every
-    threshold the corpus misses is named in the detail, and `saimc.quality`
-    names the engine knob that moves each one.
+    What a green run proves is narrower than it reads. The release matrix
+    is five hand-picked specs, and the engine does clear every threshold
+    on those. It is not a claim about the product: measured across the
+    reachable spec space, roughly half of all composed pieces breach at
+    least one threshold — `texture_hierarchy`, `max_leap_semitones` and
+    `leap_recovery_ratio` most often — and the one real end-to-end render
+    in `var/jobs/` records `max_leap_semitones: 14.0` against a maximum
+    of 12. A corpus mean over five curated specs cannot see any of that,
+    and it is not meant to; it is a regression bar for the engine, not a
+    guarantee about what a user gets. Scoring a sampled grid is the fix.
+    Until that lands, read a pass here as "the matrix passes", never as
+    "the generator passes".
     """
     if not scores:
         return GateResult(

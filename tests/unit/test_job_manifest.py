@@ -162,6 +162,31 @@ class TestBuildManifest:
         m = build_manifest(completed_job, _inputs())
         assert m["dependencies"]["music21"] == "9.5.0"
 
+    def test_records_the_model_when_the_llm_served_the_parse(self, completed_job: Job) -> None:
+        """§9: `parser_source` is accompanied by the model identifier.
+
+        The adapter has always reported it in `ParseResult.extra`; before
+        this field existed nothing carried it as far as the manifest, so
+        the provenance record named a parser but not the model behind it.
+        """
+        completed_job.parser_source = "llm"
+        completed_job.model = "gemma4:31b-cloud"
+        m = build_manifest(completed_job, _inputs())
+        assert m["parser_source"] == "llm"
+        assert m["model"] == "gemma4:31b-cloud"
+
+    def test_omits_the_model_for_a_fallback_only_parse(self, completed_job: Job) -> None:
+        """Absence has to mean "no model was involved", not "unknown".
+
+        A null here would be indistinguishable from a failed lookup, so
+        the key is dropped rather than set when no LLM contributed.
+        """
+        completed_job.parser_source = "fallback"
+        completed_job.model = None
+        m = build_manifest(completed_job, _inputs())
+        assert m["parser_source"] == "fallback"
+        assert "model" not in m
+
     def test_license_obligations_point_at_l(self, completed_job: Job) -> None:
         m = build_manifest(completed_job, _inputs())
         assert m["license_obligations"]["ffmpeg"] == "LICENSES/ffmpeg.txt"

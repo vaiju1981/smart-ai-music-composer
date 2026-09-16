@@ -316,7 +316,14 @@ class CompositionSpec(BaseModel):
     seed: int | None = Field(
         default=None,
         ge=0,
-        description="RNG seed for reproducibility. None means engine chooses and reports.",
+        description=(
+            "RNG seed for reproducibility. None does not randomise the "
+            "piece: the engine composes against a fixed default seed of 0, "
+            "and the manifest records this field's None rather than that "
+            "resolved value. So None reproduces exactly, and seed=0 and "
+            "seed=None yield identical music. Pass an explicit seed to vary "
+            "a piece."
+        ),
     )
     humanization: Literal["none", "light", "expressive"] = Field(
         default="light",

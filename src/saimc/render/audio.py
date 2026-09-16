@@ -76,9 +76,14 @@ FLUIDSYNTH_REVERB_DAMP: float = 0.23
 FLUIDSYNTH_REVERB_WIDTH: float = 0.76
 FLUIDSYNTH_REVERB_LEVEL: float = 0.87
 
-# Master loudness target for the encoded deliverable (streaming-standard
-# loudness with true-peak headroom). Applied via a two-pass ffmpeg
-# loudnorm in encode_opus.
+# Master loudness target for the *encoded Opus* deliverable, applied via
+# a two-pass ffmpeg loudnorm in encode_opus. This is not the streaming
+# standard: the services normalise to -14 LUFS, and -16 is deliberately
+# 2 LU below it, so they turn this up rather than down — the safer
+# direction for a lossy re-encode. It is also not applied to the other
+# two deliverables: audio.wav is written straight from FluidSynth, and
+# the animation's audio is muxed from that same un-normalised WAV, so
+# all three files ship at different loudness. Unifying them is the fix.
 MASTER_LOUDNESS_LUFS: float = -16.0
 MASTER_TRUE_PEAK_DBTP: float = -1.5
 MASTER_LRA: float = 11.0
