@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from saimc.compose.linter import (
-    PIANO_MAX_MIDI,
-    PIANO_MIN_MIDI,
+    FALLBACK_MAX_MIDI,
+    FALLBACK_MIN_MIDI,
     LintCode,
     lint,
 )
@@ -48,7 +48,9 @@ class TestLintPasses:
 class TestLintFailsOnRange:
     def test_pitch_below_range(self) -> None:
         score = _build_score(
-            notes=[NoteEvent(voice_id=0, pitch_midi=PIANO_MIN_MIDI - 1, tick=0, duration_ticks=480)]
+            notes=[
+                NoteEvent(voice_id=0, pitch_midi=FALLBACK_MIN_MIDI - 1, tick=0, duration_ticks=480)
+            ]
         )
         report = lint(score)
         assert not report.passed
@@ -56,11 +58,68 @@ class TestLintFailsOnRange:
 
     def test_pitch_above_range(self) -> None:
         score = _build_score(
-            notes=[NoteEvent(voice_id=0, pitch_midi=PIANO_MAX_MIDI + 1, tick=0, duration_ticks=480)]
+            notes=[
+                NoteEvent(voice_id=0, pitch_midi=FALLBACK_MAX_MIDI + 1, tick=0, duration_ticks=480)
+            ]
         )
         report = lint(score)
         assert not report.passed
         assert any(i.code == LintCode.NOTE_OUT_OF_RANGE for i in report.issues)
+
+    def test_the_fallback_compass_does_not_know_the_instrument(self) -> None:
+        """Without a mapping, a tuba line at E4 is inside the piano's compass.
+
+        64 is a perfectly ordinary pitch and no instrument-blind check can
+        object to it; this pins that the fallback is the *wide* compass it
+        claims to be, so the per-voice test below is measuring the mapping
+        and not the pitch.
+        """
+        score = _build_score(
+            notes=[NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=480)]
+        )
+        report = lint(score)
+        assert not any(i.code == LintCode.NOTE_OUT_OF_RANGE for i in report.issues)
+
+    def test_a_voice_is_measured_against_its_own_instrument(self) -> None:
+        """The same E4 fails once the linter is told the voice is a tuba.
+
+        A tuba's compass tops out at 58 (Bb3), so 64 is two octaves above
+        where the instrument lives. That is exactly the pitch the engine
+        wrote for every melody instrument before the band came from the
+        instrument table, and it is the pitch the piano-compass gate could
+        never refuse.
+        """
+        score = _build_score(
+            notes=[NoteEvent(voice_id=1, pitch_midi=64, tick=0, duration_ticks=480)]
+        )
+        report = lint(score, voice_instruments={1: "tuba"})
+        assert not report.passed
+        out_of_range = [i for i in report.issues if i.code == LintCode.NOTE_OUT_OF_RANGE]
+        assert len(out_of_range) == 1
+        assert out_of_range[0].voice_id == 1
+        assert "tuba" in out_of_range[0].message
+        # The message names the instrument's own bounds, not the
+        # fallback's, so a reader can tell which compass was applied.
+        assert "[28, 58]" in out_of_range[0].message
+
+    def test_each_voice_gets_its_own_compass(self) -> None:
+        """One voice may pass where another fails on the very same pitch.
+
+        The bass is a contrabass (compass 28..67) and the melody is a
+        piccolo (74..108), so 60 is inside the one and below the other.
+        A single compass for the score cannot express that, and a green
+        check under one is not evidence the other is playable.
+        """
+        score = _build_score(
+            notes=[
+                NoteEvent(voice_id=0, pitch_midi=60, tick=0, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=60, tick=0, duration_ticks=480),
+            ]
+        )
+        report = lint(score, voice_instruments={0: "contrabass", 1: "piccolo"})
+        out_of_range = [i for i in report.issues if i.code == LintCode.NOTE_OUT_OF_RANGE]
+        assert [i.voice_id for i in out_of_range] == [1]
+        assert "piccolo" in out_of_range[0].message
 
 
 class TestLintFailsOnMeasureCompleteness:

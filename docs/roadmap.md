@@ -241,9 +241,13 @@ engine still composes to fixed forms with predefined harmonic templates, and
 still uses no LLM for melodic or harmonic material — those two constraints
 held, and §6/§8 remain the contract. Every acceptance criterion in §8 is
 therefore applied to a considerably larger surface than the one it was
-written against, which is why the instrument-range criterion needs
-per-instrument range data that does not yet exist (see §8, "All notes within
-instrument range").
+written against. The instrument-range criterion was the one that had to be
+made real rather than re-scoped: the engine's single 64–84 melody band and
+the piano's range gate were replaced by `saimc/instruments.py`, one compass
+and tessitura per instrument, with the linter checking each voice against
+its own compass (§8, "All notes within instrument range"). The palette is
+sixty-six now, not fifty-seven — the table is drift-guarded against
+`saimc.spec.Instrument`.
 
 **Phase 2**
 - Known-piece catalog + transforms (Canon in D, etc.) — **the v1 contradiction with Phase 2 is resolved here**. Each catalog entry must carry **both** a composition-copyright column (is the underlying composition in the public domain in our target jurisdictions?) **and** an edition/file-licensing column (under what terms is the specific MusicXML/MIDI file we're shipping?). Both must be permissive per §4. Public-domain composition + non-permissive file = still fails the audit. Catalog entries without both columns filled in are not shippable.
@@ -358,7 +362,11 @@ Phase 1 is "done" only when every criterion below is met, measured by an automat
 - Every accepted spec round-trips through the schema validator.
 
 **Composition correctness:**
-- All notes within instrument range.
+- All notes within instrument range. Each voice is checked against the
+  compass of the instrument that voice is rendered with, from
+  `saimc/instruments.py`; a linter call that is not given the voice→
+  instrument mapping falls back to one wide compass and says so in the
+  finding.
 - All measures complete (no dropped beats).
 - Every pitched note sounds a chord tone of its bar, with one licensed
   exception: an unaccented, diatonic passing or neighbour tone that is

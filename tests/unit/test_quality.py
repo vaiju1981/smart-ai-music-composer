@@ -194,7 +194,9 @@ class TestRegisters:
             NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=1920),
         ]
         piece = score_piece(_score(notes))
-        assert piece.register_separation_semitones == 19.0
+        # The distance between the ranges: the melody starts at 72, the
+        # harmony ends at 55, so 17 semitones of clear air between them.
+        assert piece.register_separation_semitones == 17.0
         assert piece.tessitura_overlap_semitones == 0
 
     def test_a_harmony_reaching_into_the_melody_overlaps(self) -> None:
@@ -206,10 +208,70 @@ class TestRegisters:
         # The harmony sits on one pitch inside the melody's 72..76 band,
         # so one semitone is shared — not a zero-width span.
         assert piece.tessitura_overlap_semitones == 1
-        assert piece.register_separation_semitones == -1.0
+        # And no separation at all: the two ranges interlock, so the
+        # distance is zero rather than a negative "mean below mean".
+        assert piece.register_separation_semitones == 0.0
+
+    def test_a_far_off_mean_cannot_hide_a_voice_in_the_melody_s_octave(self) -> None:
+        # The failure the mean-based metric could not report: a harmony
+        # part that spends most of its time an octave and a half below the
+        # tune but reaches into its band. Three voices doing this averaged
+        # 19.12 semitones of separation while piling into one octave.
+        notes = [
+            *_melody([72, 74, 76]),
+            *[
+                NoteEvent(
+                    voice_id=VOICE_HARMONY, pitch_midi=pitch, tick=index * 480, duration_ticks=480
+                )
+                for index, pitch in enumerate([45, 45, 45, 45, 45, 45, 73])
+            ],
+        ]
+        piece = score_piece(_score(notes, bars=2))
+        assert piece.register_separation_semitones == 0.0
+        assert piece.tessitura_overlap_semitones == 1
+
+    def test_the_nearest_harmony_voice_sets_the_separation(self) -> None:
+        # One voice folded well below the tune is not evidence that the
+        # other one is clear of it: the minimum over voices is the number.
+        notes = [
+            *_melody([72, 74, 76]),
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=45, tick=0, duration_ticks=1920),
+            NoteEvent(voice_id=VOICE_HARMONY + 1, pitch_midi=64, tick=0, duration_ticks=1920),
+        ]
+        piece = score_piece(_score(notes))
+        assert piece.register_separation_semitones == 8.0
+
+    def test_a_pad_spanning_the_melody_sounds_none_of_it(self) -> None:
+        # An arpeggio whose compass brackets the tune but folds below it:
+        # the ranges intersect, the notes do not. The overlap counts what
+        # is heard.
+        notes = [
+            *_melody([72, 74, 76]),
+            *[
+                NoteEvent(
+                    voice_id=VOICE_HARMONY, pitch_midi=pitch, tick=index * 480, duration_ticks=480
+                )
+                for index, pitch in enumerate([36, 48, 60, 48, 36, 48, 60, 48])
+            ],
+        ]
+        piece = score_piece(_score(notes, bars=2))
+        assert piece.tessitura_overlap_semitones == 0
+        assert piece.register_separation_semitones == 12.0
 
     def test_a_solo_piece_has_no_register_metrics(self) -> None:
         piece = score_piece(_score(_melody([60, 62, 64])))
+        assert piece.register_separation_semitones is None
+        assert piece.tessitura_overlap_semitones is None
+
+    def test_the_bass_is_not_one_of_the_harmony_voices(self) -> None:
+        # A bass line belongs under the tune and a low ensemble may share
+        # its register legitimately; the register metric is about the
+        # accompaniment that has a choice.
+        notes = [
+            *_melody([72, 74, 76]),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=45, tick=0, duration_ticks=1920),
+        ]
+        piece = score_piece(_score(notes))
         assert piece.register_separation_semitones is None
         assert piece.tessitura_overlap_semitones is None
 

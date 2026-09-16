@@ -89,18 +89,30 @@ QUALITY_TEXTURE_HIERARCHY_MIN: float = 1.0
 voice, or nothing is leading and the texture is a hot pot."""
 
 QUALITY_REGISTER_SEPARATION_MIN: float = 3.0
-"""Mean melody pitch must sit at least a minor third above the mean
-harmony pitch. Voices written in the same register are heard as one
-blurred part."""
+"""The nearest harmony voice must keep a minor third between its own range
+and the melody's — no harmony pitch inside the melody's compass at all.
+Voices written in the same register are heard as one blurred part, and
+this is a range distance rather than a difference of averages, so a wide
+accompaniment cannot hide an overlap behind a far-away mean. The engine
+establishes it wherever the instrument has room: the register pass places
+the accompaniment under (or over) the finished tune with
+`HARMONY_MELODY_CLEARANCE` between them, falling back to the instrument's
+whole compass. It does not hold for the instruments whose compass cannot
+hold both a line and a bed clear of it — measured over the palette grid,
+four of sixty-six — and there the scorecard reports the overlap rather
+than the pass pretending to have placed it."""
 
 QUALITY_TESSITURA_OVERLAP_MAX: int = 4
-"""The harmony may occupy at most a major third of the melody's band.
+"""The harmony may sound at most a major third of the melody's band.
 
 Two voices whose ranges interlock this way are heard as one crowded
-line even when their averages are an octave apart — which they can be,
-since the melody's own range is wide. This metric and `range_semitones`
-interact: a melody spanning two and a half octaves will overlap almost
-any accompaniment until its range is narrowed."""
+line even when their averages are an octave apart. Counted in semitones
+the harmony actually sounds inside the melody's range, not in the width
+of the intersection of two ranges: an accompaniment spanning the
+melody's range while sounding none of it — a pad folded below the tune —
+is not crowding anything. It holds wherever the separation above does,
+and where the instrument leaves the register pass nowhere to put the bed
+it is the metric that reports it."""
 
 QUALITY_BASS_ONSET_PATTERNS_MIN: int = 3
 """The bass must show at least three distinct onset patterns across its
@@ -217,9 +229,13 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         maximum=None,
         rationale="voices sharing a register blur into one part",
         hint=(
-            "raise HARMONY_MIN_MIDI / lower HARMONY_MAX_MIDI relative to "
-            "the melody's window in saimc/compose/engine.py so the "
-            "harmony is written below the lead."
+            "a harmony voice has climbed into the melody's range. The "
+            "register pass in saimc/compose/engine.py "
+            "(_settle_harmony_register) places the bed relative to the "
+            "finished tune and drops a note it cannot place; check that "
+            "the voice's instrument window (saimc/instruments.py "
+            "bed_window) still spans an octave below the melody's band, "
+            "which _melody_band_for is what arranges."
         ),
     ),
     QualityThreshold(
@@ -228,9 +244,11 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         maximum=QUALITY_TESSITURA_OVERLAP_MAX,
         rationale="the harmony's range must not climb into the melody's",
         hint=(
-            "lower HARMONY_MAX_MIDI in saimc/compose/engine.py below the "
-            "melody's lowest comfortable note, and narrow the melody's own "
-            "range so there is a register left for the harmony to occupy."
+            "the harmony is sounding notes inside the melody's range, so "
+            "the tune has no register of its own. Either the melody's band "
+            "is too wide for its instrument (LINE_BAND_SEMITONES in "
+            "saimc/instruments.py) or the bed window in the same module "
+            "puts the accompaniment where the tune is."
         ),
     ),
     QualityThreshold(
@@ -582,38 +600,75 @@ def _texture_hierarchy(score: NotationScore, melody: list[NoteEvent]) -> float |
     return len(melody) / busiest
 
 
-def _register_separation(score: NotationScore, melody: list[NoteEvent]) -> float | None:
-    """Mean melody pitch minus mean harmony pitch, in semitones.
+def _harmony_voice_ids(score: NotationScore) -> list[int]:
+    """The voices this module calls harmony, in a stable order.
 
-    None when the piece has no harmony voice.
+    Voice 0 is the bass and is deliberately not one of them. A bass line
+    is placed in its own instrument's compass and is *supposed* to be the
+    low end — a cello melody over a contrabass shares its register
+    legitimately, and a metric that called that a blur would fail a legal
+    low-string ensemble. Percussion is out for the usual reason: a drum
+    map is not a pitch range.
     """
-    harmony_voices = sorted({n.voice_id for n in score.notes if n.voice_id >= VOICE_HARMONY})
-    if not harmony_voices or not melody:
+    return sorted({n.voice_id for n in score.notes if n.voice_id >= VOICE_HARMONY})
+
+
+def _register_separation(score: NotationScore, melody: list[NoteEvent]) -> float | None:
+    """How far the *closest* harmony voice stays from the melody, in semitones.
+
+    The distance between two ranges — zero when they interlock at any
+    pitch, however far apart their centres are — and the minimum over the
+    harmony voices, so one accompaniment crowding the tune is reported
+    however roomy the others are.
+
+    This replaced a mean-melody-minus-mean-harmony figure that could not
+    see the thing it is for. Three accompaniment voices piling into the
+    melody's octave reported 19.12 semitones of separation because their
+    *averages* were low, and a celesta pad written above a piano tune
+    reported -17.9 for being high. A range distance reports both as the
+    overlap they are.
+
+    None when the piece is melody alone or has no harmony voice.
+    """
+    if not melody:
         return None
-    harmony = [n for voice_id in harmony_voices for n in _voice_notes(score, voice_id)]
-    if not harmony:
-        return None
-    return sum(n.pitch_midi for n in melody) / len(melody) - sum(
-        n.pitch_midi for n in harmony
-    ) / len(harmony)
+    melody_low = min(n.pitch_midi for n in melody)
+    melody_high = max(n.pitch_midi for n in melody)
+    distances: list[int] = []
+    for voice_id in _harmony_voice_ids(score):
+        notes = _voice_notes(score, voice_id)
+        if not notes:
+            continue
+        low = min(n.pitch_midi for n in notes)
+        high = max(n.pitch_midi for n in notes)
+        distances.append(max(melody_low - high, low - melody_high, 0))
+    return float(min(distances)) if distances else None
 
 
 def _tessitura_overlap(score: NotationScore) -> int | None:
-    """Semitones of the melody's band the harmony also occupies.
+    """Semitones of the melody's band in which the harmony actually sounds.
 
-    None when either voice is absent, and zero when the bands are
-    disjoint — the harmony sits entirely below (or above) the melody.
-    Counted inclusively, so a harmony sitting on a single pitch inside
-    the melody's range reports one shared semitone rather than a
-    zero-width span.
+    A count of distinct pitches rather than of the band's width, because
+    the band is not what is heard: an accompaniment whose two extreme
+    notes bracket the melody's range shares the whole of it in this
+    measure only if it is *sounding* notes there, and a pad folded an
+    octave below the tune shares none of it however wide its own compass.
+
+    None when the piece is melody alone or has no harmony voice.
     """
     melody_band = _band(score, {VOICE_MELODY})
-    harmony_band = _band(score, {n.voice_id for n in score.notes if n.voice_id >= VOICE_HARMONY})
-    if melody_band is None or harmony_band is None:
+    if melody_band is None:
         return None
-    low = max(melody_band[0], harmony_band[0])
-    high = min(melody_band[1], harmony_band[1])
-    return max(0, high - low + 1)
+    harmony_voices = _harmony_voice_ids(score)
+    if not harmony_voices:
+        return None
+    low, high = melody_band
+    sounded = {
+        n.pitch_midi
+        for n in score.notes
+        if n.voice_id in harmony_voices and low <= n.pitch_midi <= high
+    }
+    return len(sounded)
 
 
 def _band(score: NotationScore, voice_ids: set[int]) -> tuple[int, int] | None:

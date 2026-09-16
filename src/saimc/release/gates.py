@@ -90,7 +90,11 @@ def gate_spec_round_trip(spec: CompositionSpec) -> GateResult:
 
 def gate_composition_correctness(output: EngineOutput) -> GateResult:
     """The theory linter passes on the engine's NotationScore (§8)."""
-    report = lint(output.notation_score, chord_bars=output.chord_bars or None)
+    report = lint(
+        output.notation_score,
+        chord_bars=output.chord_bars or None,
+        voice_instruments={v.voice_id: v.instrument for v in output.voice_instruments},
+    )
     if report.issues:
         summary = "; ".join(f"{i.code}: {i.message}" for i in report.issues[:3])
         return GateResult(

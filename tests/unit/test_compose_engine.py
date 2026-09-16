@@ -15,11 +15,7 @@ from saimc.compose.engine import (
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
     ARRANGEMENT_ARC_MIN_REPS,
-    HARMONY_MAX_MIDI,
     HARMONY_MELODY_CLEARANCE,
-    HARMONY_MIN_MIDI,
-    MELODY_HIGH_MIDI,
-    MELODY_LOW_MIDI,
     MODULATION_OFFSET,
     CompositionEngineError,
     EngineErrorCode,
@@ -29,20 +25,24 @@ from saimc.compose.engine import (
     _apex_starts,
     _bass_figure_pitches,
     _bass_ladder,
-    _bed_octaves,
+    _bed_goes_above,
     _bound_walk,
+    _can_clear_the_tune,
     _chord_intervals,
-    _clear_harmony_below_melody,
     _close_bar,
     _entrance_cost,
     _entry_answer,
     _hold_tied_pairs,
+    _into_harmony_register,
     _legal_slots,
     _licit_line,
+    _melody_band_for,
     _merged_tie_runs,
+    _octaves_in_window,
     _opening_step,
     _place_bar,
     _scale_degree_to_semitones,
+    _settle_harmony_register,
     _snap_to_chord,
     _start_offsets,
     _truncate_template_for_coda,
@@ -59,6 +59,7 @@ from saimc.compose.forms import (
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
 from saimc.compose.score import (
+    VOICE_BASS,
     VOICE_HARMONY,
     VOICE_MELODY,
     VOICE_PERCUSSION,
@@ -70,8 +71,15 @@ from saimc.compose.score import (
     realized_duration_seconds,
     ticks_at_microsecond,
 )
+from saimc.instruments import (
+    LINE_BAND_SEMITONES,
+    BedRegisters,
+    MelodyBand,
+    bed_window,
+    range_for,
+)
 from saimc.quality import score_piece
-from saimc.spec import CompositionSpec, Mood, WesternKey
+from saimc.spec import CompositionSpec, Instrument, Mood, WesternKey
 
 # Independent oracle: diatonic triads and sevenths as semitone
 # offsets from the TONIC, degrees I..VII. Major and minor keys.
@@ -1105,54 +1113,68 @@ class TestMelodyWalk:
     def test_a_bar_the_band_cannot_hold_keeps_its_line(self) -> None:
         """The band's edge is paid for by a bar's register, never by a note.
 
-        `electrifying` at seed 99 over 90 seconds writes a bar whose line
-        is a twelve-semitone climb a tone above the band's ceiling. No
-        octave holds it — the one below reaches a tone under the floor —
-        so the placement has to leave the bar somewhere, and the note-wise
-        alternative is what this pins against: lifting the single note
-        below the floor an octave turned a scale into a ten-semitone tear
-        in the middle of the bar, and the licence pass had already run, so
-        the score failed to lint and the whole piece raised.
+        A line wider than the band cannot be fitted at any octave, and
+        this is the case the placement has to answer without touching the
+        line: the notes left outside are the two ends of it, and every
+        interval between the notes is the one the walk wrote. The
+        alternative — folding the stray notes an octave one at a time —
+        turns a scale into a tear in the middle of the bar, and the
+        licence pass has already run by then, so the score fails to lint
+        and the whole piece raises.
 
-        The contract is the one every other bar keeps: a bar's register is
-        one shift of the whole line. Here that leaves the bar's first note
-        a tone under the band, and the line is the scale the walk wrote.
+        The band here is the narrowest the registry can produce (21
+        semitones) and the line is 24 wide, so the edge is reached by
+        construction rather than by hunting for a seed that reaches it —
+        with a per-instrument band no seeded piece does: measured over
+        600 pieces across the three moods, every melody bar sits inside
+        its own instrument's band.
         """
-        out = compose(_spec(Mood.ELECTRIFYING, duration=90, seed=99))
-        bar_ticks_value = bar_ticks(out.notation_score.time_signature)
-        bars: dict[int, list[int]] = {}
-        for note in out.notation_score.notes:
-            if note.voice_id == VOICE_MELODY:
-                bars.setdefault(note.tick // bar_ticks_value, []).append(
-                    note.pitch_midi
-                )
-        outside = {
-            bar: pitches
-            for bar, pitches in bars.items()
-            if min(pitches) < MELODY_LOW_MIDI or max(pitches) > MELODY_HIGH_MIDI
-        }
-        assert outside, "this piece is the one whose bar reaches the band's edge"
-        for bar, pitches in outside.items():
-            # The edge is where the placement put it: a tone under the
-            # floor, which is the whole excursion — not a note dropped
-            # somewhere the line never went.
-            assert min(pitches) == MELODY_LOW_MIDI - 2, (bar, pitches)
-            assert all(
-                abs(later - earlier) <= STEP_MAX_SEMITONES
-                for earlier, later in pairwise(pitches)
-            ), (bar, pitches)
+        band = MelodyBand(low_midi=60, high_midi=81)
+        line = [58, 60, 62, 63, 65, 67, 68, 70, 72, 74, 75, 77, 79, 80, 82]
+        _rank, shift, outside, _rubbing, _entrance = _place_bar(
+            line, band=band, prev_pitch=None, apex=False
+        )
+        # The first key of the ranking, stated as the property rather than
+        # as the number: no octave of the whole bar leaves fewer notes
+        # out than the one that was chosen.
+        best_possible = min(
+            sum(1 for pitch in line if not band.contains(pitch + 12 * octave))
+            for octave in range(-3, 4)
+        )
+        assert outside == best_possible, (outside, best_possible)
+        assert outside > 0, "a 24-semitone line does not fit a 21-semitone band"
+        shifted = [pitch + shift for pitch in line]
+        assert [later - earlier for earlier, later in pairwise(shifted)] == [
+            later - earlier for earlier, later in pairwise(line)
+        ], "the line comes through the shift unchanged"
+        # The excursion is the edge of the line, not a hole in it: the
+        # notes inside the band are one unbroken run, so nothing was
+        # folded while its neighbours stayed put.
+        inside = [band.contains(pitch) for pitch in shifted]
+        transitions = sum(
+            1 for earlier, later in pairwise(inside) if earlier != later
+        )
+        assert any(inside), (shifted, inside)
+        assert transitions <= 2, (shifted, inside)
+        assert shifted[0] < band.low_midi or shifted[-1] > band.high_midi
+        assert all(
+            abs(later - earlier) <= STEP_MAX_SEMITONES
+            for earlier, later in pairwise(shifted)
+        ), shifted
 
     def test_place_bar_counts_rubbing_only_off_the_bar_chord(self) -> None:
         """Two tones of the bar's own chord are a voicing; only the notes off
         it can rub the bass, and those are the ones the licence pass would
         snap away anyway. The count is what steers the octave choice, so an
         exemption that leaked into it would let a real collision through."""
+        band = MelodyBand(low_midi=60, high_midi=84)
         _rank, _shift, _outside, rubbing, _entrance = _place_bar(
-            [64], prev_pitch=None, apex=False, bass_pitches=(65,)
+            [64], band=band, prev_pitch=None, apex=False, bass_pitches=(65,)
         )
         assert rubbing == 1, "64 against a sounding 65 is the m2 the linter refuses"
         _rank, _shift, _outside, exempt, _entrance = _place_bar(
             [64],
+            band=band,
             prev_pitch=None,
             apex=False,
             bass_pitches=(65,),
@@ -1167,9 +1189,10 @@ class TestMelodyWalk:
         outside the band, then the notes left rubbing the bass. The caller
         compares a start's ranking against these, so `_RANK_RUBBING` names
         the index in both and this is what keeps it honest."""
+        band = MelodyBand(low_midi=60, high_midi=84)
         for apex in (False, True):
             rank, _shift, outside, rubbing, _entrance = _place_bar(
-                [64, 67], prev_pitch=None, apex=apex, bass_pitches=(65,)
+                [64, 67], band=band, prev_pitch=None, apex=apex, bass_pitches=(65,)
             )
             assert len(rank) == (8 if apex else 7), (apex, rank)
             assert rank[0] == outside, (apex, rank)
@@ -1698,31 +1721,74 @@ def _melody_note(pitch: int, *, tick: int = 0, duration: int = 1920) -> NoteEven
 
 
 class TestHarmonyRegisterPass:
-    """The bed's register is settled over the finished piece."""
+    """The bed is settled into its instrument's window, clear of the tune."""
 
-    def test_a_fold_lands_on_the_highest_octave_under_the_ceiling(self) -> None:
-        # Under a ceiling of 66, 76 folds to 64 — not to 52, which is the
-        # octave after it and only a fallback.
-        assert _bed_octaves(76, 66) == [64, 52]
+    # A pad instrument whose window is the old fixed 48-84, so the
+    # cases below read as the behaviour this pass always had.
+    _WINDOW = MelodyBand(low_midi=48, high_midi=84)
 
-    def test_a_fold_never_leaves_the_bed(self) -> None:
-        for pitch in range(HARMONY_MIN_MIDI, 110):
-            octaves = _bed_octaves(pitch, 66)
-            assert octaves, pitch
-            for octave in octaves:
-                assert HARMONY_MIN_MIDI <= octave <= min(66, HARMONY_MAX_MIDI)
+    def _settle(
+        self,
+        notes: list[NoteEvent],
+        *,
+        window: MelodyBand | None = None,
+        compass: MelodyBand | None = None,
+        melody_floor: int,
+        melody_ceiling: int | None = None,
+    ) -> list[NoteEvent]:
+        """Settle one voice, with the comfortable window on both sides.
 
-    def test_a_note_already_in_the_bed_is_left_alone(self) -> None:
+        The default compass *is* the comfortable window, so the cases
+        below read as the behaviour the pass always had: a bed with one
+        window and no fallback behind it. `compass` is passed only by the
+        cases that are about the fallback.
+        """
+        comfortable = window or self._WINDOW
+        return _settle_harmony_register(
+            notes,
+            melody_floor=melody_floor,
+            melody_ceiling=melody_floor if melody_ceiling is None else melody_ceiling,
+            registers={
+                VOICE_HARMONY: BedRegisters(
+                    comfortable=comfortable,
+                    compass=compass or comfortable,
+                )
+            },
+        )
+
+    def test_a_fold_lands_on_the_octave_the_window_holds(self) -> None:
+        # 76 is already in the window; 100 folds down to 76, and 40 folds
+        # up to 52 — the fold moves the way it has to, which is what the
+        # fixed 48-84 fold did when the window was those two constants.
+        assert _octaves_in_window(76, self._WINDOW) == [52, 64, 76]
+        assert _into_harmony_register(76, window=self._WINDOW) == 76
+        assert _into_harmony_register(100, window=self._WINDOW) == 76
+        assert _into_harmony_register(40, window=self._WINDOW) == 52
+
+    def test_a_fold_never_leaves_the_window(self) -> None:
+        for pitch in range(0, 128):
+            folded = _into_harmony_register(pitch, window=self._WINDOW)
+            assert self._WINDOW.contains(folded), (pitch, folded)
+
+    def test_a_window_narrower_than_an_octave_may_miss_a_pitch_class(self) -> None:
+        """An empty octave list is the honest answer for a window that has
+        no octave of the pitch in it — the caller drops the note rather
+        than the fold inventing one the instrument cannot sound."""
+        narrow = MelodyBand(low_midi=60, high_midi=66)
+        assert _octaves_in_window(61, narrow) == [61]
+        # G: every octave of it is outside a window of C..F#.
+        assert _octaves_in_window(67, narrow) == []
+        assert not narrow.contains(_into_harmony_register(67, window=narrow))
+
+    def test_a_note_clear_of_the_tune_is_left_alone(self) -> None:
         note = _bed_note(60)
-        assert _clear_harmony_below_melody([note], melody_floor=64) == [note]
+        assert self._settle([note], melody_floor=64) == [note]
 
-    def test_a_note_over_the_ceiling_folds_under_it(self) -> None:
+    def test_a_note_inside_the_melody_band_folds_under_it(self) -> None:
         # The melody's floor is 64, so the ceiling is 61 and the bed takes
         # 76 down to 64 — which is still over it — and on to 52.
-        cleared = _clear_harmony_below_melody(
-            [_bed_note(76), _melody_note(64)], melody_floor=64
-        )
-        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [52]
+        settled = self._settle([_bed_note(76), _melody_note(64)], melody_floor=64)
+        assert [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY] == [52]
 
     def test_a_fold_that_would_crowd_the_melody_takes_the_next_octave(self) -> None:
         """A note that moves is asked about the melody again.
@@ -1732,39 +1798,260 @@ class TestHarmonyRegisterPass:
         a rubbed interval, not a cleared one — so the bed takes the
         octave below that instead of arriving in the tune's face.
         """
-        cleared = _clear_harmony_below_melody(
-            [_bed_note(73), _melody_note(72)], melody_floor=64
-        )
-        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [49]
+        settled = self._settle([_bed_note(73), _melody_note(72)], melody_floor=64)
+        assert [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY] == [49]
 
     def test_a_note_with_no_clear_octave_is_dropped(self) -> None:
-        """The one outcome that can thin the bed, and it is the crowding
-        rule's verdict rather than this pass's: a B above the ceiling has
-        only 59 under it, and a melody note at 70 leaves it a minor
-        seventh — the pitch class of a whole tone — from the tune."""
-        cleared = _clear_harmony_below_melody(
-            [_bed_note(71), _melody_note(70)], melody_floor=64
+        """Both homes refused, so the note goes.
+
+        A B above the ceiling has only 59 under it, and a melody note at
+        70 leaves that a minor seventh — the pitch class of a whole tone
+        — from the tune. The tune's ceiling of 84 also leaves the window
+        (48-84) no octave above it to move to, so there is nowhere for
+        the note to go and it is dropped rather than written in the
+        tune's face.
+        """
+        settled = self._settle(
+            [_bed_note(71), _melody_note(70)], melody_floor=64, melody_ceiling=84
         )
-        assert not [n for n in cleared if n.voice_id == VOICE_HARMONY]
+        assert not [n for n in settled if n.voice_id == VOICE_HARMONY]
+
+    def test_a_voice_that_goes_under_does_not_leap_above_the_tune(self) -> None:
+        """The side is the voice's decision, so one note cannot reverse it.
+
+        The note below the tune is crowded in every octave the window
+        holds, and the window has a whole octave clear underneath it. The
+        voice's side is therefore *under*, and a note with no clearing
+        octave there is dropped rather than sent over the tune. Deciding
+        the side per note is what put a bed's notes on both sides of the
+        tune — the accompaniment straddling the melody it is supposed to
+        leave alone, which is the register breach this pass exists to
+        prevent.
+        """
+        settled = self._settle([_bed_note(71), _melody_note(70)], melody_floor=64)
+        assert not [n for n in settled if n.voice_id == VOICE_HARMONY]
 
     def test_a_bar_whose_bed_still_has_a_home_keeps_sounding(self) -> None:
-        cleared = _clear_harmony_below_melody(
-            [_bed_note(71), _bed_note(61), _melody_note(70)], melody_floor=64
+        settled = self._settle(
+            [_bed_note(71), _bed_note(61), _melody_note(70)],
+            melody_floor=64,
+            melody_ceiling=84,
         )
-        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [61]
+        assert [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY] == [61]
 
     def test_the_same_note_folds_the_same_way_wherever_it_sounds(self) -> None:
-        """The ceiling is the piece's, so the fold does not move per bar.
+        """The bounds are the piece's, so the fold does not move per bar.
 
         A bar-local bound would fold this note to 61 in a bar whose tune
         sat high and to 52 in one where it descended — the pad leaping an
         octave between two bars of a held chord.
         """
-        cleared = _clear_harmony_below_melody(
+        settled = self._settle(
             [_bed_note(64, tick=0), _bed_note(64, tick=1920), _melody_note(64, duration=3840)],
             melody_floor=64,
         )
-        assert [n.pitch_midi for n in cleared if n.voice_id == VOICE_HARMONY] == [52, 52]
+        assert [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY] == [52, 52]
+
+    def test_a_pad_that_cannot_sit_under_the_tune_goes_above_it(self) -> None:
+        """A celesta's floor is C5, so a piano tune descending to C3 leaves
+        it nothing underneath — and a celesta above a low tune is where
+        the instrument belongs anyway. Before the window was the
+        instrument's, this pad was written 48-59, a twelfth below the
+        celesta's lowest note, and the range gate was the piano's so it
+        could not see it.
+        """
+        window = bed_window(Instrument.CELESTA.value)
+        assert window.low_midi > 45, "the celesta has no register under a C3 tune"
+        settled = self._settle(
+            [_bed_note(window.low_midi), _melody_note(48), _melody_note(84)],
+            window=window,
+            melody_floor=48,
+            melody_ceiling=84,
+        )
+        pads = [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY]
+        # The lowest octave of C5 that clears the tune's top: C7, which
+        # is the top of the celesta's own window.
+        assert pads == [96], pads
+        assert window.contains(pads[0])
+
+    def test_a_pad_goes_under_the_tune_when_the_window_reaches(self) -> None:
+        """The preference is below, wherever below has the room.
+
+        The same tune, and a window with a whole octave of clear compass
+        under the tune's floor and less than that above its ceiling: the
+        bed lands under the tune rather than over it. Under is the
+        preference and not the rule — it wins whenever it has an octave —
+        because a pad under a tune is the sound of accompaniment, and one
+        written above is a descant.
+        """
+        window = MelodyBand(low_midi=30, high_midi=96)
+        settled = self._settle(
+            [_bed_note(40), _melody_note(48), _melody_note(84)],
+            window=window,
+            melody_floor=48,
+            melody_ceiling=84,
+        )
+        pads = [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY]
+        assert pads == [40], pads
+        assert window.contains(pads[0])
+
+    def test_a_pad_the_comfortable_window_cannot_place_falls_back_to_the_compass(
+        self,
+    ) -> None:
+        """A celesta under a piccolo tune has nowhere comfortable to be.
+
+        The celesta's comfortable range starts at C5 and the piccolo's
+        band runs 79-100, so the comfortable window clears the tune's
+        floor by four semitones — under the six the pass asks for — and
+        reaches nothing above its ceiling. With only that window behind
+        it, a note it cannot hold clear is dropped: here eleven semitones
+        above the tune's floor — a major seventh from it — with no octave
+        of it the window can write clear. The compass is a celesta's whole
+        sixty semitones, and a pad an octave below the tune is worth more
+        than a lost note. So the pass falls back to it, which is the
+        difference this test measures: the same note, the same tune, and
+        the only change is whether the compass is behind the comfortable
+        window.
+        """
+        comfortable = bed_window(Instrument.CELESTA.value)
+        note = _bed_note(90)
+        tune = [_melody_note(79), _melody_note(100)]
+
+        without = self._settle(
+            [note, *tune],
+            window=comfortable,
+            melody_floor=79,
+            melody_ceiling=100,
+        )
+        assert not [n for n in without if n.voice_id == VOICE_HARMONY], (
+            "with no compass behind it the pass has no home for the note"
+        )
+
+        compass = range_for(Instrument.CELESTA.value)
+        settled = self._settle(
+            [note, *tune],
+            window=comfortable,
+            compass=MelodyBand(compass.low_midi, compass.high_midi),
+            melody_floor=79,
+            melody_ceiling=100,
+        )
+        pads = [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY]
+        # Thirteen semitones under the tune's floor — an octave and a
+        # semitone, so clear of it — inside the celesta's compass and
+        # below its comfortable range: a register only the fallback can
+        # write, since the comfortable window is the whole of 72-96.
+        assert pads == [66], pads
+        assert compass.contains(pads[0])
+        assert pads[0] < comfortable.low_midi
+
+    def test_a_voice_no_window_can_place_still_loses_the_notes_that_clash(
+        self,
+    ) -> None:
+        """Keeping the register is not keeping the clash.
+
+        A window thirty-one semitones wide under a tune that fills
+        twenty-three of them leaves neither side the six semitones the
+        pass asks for — three under the tune's floor and none above its
+        ceiling — so the voice is kept where the harmony pass wrote it,
+        a bed in the tune's register being worth more than no bed. What
+        survives that is only the notes that do not rub the tune: a clash
+        is not a register, and the pass drops it either way.
+        """
+        window = MelodyBand(low_midi=60, high_midi=91)
+        clashing = _bed_note(77)  # eleven semitones from either tune note
+        clear = _bed_note(74)
+        settled = self._settle(
+            [clashing, clear, _melody_note(66), _melody_note(88)],
+            window=window,
+            melody_floor=66,
+            melody_ceiling=88,
+        )
+        assert [n.pitch_midi for n in settled if n.voice_id == VOICE_HARMONY] == [74]
+
+    def test_every_pad_note_of_a_piece_is_in_its_own_instrument(self) -> None:
+        """The property, over the whole palette: every voice is written
+        where the instrument that plays it can play.
+
+        Three claims, in descending strength. The compass — `range_for`,
+        which the linter enforces — holds for every note of every voice.
+        An accompaniment is written inside `bed_window`, its instrument's
+        whole comfortable range, whenever that window has room to clear
+        the tune — and inside the compass when it does not, which is the
+        fallback a narrow instrument needs. That condition is not a
+        detail of this test: it is the same `_can_clear_the_tune` the
+        pass itself decides with, so a bed that has moved outside
+        `bed_window` for any other reason fails here. And every melody
+        note is inside the window the engine actually placed it in:
+        `melody_band` for a melody on its own, or the one
+        `_melody_band_for` raises when the accompaniment needs an octave
+        under the tune — which is why this asserts against that function
+        rather than the instrument's own band.
+
+        This is the defect the whole table exists to end: a tuba's tune
+        written two octaves above a tuba, and a byte-identical score for
+        every instrument in the palette.
+        """
+        for mood in Mood:
+            for instrument in Instrument:
+                out = compose(
+                    CompositionSpec(
+                        mood=mood,
+                        instrumentation=instrument,
+                        duration_seconds=60,
+                        seed=42,
+                    )
+                )
+                instruments = {v.voice_id: v.instrument for v in out.voice_instruments}
+                melody_band_here = _melody_band_for(
+                    melody=instruments[VOICE_MELODY],
+                    bed=instruments.get(VOICE_HARMONY),
+                )
+                melody = [
+                    n for n in out.notation_score.notes if n.voice_id == VOICE_MELODY
+                ]
+                melody_pitches = [n.pitch_midi for n in melody]
+                below_ceiling = min(melody_pitches) - HARMONY_MELODY_CLEARANCE
+                above_floor = max(melody_pitches) + HARMONY_MELODY_CLEARANCE
+                for voice_id, name in instruments.items():
+                    span = range_for(name)
+                    notes = [n for n in out.notation_score.notes if n.voice_id == voice_id]
+                    assert notes
+                    pitches = sorted({n.pitch_midi for n in notes})
+                    assert all(span.contains(n.pitch_midi) for n in notes), (
+                        mood,
+                        name,
+                        pitches,
+                    )
+                    if voice_id >= VOICE_HARMONY:
+                        comfortable = bed_window(name)
+                        above = _bed_goes_above(
+                            comfortable,
+                            below_ceiling=below_ceiling,
+                            above_floor=above_floor,
+                        )
+                        if _can_clear_the_tune(
+                            comfortable,
+                            below_ceiling=below_ceiling,
+                            above_floor=above_floor,
+                            above=above,
+                        ):
+                            assert all(comfortable.contains(n.pitch_midi) for n in notes), (
+                                mood,
+                                name,
+                                comfortable,
+                                pitches,
+                            )
+                    if voice_id == VOICE_MELODY:
+                        assert all(
+                            melody_band_here.contains(n.pitch_midi) for n in notes
+                        ), (mood, name, melody_band_here, pitches)
+                        assert max(pitches) - min(pitches) <= LINE_BAND_SEMITONES, (
+                            mood,
+                            name,
+                            min(pitches),
+                            max(pitches),
+                        )
+
 
 
 class TestHarmonyVoice:
@@ -1836,11 +2123,27 @@ class TestHarmonyVoice:
         )
 
     def test_harmony_stays_in_its_register(self) -> None:
+        """The register is the instrument's, not a module constant.
+
+        The bed is written across the instrument's whole comfortable
+        range — `bed_window` — so a sleep piece's celesta pad sits at
+        72-96 and a calming piece's pizzicato strings at 48-84. The one
+        48-84 window this test used to assert was the piano's comfort
+        applied to every accompaniment voice in the product.
+        """
         for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
             out = compose(_spec(mood, duration=60))
-            harmony = [n for n in out.notation_score.notes if n.voice_id == 3]
+            instruments = {v.voice_id: v.instrument for v in out.voice_instruments}
+            harmony = [n for n in out.notation_score.notes if n.voice_id == VOICE_HARMONY]
             assert harmony
-            assert all(48 <= n.pitch_midi <= 84 for n in harmony)
+            window = bed_window(instruments[VOICE_HARMONY])
+            assert all(window.contains(n.pitch_midi) for n in harmony), (
+                instruments[VOICE_HARMONY],
+                window,
+                sorted({n.pitch_midi for n in harmony}),
+            )
+            assert all(range_for(instruments[VOICE_HARMONY]).contains(n.pitch_midi)
+                       for n in harmony)
 
     def test_harmony_never_rubs_against_the_melody(self) -> None:
         for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
@@ -1857,16 +2160,21 @@ class TestHarmonyVoice:
     def test_the_bed_sits_under_the_melody_for_the_piece(self) -> None:
         """The bed's register is the tune's floor, held for the whole piece.
 
-        `tessitura_overlap_semitones` measures how many semitones of the
-        melody's band the harmony also occupies, over the piece as a
-        whole. Folding every bed note at least
-        `HARMONY_MELODY_CLEARANCE` below the lowest note the tune reaches
-        makes the two bands disjoint, which is the register half of "not
-        a hot pot of instruments": the pad has a register of its own
-        instead of sharing the tune's. Measured before this pass over the
-        gate matrix, the bed's top sat at 84 against a tune whose floor
-        was 64 — twenty-one semitones of shared band, and 19.8 by the
-        metric against a bar of 4.
+        Every bed note is at least `HARMONY_MELODY_CLEARANCE` clear of the
+        tune's range — under its floor, or over its ceiling when the
+        instrument's window has nothing clear underneath, which is the
+        celesta's case. Either way the two ranges are disjoint, which is
+        the register half of "not a hot pot of instruments": the pad has a
+        register of its own instead of sharing the tune's. Measured before
+        this pass over the gate matrix, the bed's top sat at 84 against a
+        tune whose floor was 64 — twenty-one semitones of shared band, and
+        19.8 by the metric against a bar of 4.
+
+        Both register metrics now read ranges rather than means, so they
+        are the assertion: `register_separation_semitones` is the distance
+        between the nearest accompaniment voice and the tune, and
+        `tessitura_overlap_semitones` is how many semitones of the tune's
+        own range the harmony sounds in.
         """
         for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
             out = compose(_spec(mood, duration=60))
@@ -1875,9 +2183,17 @@ class TestHarmonyVoice:
             harmony = [n.pitch_midi for n in notes if n.voice_id == VOICE_HARMONY]
             assert harmony
             assert melody
-            assert max(harmony) <= min(melody) - HARMONY_MELODY_CLEARANCE, mood
+            assert all(
+                pitch <= min(melody) - HARMONY_MELODY_CLEARANCE
+                or pitch >= max(melody) + HARMONY_MELODY_CLEARANCE
+                for pitch in harmony
+            ), (mood, min(melody), max(melody), sorted(set(harmony)))
             report = score_piece(out.notation_score, piece=f"{mood.value}-under-the-tune")
             assert report.tessitura_overlap_semitones == 0, (mood, report)
+            assert report.register_separation_semitones >= HARMONY_MELODY_CLEARANCE, (
+                mood,
+                report,
+            )
 
     def test_a_cleared_bed_keeps_a_note_in_every_bar_it_opens(self) -> None:
         """The bed thins; it does not vanish.
@@ -1931,36 +2247,53 @@ class TestHarmonyVoice:
         cc64_voices = {c.voice_id for c in out.performance_plan.controllers if c.control == 64}
         assert cc64_voices == {1, 3}
 
-    def test_drum_set_plan_is_byte_identical_to_the_pre_ensemble_layout(self) -> None:
-        """The scalar drum-set spec's plan must not have moved by accident.
+    def test_only_the_melody_moved_in_the_drum_set_plan(self) -> None:
+        """Per-voice pins: the kit and the bass are byte-identical to the
+        layout they had before the instrument table, and the melody is not.
 
-        The SHA-256 of the plan's canonical JSON pins the drum-set layout
-        down to the note: no melody legato or pedal, kit humanization
-        only, exactly as the scalar-drum spec played before the ensemble
-        landed. Nothing about the kit has changed — the hash is the whole
-        plan, so it also covers the melody and the bass the plan carries,
-        and it has been re-based twice, deliberately: once when the melody
-        walk was rewritten to move in scale degrees instead of chord tones,
-        and once when the bass replaced its one hard-coded figure with the
-        figure library (that reading was checked note by note — the kit's
-        207 percussion events and the melody's 84 notes came out identical
-        to the previous plan, and only the bass voice moved).
+        The SHA-256 of each voice's canonical notes pins that voice down
+        to the note: no melody legato or pedal, kit humanization only,
+        exactly as the scalar-drum spec played before the ensemble landed.
+        A whole-plan hash would cover all of that too but could not say
+        *which* voice moved, and the instrument table is a change to the
+        melody's register alone — so the pin is per voice, and a future
+        accidental re-timing names its voice in the failure.
 
-        So this pin guards the *layout*: if it moves when neither the kit
-        behaviour nor the melody nor the bass has been changed on purpose,
-        something reordered or re-timed the plan. A later change to the
-        melody or the bass that is intended means re-basing the hash on a
-        plan read by eye first.
+        The kit and the bass read *identically* to the pre-table plan:
+        the kit's 207 percussion events and the bass's 46 notes are
+        unchanged, as are the melody's 84 onsets, durations and
+        velocities. What moved is the melody's pitch — from the fixed
+        64-84 window every instrument used to share to the piano's own
+        band, 60-77 — which is the whole point of the table and the one
+        voice this pin is re-based for. It has been re-based three times
+        now, twice before this: once when the melody walk was rewritten
+        to move in scale degrees, and once when the bass replaced its
+        one hard-coded figure with the figure library. Both readings were
+        checked voice by voice the same way.
         """
         out = compose(
             _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
         )
-        payload = json.dumps(
-            out.performance_plan, sort_keys=True, default=lambda o: asdict(o)
-        )
-        assert hashlib.sha256(payload.encode()).hexdigest() == (
-            "efddcaad15ed3f6635d698cad73a48d0adffc3e74287f32830d3bf6a0957084e"
-        )
+        plan = out.performance_plan
+        pinned = {
+            VOICE_BASS: (
+                "3759d87e70d0d346e0ffb4088a1ddfbd5598ff7595f927c6a5412281504cf4dc",
+                46,
+            ),
+            VOICE_MELODY: (
+                "b89953fc0a976956f0868113dde9ea2ea03b9e0e7db71f467dc3caaa17294def",
+                84,
+            ),
+            VOICE_PERCUSSION: (
+                "f1a2f2631018d91de93e382997e23d4f55f422b88638a3230be978df674840fb",
+                207,
+            ),
+        }
+        for voice_id, (digest, count) in pinned.items():
+            events = [asdict(n) for n in plan.notes if n.voice_id == voice_id]
+            assert len(events) == count, (voice_id, len(events))
+            payload = json.dumps(events, sort_keys=True)
+            assert hashlib.sha256(payload.encode()).hexdigest() == digest, voice_id
 
     def test_sidecar_round_trips_voice_instruments(self) -> None:
         out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="flute"))

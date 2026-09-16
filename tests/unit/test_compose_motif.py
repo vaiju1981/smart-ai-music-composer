@@ -8,7 +8,7 @@ from collections import Counter
 
 import pytest
 
-from saimc.compose.engine import MELODY_HIGH_MIDI, MELODY_LOW_MIDI, compose
+from saimc.compose.engine import _melody_band_for, compose
 from saimc.compose.motif import (
     BASS_FIGURES,
     PLAIN_BASS_FIGURE,
@@ -20,9 +20,10 @@ from saimc.compose.motif import (
     generate_motif,
     vary_motif,
 )
-from saimc.compose.score import VOICE_MELODY
+from saimc.compose.score import VOICE_HARMONY, VOICE_MELODY
+from saimc.instruments import MelodyBand, melody_band, range_for
 from saimc.quality import score_piece
-from saimc.spec import CompositionSpec, Mood
+from saimc.spec import CompositionSpec, Instrument, Mood
 
 
 def _melody(out) -> list:
@@ -30,6 +31,31 @@ def _melody(out) -> list:
         (n for n in out.notation_score.notes if n.voice_id == VOICE_MELODY),
         key=lambda n: n.tick,
     )
+
+
+def _melody_band(out) -> MelodyBand:
+    """The band the score's own melody voice was written in.
+
+    Read off the engine output rather than hard-coded: the band is the
+    melody instrument's, so a test that wants to check the placement
+    honours it has to ask which instrument carried the line — and ask the
+    engine, not the instrument table, because a melody and an
+    accompaniment are placed together: `_melody_band_for` raises the tune
+    when the accompaniment's own range needs an octave underneath it, so
+    a piano over a strings bed is written in 63-84 and a piano alone in
+    56-77. Asserting against `melody_band` alone would fail the pieces
+    the arrangement legitimately raised.
+    """
+    melody = None
+    bed = None
+    for voice in out.voice_instruments:
+        if voice.voice_id == VOICE_MELODY:
+            melody = voice.instrument
+        elif voice.voice_id == VOICE_HARMONY and bed is None:
+            bed = voice.instrument
+    if melody is None:
+        raise AssertionError("the score has no melody voice instrument")
+    return _melody_band_for(melody=melody, bed=bed)
 
 
 class TestGenerateMotif:
@@ -300,6 +326,7 @@ class TestMotifMelody:
         from saimc.compose.linter import legal_non_chord_tone
         from saimc.compose.motif import MotifVariant
         from saimc.compose.score import PPQ, KeySignature
+        from saimc.instruments import MelodyBand
 
         chord_root = 60
         chord_tones = (0, 4, 7, 11)  # Cmaj7
@@ -308,6 +335,7 @@ class TestMotifMelody:
             rng = random.Random(seed)
             motif = generate_motif(rng, bar_ticks=4 * PPQ)
             notes = _melody_bar(
+                band=MelodyBand(low_midi=60, high_midi=84),
                 variant=MotifVariant(motif=motif),
                 chord_root=chord_root,
                 chord_tones=chord_tones,
@@ -351,11 +379,16 @@ class TestMotifMelody:
 
         The bar's walk is folded to within an octave of the degree it starts
         on and the octave placement fits the bar to the tessitura before it
-        weighs anything else, so the melody stays between C4 and B5 for the
+        weighs anything else, so the melody stays inside one window for the
         whole piece instead of climbing as the section develops. Before the
         rewrite the same pieces spanned 28-30 semitones and never descended
         below C5: the apex was an octave jump, so every section's peak was
         also where the line left its range.
+
+        Which window is the melody instrument's, not a module constant:
+        the default ensemble carries the piano, but the sweep below runs
+        it for every instrument-shaped mood so the assertion is against
+        the band the score itself was written in.
 
         A band asserted per piece, not on average: it is what the placement
         does with every bar, so a line outside it means the placement
@@ -374,10 +407,95 @@ class TestMotifMelody:
         for mood in Mood:
             for seed in (42, 7, 11):
                 spec = CompositionSpec(mood=mood, seed=seed, duration_seconds=60)
-                pitches = [note.pitch_midi for note in _melody(compose(spec))]
+                out = compose(spec)
+                band = _melody_band(out)
+                pitches = [note.pitch_midi for note in _melody(out)]
                 assert pitches
-                assert min(pitches) >= MELODY_LOW_MIDI, (mood, seed, min(pitches))
-                assert max(pitches) <= MELODY_HIGH_MIDI, (mood, seed, max(pitches))
+                assert min(pitches) >= band.low_midi, (mood, seed, min(pitches))
+                assert max(pitches) <= band.high_midi, (mood, seed, max(pitches))
+
+    def test_the_band_belongs_to_the_melody_instrument(self) -> None:
+        """Two instruments, two windows, and the line lands in its own.
+
+        The sweep is over the melody palette, and each piece's melody
+        must sit inside *its* instrument's band and — the half that makes
+        it a claim about playability rather than about placement — inside
+        that instrument's compass. Before the band came from the
+        instrument table every one of these wrote the same twenty
+        semitones, E4 to C6.
+
+        The window asserted is the one the piece was placed in, which is
+        the instrument's own band unless the ensemble's accompaniment
+        needed an octave under the tune: the piano here carries the
+        default ensemble's strings bed and is therefore written in the
+        raised 63-84, while the twenty-one-semitone window itself is what
+        the rest of the test reads. Both are asserted, because the raise
+        may move the window but it may not widen it.
+        """
+        palette = (
+            Instrument.PIANO,
+            Instrument.TRUMPET,
+            Instrument.TUBA,
+            Instrument.PICCOLO,
+            Instrument.CONTRABASS,
+            Instrument.CELLO,
+            Instrument.FLUTE,
+            Instrument.CLARINET,
+            Instrument.VIOLIN,
+            Instrument.BASSOON,
+            Instrument.VIBRAPHONE,
+            Instrument.TAIKO,
+        )
+        for instrument in palette:
+            spec = CompositionSpec(
+                mood=Mood.CALMING,
+                instrumentation=instrument,
+                duration_seconds=60,
+                seed=1,
+            )
+            out = compose(spec)
+            band = _melody_band(out)
+            own = melody_band(instrument.value)
+            assert band.high_midi - band.low_midi == own.high_midi - own.low_midi, instrument
+            assert band.low_midi >= own.low_midi, instrument
+            span = range_for(instrument.value)
+            pitches = [note.pitch_midi for note in _melody(out)]
+            assert pitches, instrument
+            assert min(pitches) >= band.low_midi, (instrument, min(pitches))
+            assert max(pitches) <= band.high_midi, (instrument, max(pitches))
+            # The band is not the compass: a melody may not leave the
+            # instrument either, and `melody_band` is built so it cannot
+            # ask for one — this is that invariant, measured on a piece.
+            assert span.contains(min(pitches)), (instrument, min(pitches))
+            assert span.contains(max(pitches)), (instrument, max(pitches))
+
+    def test_every_voice_of_a_piece_is_inside_its_own_instrument(self) -> None:
+        """Not just the melody: the bass and the pad are instruments too.
+
+        §8's "all notes within instrument range" is only true per voice
+        once each voice is measured against the instrument it is played
+        by, which is what `voice_instruments` is for. The accompaniment
+        voices are not the melody instrument, so a check against the
+        melody's band would pass a contrabass line an octave too high
+        without noticing.
+        """
+        for instrument in (Instrument.PIANO, Instrument.TUBA, Instrument.PICCOLO):
+            spec = CompositionSpec(
+                mood=Mood.CALMING,
+                instrumentation=instrument,
+                duration_seconds=60,
+                seed=1,
+            )
+            out = compose(spec)
+            instruments = {v.voice_id: v.instrument for v in out.voice_instruments}
+            assert instruments, instrument
+            for voice_id, name in instruments.items():
+                span = range_for(name)
+                pitches = [
+                    n.pitch_midi for n in out.notation_score.notes if n.voice_id == voice_id
+                ]
+                for pitch in pitches:
+                    assert span.contains(pitch), (instrument, name, pitch)
 
     def test_the_piece_scores_as_a_melody(self) -> None:
         """The scorecard's own read of the finished line, over a corpus.
@@ -389,13 +507,31 @@ class TestMotifMelody:
         they are asserted the way the gate measures them rather than
         tightened into an invariant the metric never claimed.
 
+        Both means therefore need a sample big enough to be a mean. The
+        sweep is thirty-three seeds of each mood and not the five it used
+        to be, because a mean with a heavy tail cannot be read off
+        fifteen: that sample happened to draw the two largest leaps in
+        the corpus, and its reading flipped by a semitone whenever a
+        placement moved. Thirty-three seeds is under a second of work and
+        is stable to the semitone.
+
+        The tail is the honest part of this test and it is not asserted
+        away. Measured over the ninety-nine pieces, ten carry a leap
+        wider than `QUALITY_MAX_LEAP_MAX` — 17 to 20 semitones, every one
+        of them at a bar seam in an electrifying piece whose bar is as
+        wide as the band it has to sit in, where the band wins the
+        ranking and the entrance pays for it. That is the review's
+        finding on `max_leap_semitones`, and it is Phase 3's work: this
+        test asserts the mean the gate reads, and the mean (11.4) clears
+        the bar of 12.
+
         This is the melodic half of the quality bar. The accompaniment is
         what still misses it, in the acceptance suite's `test_the_generator_
         _does_not_clear_the_bar_yet`.
         """
         reports = []
         for mood in Mood:
-            for seed in (42, 7, 11, 3, 99):
+            for seed in range(33):
                 spec = CompositionSpec(mood=mood, seed=seed, duration_seconds=60)
                 report = score_piece(
                     compose(spec).notation_score, piece=f"{mood.value}-{seed}"
