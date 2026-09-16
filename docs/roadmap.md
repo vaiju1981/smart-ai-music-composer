@@ -250,13 +250,25 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - `schema_version: int` — incremented on any breaking change.
 - `request_kind: enum` — `mood_generation` (only Phase 1 value); `famous_piece` is reserved.
 - `duration_seconds: int` — bounded (30 ≤ x ≤ 600), default 180. The engine reaches this target using the Phase 1 target/arrange/fine-tune policy and reports the realized duration.
-- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value.
+- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value. A non-`None` value is honoured whenever an arrangement at that exact bpm lands within the duration tolerance; when none exists the engine derives the tempo from the mood's range instead (an exact tempo makes the realised duration a step function of the bar count, and most (tempo, duration) pairs have no step within ±2%) — the duration promise outranks the tempo request.
 - `key: enum | None` — bounded to Western keys; `None` means the engine chooses.
 - `time_signature: enum` — bounded to common signatures.
 - `mood: enum` — bounded Phase 1 vocabulary: `calming | electrifying | sleep`.
-- `instrumentation: Literal["piano"]` — Phase 1 is piano-only; the field is a single literal, not a list. Phase 2+ will widen this to `list[enum]`.
+- `instrumentation: list[InstrumentationEntry]` — the role-tagged ensemble
+  the piece is written for, one entry per engine voice: `{role: melody |
+  harmony | bass | percussion, instrument: enum}`. Exactly one melody; at
+  most one bass, one percussion (`drum_set` only), and two harmony
+  voices; five voices maximum (the MIDI-channel budget). History: Phase 1
+  shipped it as the single literal `"piano"` (`schema_version` 1/2);
+  version 3 widened it to the role-tagged list. A bare instrument string
+  remains valid input (versions 1–3 all accept it) and coerces to the
+  mood's default ensemble — the harmony/bass voices sound whether the
+  spec names them or not, and `drum_set` scalar specs keep their exact
+  pre-ensemble voice layout. Percussion is never added automatically.
 - `seed: int | None` — for reproducibility; `None` means the engine chooses and reports.
-- `humanization: Literal["none"]` — only `none` is allowed in Phase 1.
+- `humanization: Literal["none", "light", "expressive"]` — the Phase 1
+  surface for timing/velocity/controller nuance; `none` remains valid
+  and stays exactly on the grid (notation is unaffected either way).
 
 **Behavior on unsupported requests:**
 - Out-of-vocabulary values → rejected by the parser with a structured error, not silently coerced.
@@ -332,7 +344,15 @@ Phase 1 is "done" only when every criterion below is met, measured by an automat
 **Composition correctness:**
 - All notes within instrument range.
 - All measures complete (no dropped beats).
-- No unresolved voice-leading collisions flagged by the theory linter.
+- Every pitched note sounds a chord tone of its bar (the engine
+  publishes per-bar chord pitch classes to the linter; the anacrusis
+  pickup may anticipate the next chord in the bar's final eighth).
+- No close-position m2/M7 collisions between simultaneously sounding
+  pitched voices — both tones belonging to the bar's chord is a
+  voicing (a maj7 spread), a rubbed second is a bug.
+- The melody breathes: no continuous span (touching or tied notes)
+  longer than `PHRASE_BARS` (4) bars, anacrusis pickups excluded.
+- The melody resolves: its final note is the tonic or its third.
 - Generated MusicXML validates against the MusicXML schema.
 - Generated MIDI is well-formed (parseable by `mido`/`music21`).
 

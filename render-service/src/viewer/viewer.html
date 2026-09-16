@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>OSMD render harness</title>
+    <style>
+      /* Deterministic canvas: fixed white page, no user styles. */
+      body { margin: 0; background: #fff; }
+      #osmd-container { padding: 24px; }
+    </style>
+  </head>
+  <body>
+    <div id="osmd-container"></div>
+    <!-- OSMD's UMD bundle is injected by the renderer (render.ts), which
+         resolves the node_modules path at runtime. -->
+    <script src="./viewer.js"></script>
+  </body>
+</html>

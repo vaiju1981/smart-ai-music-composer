@@ -1,0 +1,23 @@
+Salamander Grand Piano (Salamander Piano Samples)
+==================================================
+
+Author:      Alexander Holm
+Version:     V3+20200602 (Yamaha C5 grand, 16 velocity layers, SF2)
+Source:      https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html
+             (original recordings: https://archive.org/details/SalamanderGrandPianoV3)
+License:     Creative Commons Attribution 3.0 (CC BY 3.0)
+License URL: https://creativecommons.org/licenses/by/3.0/
+Modification status: unmodified — the sample pack is shipped as-is,
+             with no conversion, retuning, or trimming applied.
+
+This project (Smart AI Music Composer) renders its piano audio with
+the Salamander Grand Piano sample library. CC BY 3.0 requires that
+attribution accompany any distribution of the library or of works
+that include it; this file, THIRD_PARTY_NOTICES.md, the rendered
+audio's embedded metadata tags, and each completed job's
+manifest.json (assets.soundfont) all carry that attribution.
+
+The license text above is a summary; the authoritative text of
+CC BY 3.0 is at the license URL. Confirm the license of the specific
+release you download before redistributing — licenses can change
+between releases.

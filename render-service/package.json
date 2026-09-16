@@ -1,0 +1,25 @@
+{
+  "name": "saimc-render-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OSMD/VexFlow sheet-music render service (MusicXML -> SVG/PNG) for the smart-ai-music-composer pipeline.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc && cp -R src/viewer dist/src/",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
+    "test": "node --test dist/test/*.test.js",
+    "test:integration": "node --test dist/test/integration/*.test.js"
+  },
+  "dependencies": {
+    "opensheetmusicdisplay": "2.1.2",
+    "playwright": "1.61.0"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "typescript": "5.9.3"
+  }
+}

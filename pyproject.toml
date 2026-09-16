@@ -54,8 +54,10 @@ benchmark = [
 
 [project.scripts]
 saimc-benchmark = "saimc.benchmark_cli:main"
+saimc-quality = "saimc.quality_cli:main"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
+saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/example/smart-ai-music-composer"
@@ -93,6 +95,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["B008", "PT011"]
 "src/saimc/llm/**/*.py" = ["E501"]
+"src/saimc/benchmark_cli.py" = ["B008"]
+"src/saimc/quality_cli.py" = ["B008"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -113,7 +117,15 @@ warn_no_return = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["music21.*", "moviepy.*", "pydub.*", "rq.*", "ollama.*", "valkey_glide.*"]
+module = ["moviepy.*", "pydub.*", "rq.*", "ollama.*", "valkey_glide.*", "mido.*"]
+ignore_missing_imports = true
+
+# music21 ships py.typed but with partial typing (untyped stream methods,
+# non-exported aliases); it is a gen-time-only dependency, so skip
+# analysis and treat it as Any rather than erroring on its gaps.
+[[tool.mypy.overrides]]
+module = ["music21.*"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
@@ -121,8 +133,9 @@ init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
 
-[tool.pytest]
+[tool.pytest.ini_options]
 minversion = "8.0"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
@@ -137,6 +150,12 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:music21",
     "ignore::DeprecationWarning:moviepy",
+    # Transitive third-party deprecations. anyio and click emit these with a
+    # raised stacklevel, so the warning is attributed to the *caller* module
+    # and module-scoped ignores cannot match — filter by message instead.
+    # Neither is actionable here until the deps bump.
+    "ignore:The anyio\\..* alias is deprecated:DeprecationWarning",
+    "ignore:'click\\..*' is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
