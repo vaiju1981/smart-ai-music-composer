@@ -150,7 +150,7 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         rationale="a singable line moves mostly by step",
         hint=(
             "the melody's interval vocabulary is set in "
-            "saimc/compose/motif.py by _STEP_CHOICES/_STEP_WEIGHTS, which "
+            "saimc/compose/motif.py by STEP_CHOICES/STEP_WEIGHTS, which "
             "walk CHORD-TONE INDICES: a step of 1 is a third and 2 is a "
             "fifth in semitones. Weight the walk in semitones instead."
         ),
@@ -173,7 +173,7 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         maximum=QUALITY_REPEAT_RATIO_MAX,
         rationale="repetition is a device, not the default move",
         hint=(
-            "the 0-step in _STEP_WEIGHTS carries 15% weight but repeated "
+            "the 0-step in STEP_WEIGHTS carries 15% weight but repeated "
             "notes cluster at phrase starts; make repetition conditional "
             "on position in the phrase."
         ),

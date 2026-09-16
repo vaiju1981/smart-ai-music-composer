@@ -25,13 +25,24 @@ from dataclasses import dataclass
 from saimc.compose.score import PPQ
 
 __all__ = [
+    "BASS_FIGURES",
     "CHORD_TONE_DEGREES",
+    "DEFAULT_BASS_FIGURES",
+    "DEFAULT_RHYTHM_WEIGHTS",
     "LEAP_DEGREES",
+    "MAX_MOTIF_SPAN_DEGREES",
+    "MOTIF_OPERATION_WEIGHTS",
+    "PLAIN_BASS_FIGURE",
+    "RHYTHM_WEIGHTS",
+    "STEP_CHOICES",
+    "STEP_WEIGHTS",
     "BarSlot",
+    "BassFigure",
     "Motif",
     "MotifCell",
     "MotifVariant",
     "apply_rhythm",
+    "draw_bass_figures",
     "generate_motif",
     "recover_leaps",
     "vary_motif",
@@ -84,13 +95,16 @@ class MotifVariant:
 
 
 # Weights for the bar-level operation draw (repetition first so a motif
-# establishes itself before it is worked).
-_REPETITION_WEIGHT = 0.35
-_TRANSPOSITION_WEIGHT = 0.20
-_SEQUENCE_WEIGHT = 0.10
-_INVERSION_WEIGHT = 0.15
-_TRUNCATION_WEIGHT = 0.10
-# Ornament takes the remaining weight.
+# establishes itself before it is worked). These do not sum to 1: the
+# ornament takes whatever weight is left over, which is what keeps the
+# table overridable without the caller having to renormalise it.
+MOTIF_OPERATION_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("repeat", 0.35),
+    ("transpose", 0.20),
+    ("sequence", 0.10),
+    ("invert", 0.15),
+    ("truncate", 0.10),
+)
 
 # Step vocabulary, in degrees. Steps dominate (56%) so the line is
 # conjunct — `step_ratio` asks for 45% and a melody that is mostly skips
@@ -100,12 +114,12 @@ _TRUNCATION_WEIGHT = 0.10
 # (`interval_diversity` wants six distinct intervals). Repeats (6%) are
 # the pedal a phrase rests on, and are capped because `repeat_ratio`
 # cannot exceed 25%.
-_STEP_CHOICES: tuple[int, ...] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
-_STEP_WEIGHTS: tuple[float, ...] = (3, 5, 10, 28, 6, 28, 10, 5, 3)
+STEP_CHOICES: tuple[int, ...] = (-4, -3, -2, -1, 0, 1, 2, 3, 4)
+STEP_WEIGHTS: tuple[float, ...] = (3, 5, 10, 28, 6, 28, 10, 5, 3)
 # How many scale degrees a motif may span. The renderer places each bar
 # in a tessitura band; a motif wider than this cannot fit inside one, and
 # would be folded — which is heard as a glitch, not as a phrase.
-_MAX_MOTIF_SPAN_DEGREES: int = 8
+MAX_MOTIF_SPAN_DEGREES: int = 8
 
 
 def generate_motif(rng: random.Random, *, bar_ticks: int) -> Motif:
@@ -113,7 +127,7 @@ def generate_motif(rng: random.Random, *, bar_ticks: int) -> Motif:
 
     Rhythm is drawn per cell from quarter/eighth so a motif can fill
     the bar or leave a natural rest at its end; steps are small walks in
-    scale degrees, and the walk is kept inside `_MAX_MOTIF_SPAN_DEGREES`
+    scale degrees, and the walk is kept inside `MAX_MOTIF_SPAN_DEGREES`
     of where it started — a motif that wanders further than that is a
     scale exercise, and the bar it lands in cannot hold it.
     """
@@ -152,8 +166,8 @@ def _draw_step(rng: random.Random, degree: int) -> int:
     """
     within = [
         (step, weight)
-        for step, weight in zip(_STEP_CHOICES, _STEP_WEIGHTS, strict=True)
-        if abs(degree + step) <= _MAX_MOTIF_SPAN_DEGREES
+        for step, weight in zip(STEP_CHOICES, STEP_WEIGHTS, strict=True)
+        if abs(degree + step) <= MAX_MOTIF_SPAN_DEGREES
     ]
     return rng.choices(
         [step for step, _weight in within],
@@ -237,27 +251,37 @@ def vary_motif(motif: Motif, rng: random.Random) -> MotifVariant:
     decorates one cell.
     """
     roll = rng.random()
-    if roll < _REPETITION_WEIGHT:
+    threshold = 0.0
+    for operation, weight in MOTIF_OPERATION_WEIGHTS:
+        threshold += weight
+        if roll < threshold:
+            return _apply_operation(motif, operation, rng)
+    return _apply_operation(motif, "ornament", rng)
+
+
+def _apply_operation(motif: Motif, operation: str, rng: random.Random) -> MotifVariant:
+    """The variant one named operation makes of `motif`.
+
+    Named rather than inlined so the operation vocabulary is a value a
+    plan can carry: the weights above are drawn against, and the names
+    here are what a caller reads and writes. An unknown name raises
+    rather than falling back to the motif unchanged — a plan that asks
+    for an operation the engine cannot perform must be refused, not
+    silently given a repeat.
+    """
+    if operation == "repeat":
         return MotifVariant(motif=motif)
-    if roll < _REPETITION_WEIGHT + _TRANSPOSITION_WEIGHT:
+    if operation == "transpose":
         return MotifVariant(motif=motif, anchor_offset=CHORD_TONE_DEGREES)
-    if roll < _REPETITION_WEIGHT + _TRANSPOSITION_WEIGHT + _SEQUENCE_WEIGHT:
+    if operation == "sequence":
         return MotifVariant(motif=motif, repeat=True)
-    if (
-        roll
-        < _REPETITION_WEIGHT + _TRANSPOSITION_WEIGHT + _SEQUENCE_WEIGHT + _INVERSION_WEIGHT
-    ):
+    if operation == "invert":
         return MotifVariant(motif=_invert(motif))
-    if (
-        roll
-        < _REPETITION_WEIGHT
-        + _TRANSPOSITION_WEIGHT
-        + _SEQUENCE_WEIGHT
-        + _INVERSION_WEIGHT
-        + _TRUNCATION_WEIGHT
-    ):
+    if operation == "truncate":
         return MotifVariant(motif=_truncate(motif, rng))
-    return MotifVariant(motif=_ornament(motif, rng))
+    if operation == "ornament":
+        return MotifVariant(motif=_ornament(motif, rng))
+    raise ValueError(f"unknown motif operation: {operation!r}")
 
 
 # --- Bar-level rhythm vocabulary -------------------------------------------
@@ -277,7 +301,7 @@ RHYTHM_WEIGHTS: dict[str, dict[str, float]] = {
     "sleep": {"straight": 0.25, "dotted": 0.35, "tie": 0.40},
 }
 # Moods without their own profile fall back to a gentle mix.
-_DEFAULT_RHYTHM_WEIGHTS: dict[str, float] = {
+DEFAULT_RHYTHM_WEIGHTS: dict[str, float] = {
     "straight": 0.50,
     "dotted": 0.25,
     "tie": 0.25,
@@ -353,7 +377,7 @@ BASS_FIGURES: dict[str, tuple[BassFigure, ...]] = {
     ),
 }
 # Moods without their own profile fall back to the gentle set.
-_DEFAULT_BASS_FIGURES: tuple[BassFigure, ...] = BASS_FIGURES["calming"]
+DEFAULT_BASS_FIGURES: tuple[BassFigure, ...] = BASS_FIGURES["calming"]
 
 
 def draw_bass_figures(
@@ -374,7 +398,7 @@ def draw_bass_figures(
     the rotation *starts* is drawn, so two pieces of one mood do not open
     on the same figure.
     """
-    figures = BASS_FIGURES.get(mood, _DEFAULT_BASS_FIGURES)
+    figures = BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES)
     start = rng.randrange(len(figures))
     return tuple(figures[(start + index) % len(figures)] for index in range(count))
 
@@ -458,7 +482,7 @@ def apply_rhythm(
     rather than guessing — it moves durations, and a duration can decide
     whether a note is legal at all.
     """
-    weights = RHYTHM_WEIGHTS.get(mood, _DEFAULT_RHYTHM_WEIGHTS)
+    weights = RHYTHM_WEIGHTS.get(mood, DEFAULT_RHYTHM_WEIGHTS)
     operation = rng.choices(tuple(weights), weights=tuple(weights.values()), k=1)[0]
     if operation == "straight" or len(slots) < 2:
         return [(offset, duration, tone, False) for offset, duration, tone in slots]

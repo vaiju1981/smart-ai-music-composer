@@ -424,7 +424,7 @@ SHUFFLE = DrumStyle(
 # rather than the new normal.
 SECTION_CRASH_VELOCITY: int = 90
 
-_ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
+ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
 
 
 def rotation_index(section_idx: int, variant_count: int) -> int:
@@ -436,7 +436,7 @@ def rotation_index(section_idx: int, variant_count: int) -> int:
     """
     if variant_count < 2:
         return 0
-    return _ROTATION_CYCLE[section_idx % len(_ROTATION_CYCLE)]
+    return ROTATION_CYCLE[section_idx % len(ROTATION_CYCLE)]
 
 # --- Mood-driven selection ---------------------------------------------------
 
@@ -490,6 +490,23 @@ def style_for(mood: str, time_signature: str) -> DrumStyle | None:
     return DRUM_STYLES.get(name)
 
 
+def style_name_for(mood: str, time_signature: str) -> str | None:
+    """The name of the drum style for a mood + meter, or None for no drums.
+
+    The meter decides when it has an opinion — 3/4 is a waltz, 6/8 a
+    shuffle — and otherwise 4/4 falls to the mood's style while every
+    exotic meter stays silent. The name rather than the `DrumStyle` is
+    what a composition plan carries, so the choice is a value a caller
+    can read, write, diff and store rather than an object it cannot.
+    """
+    meter_style = METER_STYLES.get(time_signature)
+    if meter_style is not None:
+        return meter_style
+    if time_signature != "4/4":
+        return None
+    return MOOD_STYLES_4_4.get(mood)
+
+
 __all__ = [
     "BALLAD",
     "BAR_3_4",
@@ -520,6 +537,7 @@ __all__ = [
     "PERCUSSION_NOTE_TICKS",
     "PERCUSSION_VELOCITY_MAX",
     "ROCK",
+    "ROTATION_CYCLE",
     "SECTION_CRASH_VELOCITY",
     "SHUFFLE",
     "SIXTEENTH",
@@ -529,4 +547,5 @@ __all__ = [
     "DrumStyle",
     "rotation_index",
     "style_for",
+    "style_name_for",
 ]

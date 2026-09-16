@@ -297,11 +297,19 @@ def _extend_template(template: ChordTemplate, target_bars: int) -> ChordTemplate
 # (IV -> I). The final section's last two bars are rewritten to this
 # cadence, so every piece ends at home instead of on whatever chord the
 # template's tail happens to land on.
-_CADENCE_DEGREE: Mapping[str, int] = {
+CADENCE_DEGREE: Mapping[str, int] = {
     "calming": 3,  # IV
     "electrifying": 4,  # V
     "sleep": 3,  # IV
 }
+
+DEFAULT_CADENCE_DEGREE: int = 4
+"""The cadence an unlisted mood gets: a dominant, the stronger close."""
+
+
+def cadence_degree_for(mood: str) -> int:
+    """The scale degree this mood's final cadence approaches the tonic from."""
+    return CADENCE_DEGREE.get(mood, DEFAULT_CADENCE_DEGREE)
 
 
 def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
@@ -317,7 +325,7 @@ def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
     shorter than three bars are returned unchanged (there is no room
     for a 2-bar close).
     """
-    cadence_degree = _CADENCE_DEGREE.get(mood, 4)
+    cadence_degree = cadence_degree_for(mood)
     if template.bars < 3:
         return template
     kept = _truncate_template(template, template.bars - 2).chords
@@ -652,6 +660,8 @@ def bar_diatonic_pcs(chord_pcs: tuple[int, ...], key: KeySignature) -> frozenset
 
 
 __all__ = [
+    "CADENCE_DEGREE",
+    "DEFAULT_CADENCE_DEGREE",
     "LEAP_MIN_SEMITONES",
     "MOOD_PROFILES",
     "PHRASE_BARS",
@@ -664,6 +674,7 @@ __all__ = [
     "apply_final_cadence",
     "bar_diatonic_pcs",
     "bar_scale_intervals",
+    "cadence_degree_for",
     "chord_tone_degrees",
     "get_mood_profile",
     "get_template_for_form",
