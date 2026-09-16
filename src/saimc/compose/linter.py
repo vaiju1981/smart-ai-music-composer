@@ -26,6 +26,7 @@ from saimc.compose.forms import PHRASE_BARS, STEP_MAX_SEMITONES, bar_diatonic_pc
 from saimc.compose.score import (
     VOICE_MELODY,
     VOICE_PERCUSSION,
+    KeySignature,
     NotationScore,
     NoteEvent,
 )
@@ -106,6 +107,7 @@ def lint(
     score: NotationScore,
     *,
     chord_bars: tuple[tuple[int, ...], ...] | None = None,
+    bar_keys: tuple[KeySignature, ...] | None = None,
     voice_instruments: Mapping[int, str] | None = None,
 ) -> LintReport:
     """Run every linter check and return a structured report.
@@ -118,6 +120,14 @@ def lint(
     the sounding chord (a maj7 voicing is intended, a rubbed second is
     not). Without it the two harmony checks are skipped — a chord-less
     score cannot state its intent.
+
+    `bar_keys` carries the key each of those bars belongs to, in the same
+    order, which is the score's own key unless a modulation moved it. The
+    passing-tone licence is a question about the bar's key, and the key
+    cannot be recovered from the chord — a lifted IV is spelled exactly
+    like the home key's V — so a lifted bar read against the home key
+    refuses the new key's own notes. Pass it wherever it is known; a bar
+    without it is read against the score's key.
 
     `voice_instruments` maps engine voice ids to instrument names, and
     it is what makes the range check per-instrument: each voice is
@@ -135,7 +145,7 @@ def lint(
     issues.extend(_check_nonempty(score))
     issues.extend(_check_ends_on_tonic(score))
     if chord_bars is not None:
-        issues.extend(_check_chord_tones(score, chord_bars))
+        issues.extend(_check_chord_tones(score, chord_bars, bar_keys))
         issues.extend(_check_dissonant_collisions(score, chord_bars))
     issues.extend(_check_phrase_gaps(score))
 
@@ -420,6 +430,7 @@ def _voice_neighbours(
 def _check_chord_tones(
     score: NotationScore,
     chord_bars: tuple[tuple[int, ...], ...],
+    bar_keys: tuple[KeySignature, ...] | None = None,
 ) -> list[LintIssue]:
     """Every pitched note must sound a chord tone of its bar, or be a legal one.
 
@@ -439,7 +450,18 @@ def _check_chord_tones(
     neighbours = _voice_neighbours(score)
     # Per bar, not per note: the scale a bar's harmony belongs to is a
     # property of the bar, and recovering it scans 24 candidate scales.
-    diatonic = [bar_diatonic_pcs(tuple(bar), score.key) for bar in chord_bars]
+    # The key it is recovered against is the bar's own, which is the
+    # score's unless a modulation moved it: a lifted bar read against the
+    # home key refuses the new key's notes wherever the lifted chord is
+    # also the home key's (a lifted IV reads as the home V).
+    keys = bar_keys or ()
+    diatonic = [
+        bar_diatonic_pcs(
+            tuple(bar),
+            keys[bar_index] if bar_index < len(keys) else score.key,
+        )
+        for bar_index, bar in enumerate(chord_bars)
+    ]
     for position, note in enumerate(score.notes):
         if note.voice_id == VOICE_PERCUSSION:
             continue

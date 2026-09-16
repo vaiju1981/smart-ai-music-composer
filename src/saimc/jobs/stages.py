@@ -282,15 +282,18 @@ def compose_stage(
     # The next-state decision (continue to validating or fail with
     # lint_unpassable) is made here. Lint is also re-checked inside the
     # engine, but we re-run here defensively in case a future engine
-    # raises before lint. Both arguments the engine passed are passed
+    # raises before lint. Every argument the engine passed is passed
     # again: an argument dropped here is a check silently weakened, and
     # `voice_instruments` is what makes the range gate per-instrument
-    # rather than one compass for the whole score.
+    # rather than one compass for the whole score, while `bar_keys` is
+    # what makes the passing-tone licence read a modulated bar in the key
+    # it was written in.
     from saimc.compose.linter import lint
 
     lint_report = lint(
         output.notation_score,
         chord_bars=output.chord_bars or None,
+        bar_keys=output.bar_keys or None,
         voice_instruments={v.voice_id: v.instrument for v in output.voice_instruments},
     )
     if not lint_report.passed:

@@ -501,6 +501,35 @@ class TestPassingAndNeighbourTones:
         report = lint(score, chord_bars=((9, 0, 4), (9, 0, 4)))
         assert report.passed
 
+    def test_the_key_is_the_bars_own_when_a_modulation_moved_it(self) -> None:
+        # A long piece's final repetition is lifted a whole step, and a
+        # lifted IV — G major under a piece in C — is spelled exactly like
+        # the home key's V. The chord alone cannot say which key the bar
+        # belongs to, so `bar_keys` says it: the same figure is refused
+        # read against C and licensed read against D, which is the key
+        # F# (78) belongs to and the key the walk wrote the bar in.
+        score = _build_score(
+            measures=_bars((0, 1920), (1920, 3840)),
+            notes=[
+                NoteEvent(voice_id=1, pitch_midi=74, tick=0, duration_ticks=240),
+                NoteEvent(voice_id=1, pitch_midi=76, tick=240, duration_ticks=240),
+                NoteEvent(voice_id=1, pitch_midi=78, tick=480, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=79, tick=960, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=83, tick=1440, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=79, tick=1920, duration_ticks=480),
+                NoteEvent(voice_id=1, pitch_midi=76, tick=2400, duration_ticks=960),
+            ],
+        )
+        chord_bars = ((2, 7, 11), (0, 4, 7))
+        read_as_home = lint(score, chord_bars=chord_bars)
+        assert any(i.code == LintCode.CHORD_TONE_VIOLATION for i in read_as_home.issues)
+        read_as_lifted = lint(
+            score,
+            chord_bars=chord_bars,
+            bar_keys=(KeySignature(root="D", mode="major"), KeySignature(root="C", mode="major")),
+        )
+        assert read_as_lifted.passed
+
 
 class TestDissonantCollision:
     """Close m2/M7 overlaps between voices are flagged unless both are chord tones."""

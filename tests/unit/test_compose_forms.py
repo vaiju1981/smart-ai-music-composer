@@ -23,6 +23,7 @@ from saimc.compose.forms import (
     scale_pitch_offset,
     scale_semitones,
     scale_walk,
+    transposed_key,
 )
 from saimc.compose.score import KeySignature
 from saimc.spec import WesternKey
@@ -230,6 +231,34 @@ class TestScaleTables:
         # about without the disagreement reading as a composition bug.
         assert LEAP_MIN_SEMITONES == 5
         assert LEAP_MIN_SEMITONES > STEP_MAX_SEMITONES + 1
+
+
+class TestTransposedKey:
+    """`transposed_key` names the key a modulation lift lands on."""
+
+    def test_a_whole_step_above_c_major_is_d_major(self) -> None:
+        assert transposed_key(KeySignature(root="C", mode="major"), 2) == KeySignature(
+            root="D", mode="major"
+        )
+
+    def test_the_mode_is_carried(self) -> None:
+        assert transposed_key(KeySignature(root="A", mode="minor"), 2) == KeySignature(
+            root="B", mode="minor"
+        )
+
+    def test_no_offset_is_the_same_key(self) -> None:
+        key = KeySignature(root="Bb", mode="major")
+        assert transposed_key(key, 0) is key
+
+    def test_the_tonic_moves_by_exactly_the_offset(self) -> None:
+        # Every root in the table has to spell a key the table can read
+        # back, and the lifted tonic has to be the old one plus the lift —
+        # the chord roots, the bass and the licence are all read off it.
+        for root in ("C", "G", "D", "A", "E", "B", "F#", "C#", "F", "Bb", "Eb", "Ab"):
+            key = KeySignature(root=root, mode="major")
+            for semitones in (1, 2, 5, 7, 11):
+                lifted = transposed_key(key, semitones)
+                assert key_root_midi(lifted) % 12 == (key_root_midi(key) + semitones) % 12
 
 
 class TestMoodRegistry:

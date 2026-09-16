@@ -55,6 +55,7 @@ from saimc.compose.forms import (
     bar_diatonic_pcs,
     key_root_midi,
     scale_intervals,
+    transposed_key,
 )
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
@@ -457,7 +458,10 @@ class TestChordToneHarmony:
                     ),
                     bar_start_tick=bar * ticks_per_bar,
                     ppq=score.ppq,
-                    diatonic_pcs=bar_diatonic_pcs(tuple(chord), out.key),
+                    diatonic_pcs=bar_diatonic_pcs(
+                        tuple(chord),
+                        out.bar_keys[bar] if out.bar_keys else out.key,
+                    ),
                 ), (
                     f"voice {voice_id} bar {bar}: pitch {note.pitch_midi} at "
                     f"{note.tick} is neither a chord tone of {sounding} "
@@ -579,7 +583,10 @@ class TestChordToneHarmony:
                 f"bar {bar}: the score sounds {sorted(out.chord_bars[bar])}, "
                 f"not the borrowed bVII {sorted(sounding)}"
             )
-            diatonic = bar_diatonic_pcs(out.chord_bars[bar], out.key)
+            diatonic = bar_diatonic_pcs(
+                out.chord_bars[bar],
+                out.bar_keys[bar] if out.bar_keys else out.key,
+            )
             # The bar's final eighth is the anacrusis zone, where a pickup
             # may anticipate the chord it leads into.
             anticipation = (bar + 1) * ticks_per_bar - score.ppq // 2
@@ -1411,7 +1418,10 @@ class TestRhythmVocabulary:
                     nxt=melody[index + 1] if index + 1 < len(melody) else None,
                     bar_start_tick=bar * ticks_per_bar,
                     ppq=ppq,
-                    diatonic_pcs=bar_diatonic_pcs(out.chord_bars[bar], out.key),
+                    diatonic_pcs=bar_diatonic_pcs(
+                        out.chord_bars[bar],
+                        out.bar_keys[bar] if out.bar_keys else out.key,
+                    ),
                 ), (
                     f"seed {seed}: the note at {note.tick} is a tone of neither "
                     f"bar {bar} nor bar {bar + 1} and is not a licensed tone"
@@ -1509,6 +1519,44 @@ class TestArrangementArc:
         tonic_pc = key_root_midi(out.key) % 12
         last_melody = max(self._melody(out), key=lambda n: n.tick)
         assert last_melody.pitch_midi % 12 in (tonic_pc, (tonic_pc + third) % 12)
+
+    def test_every_bar_publishes_the_key_its_harmony_belongs_to(self) -> None:
+        # The lifted IV of a piece in C is a G major triad, which is also
+        # the home key's V — the chord cannot say which key the bar is in,
+        # and the linter's passing-tone licence needs to know. So the
+        # engine publishes the key per bar, and the last two bars of the
+        # section come home with the cadence.
+        out = compose(_spec(Mood.CALMING, duration=180))
+        arrangement = out.arrangement
+        assert len(out.bar_keys) == len(out.chord_bars) == arrangement.total_bars_with_coda
+        home = out.bar_keys[0]
+        assert home == out.key
+        final_section = (arrangement.repetition_count - 1) * arrangement.form_bars
+        lifted = {
+            bar - final_section
+            for bar in range(final_section, arrangement.total_bars)
+            if out.bar_keys[bar] != home
+        }
+        assert lifted == set(range(arrangement.form_bars - 2)), sorted(lifted)
+        for bar in range(arrangement.total_bars):
+            assert out.bar_keys[bar] in (home, transposed_key(home, MODULATION_OFFSET))
+
+    @pytest.mark.parametrize("duration", [210, 240, 270, 420, 480, 540])
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_a_lifted_piece_composes_and_lints(self, duration: int, seed: int) -> None:
+        # These were the specs that failed: the lift was applied to the
+        # notes and to the published chords, but the licence read their
+        # bars against the home key, so a lifted bar whose chord is also
+        # the home key's (a IV read as a V) refused the new key's own
+        # notes and the whole compose raised `lint_failed`.
+        out = compose(_spec(Mood.ELECTRIFYING, duration=duration, seed=seed))
+        report = lint(
+            out.notation_score,
+            chord_bars=out.chord_bars,
+            bar_keys=out.bar_keys,
+            voice_instruments={v.voice_id: v.instrument for v in out.voice_instruments},
+        )
+        assert report.passed, f"{duration}s seed {seed}: {report.issues}"
 
     # --- terraced dynamics ---
 

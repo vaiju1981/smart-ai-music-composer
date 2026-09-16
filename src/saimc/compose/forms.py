@@ -562,6 +562,42 @@ def key_scale_pcs(key: KeySignature) -> frozenset[int]:
     return frozenset((tonic_pc + offset) % 12 for offset in _SCALE_TABLES[key.mode])
 
 
+# `_KEY_ROOTS` read backwards, for naming the key a modulation lands on.
+# Three pitch classes have two spellings (C#/Db, F#/Gb, Ab/G#); the table
+# already prefers the sharp for the first two and `Ab` for the third, and
+# the inverse keeps those choices, so a lift changes no spelling by itself.
+_KEY_ROOT_NAMES: Mapping[int, str] = {
+    0: "C",
+    1: "C#",
+    2: "D",
+    3: "Eb",
+    4: "E",
+    5: "F",
+    6: "F#",
+    7: "G",
+    8: "Ab",
+    9: "A",
+    10: "Bb",
+    11: "B",
+}
+
+
+def transposed_key(key: KeySignature, semitones: int) -> KeySignature:
+    """The key `semitones` above `key`, mode unchanged.
+
+    The modulation lift takes a long piece's final repetition a whole step
+    up, and every bar the lift carries belongs to the *new* key. Which key
+    that is cannot be recovered from the bar's chord — a lifted IV is the
+    home key's V, spelled identically — so the engine publishes it per bar
+    and the linter's passing-tone licence reads the bar it was written
+    against rather than guessing and refusing the new key's own notes.
+    """
+    if semitones == 0:
+        return key
+    root = (_KEY_ROOTS[key.root] + semitones) % 12
+    return KeySignature(root=_KEY_ROOT_NAMES[root], mode=key.mode)
+
+
 # Every major and natural-minor scale, for recovering which scale a bar's
 # harmony belongs to when the key alone does not say (see
 # `bar_diatonic_pcs`). Two per root: the mode is part of the reading.
@@ -639,4 +675,5 @@ __all__ = [
     "scale_pitch_offset",
     "scale_semitones",
     "scale_walk",
+    "transposed_key",
 ]

@@ -93,6 +93,7 @@ def gate_composition_correctness(output: EngineOutput) -> GateResult:
     report = lint(
         output.notation_score,
         chord_bars=output.chord_bars or None,
+        bar_keys=output.bar_keys or None,
         voice_instruments={v.voice_id: v.instrument for v in output.voice_instruments},
     )
     if report.issues:

@@ -66,6 +66,7 @@ from saimc.compose.forms import (
     key_signature_from_spec,
     scale_pitch_offset,
     scale_walk,
+    transposed_key,
 )
 from saimc.compose.linter import DISSONANT_INTERVALS, LintIssue, lint
 from saimc.compose.motif import (
@@ -159,9 +160,12 @@ class EngineOutput:
 
     `chord_bars` carries the chord pitch classes sounding in each bar
     (bar order) so the release gates can re-run the linter's
-    chord-tone check without regenerating the harmony. `voice_instruments`
-    maps each engine voice to the instrument that renders it — the
-    renderers' source of truth for per-voice programs and channels.
+    chord-tone check without regenerating the harmony, and `bar_keys`
+    carries the key each of those bars belongs to — the same key unless a
+    modulation moved it — so the passing-tone licence reads the bar the
+    way the walk wrote it. `voice_instruments` maps each engine voice to
+    the instrument that renders it — the renderers' source of truth for
+    per-voice programs and channels.
     """
 
     notation_score: NotationScore
@@ -170,6 +174,7 @@ class EngineOutput:
     key: KeySignature
     time_signature: str
     chord_bars: tuple[tuple[int, ...], ...] = ()
+    bar_keys: tuple[KeySignature, ...] = ()
     voice_instruments: tuple[VoiceInstrument, ...] = ()
 
     def to_sidecar(self) -> dict[str, Any]:
@@ -187,6 +192,7 @@ class EngineOutput:
             "key": asdict(self.key),
             "time_signature": self.time_signature,
             "chord_bars": [list(bar) for bar in self.chord_bars],
+            "bar_keys": [asdict(k) for k in self.bar_keys],
             "voice_instruments": [asdict(v) for v in self.voice_instruments],
         }
 
@@ -249,6 +255,10 @@ class EngineOutput:
             key=KeySignature(**payload["key"]),
             time_signature=payload["time_signature"],
             chord_bars=tuple(tuple(bar) for bar in payload.get("chord_bars", ())),
+            # Jobs composed before the sidecar carried per-bar keys re-lint
+            # against the score's own key, which is what the licence read
+            # before the modulation was published.
+            bar_keys=tuple(KeySignature(**k) for k in payload.get("bar_keys", ())),
             # Jobs composed before the sidecar carried voice instruments
             # render with the legacy single-instrument fallback.
             voice_instruments=tuple(
@@ -282,10 +292,11 @@ def compose(spec: CompositionSpec) -> EngineOutput:
         ) from exc
 
     ensemble = resolve_ensemble(spec)
-    score, chord_bars = _build_score(spec, key, time_signature, arrangement, ensemble)
+    score, chord_bars, bar_keys = _build_score(spec, key, time_signature, arrangement, ensemble)
     lint_report = lint(
         score,
         chord_bars=chord_bars or None,
+        bar_keys=bar_keys or None,
         voice_instruments=ensemble.voice_instruments(),
     )
     if not lint_report.passed:
@@ -315,6 +326,7 @@ def compose(spec: CompositionSpec) -> EngineOutput:
         key=key,
         time_signature=time_signature,
         chord_bars=chord_bars,
+        bar_keys=bar_keys,
         voice_instruments=tuple(
             VoiceInstrument(voice_id=voice_id, instrument=instrument)
             for voice_id, instrument in sorted(ensemble.voice_instruments().items())
@@ -333,7 +345,7 @@ def _build_score(
     time_signature: str,
     arrangement: DurationArrangement,
     ensemble: Ensemble,
-) -> tuple[NotationScore, tuple[tuple[int, ...], ...]]:
+) -> tuple[NotationScore, tuple[tuple[int, ...], ...], tuple[KeySignature, ...]]:
     """Build the NotationScore from the spec + arrangement.
 
     Generates one melody voice + one bass voice per section, with
@@ -342,8 +354,9 @@ def _build_score(
     coda-length tail is appended using a coda-flavored seed so the
     variation rules from §10 #10 still apply.
 
-    Also returns the chord pitch classes sounding in each bar, in bar
-    order — the linter's chord-tone gate consumes them.
+    Also returns the chord pitch classes sounding in each bar and the key
+    each of those bars belongs to, in bar order — the linter's chord-tone
+    and passing-tone gates consume them.
     """
     # The window the melody is written in belongs to the instrument that
     # carries it — raised, if it has to be, to leave the accompaniment a
@@ -355,6 +368,7 @@ def _build_score(
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
     chord_bars: list[tuple[int, ...]] = []
+    bar_keys: list[KeySignature] = []
     section_starts: list[int] = []  # start_tick of each section
     cursor_tick = 0
     prev_bass: int | None = None
@@ -423,8 +437,9 @@ def _build_score(
                 long_piece=long_piece,
             ),
         )
-        section_notes, section_chord_bars, bars_since_breath = section_result
+        section_notes, section_chord_bars, section_bar_keys, bars_since_breath = section_result
         chord_bars.extend(section_chord_bars)
+        bar_keys.extend(section_bar_keys)
         # Terraced dynamics: the section's whole dynamic sits at its
         # step of the arc rather than drifting continuously.
         velocity_scale = _section_velocity_scale(section_idx, arrangement.repetition_count)
@@ -493,8 +508,9 @@ def _build_score(
             bars_since_breath=bars_since_breath,
             harmony_voices=harmony_voices,
         )
-        coda_notes, coda_chord_bars, _ = coda_result
+        coda_notes, coda_chord_bars, coda_bar_keys, _ = coda_result
         chord_bars.extend(coda_chord_bars)
+        bar_keys.extend(coda_bar_keys)
         velocity_scale = _section_velocity_scale(
             arrangement.repetition_count, arrangement.repetition_count
         )
@@ -599,15 +615,19 @@ def _build_score(
             ),
         )
 
-    return NotationScore.make(
-        ppq=PPQ,
-        key=key,
-        time_signature=time_signature,
-        tempo_bpm=arrangement.tempo_bpm,
-        measures=measures,
-        notes=notes,
-        tempo_changes=tempo_changes,
-    ), tuple(chord_bars)
+    return (
+        NotationScore.make(
+            ppq=PPQ,
+            key=key,
+            time_signature=time_signature,
+            tempo_bpm=arrangement.tempo_bpm,
+            measures=measures,
+            notes=notes,
+            tempo_changes=tempo_changes,
+        ),
+        tuple(chord_bars),
+        tuple(bar_keys),
+    )
 
 
 # The bass voice's ceiling. A figure's upper rungs climb from the bar's
@@ -682,7 +702,12 @@ def _generate_section(
     melody_from_bar: int = 0,
     bars_since_breath: int = 0,
     harmony_voices: tuple[tuple[int, str], ...] = (),
-) -> tuple[list[NoteEvent], tuple[tuple[int, ...], ...], int]:
+) -> tuple[
+    list[NoteEvent],
+    tuple[tuple[int, ...], ...],
+    tuple[KeySignature, ...],
+    int,
+]:
     """Generate the bass + melody notes for one section.
 
     The left hand walks: each chord's bass lands on the chord tone
@@ -720,12 +745,13 @@ def _generate_section(
     that crowds the melody.
 
     Returns the section's notes, the chord pitch classes sounding in
-    each bar (for the linter's chord-tone gate), and the breath
-    deficit the next section inherits.
+    each bar (for the linter's chord-tone gate), the key each of those
+    bars belongs to, and the breath deficit the next section inherits.
     """
     notes: list[NoteEvent] = []
     melody_notes: list[NoteEvent] = []
     bar_pcs: list[tuple[int, ...]] = []
+    bar_keys: list[KeySignature] = []
     # The melody's last sounding pitch, carried bar to bar so each bar is
     # placed where it continues the line rather than restarting it, and
     # the interval that arrived there — a bar entered after a leap is
@@ -765,12 +791,17 @@ def _generate_section(
         chord_root = tonic_midi + slot_offset + root_offset
         chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
         chords.append((chord_root, chord_tones, dur))
-        # Every bar of the slot sounds the same pitch classes; the
-        # linter checks melody and bass against this set.
+        # The key this slot's harmony belongs to — the score's, or the
+        # lifted one the modulation carries it to. Every bar of the slot
+        # sounds the same pitch classes; the linter checks melody and bass
+        # against this set and reads the passing-tone licence against this
+        # key, so the two travel together.
+        bar_key = transposed_key(key, slot_offset)
         bar_pcs.extend(
             tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones}))
             for _ in range(dur)
         )
+        bar_keys.extend([bar_key] * dur)
 
     cursor = 0
     bar_index = 0
@@ -1011,7 +1042,7 @@ def _generate_section(
         trailing = max(0, total_bars - 1 - last_gap_bar)
     else:
         trailing = total_bars - melody_from_bar
-    return ordered, tuple(bar_pcs), trailing + 1
+    return ordered, tuple(bar_pcs), tuple(bar_keys), trailing + 1
 
 
 # The harmony voice's constants. There is no register window among them
