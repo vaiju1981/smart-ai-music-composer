@@ -8,15 +8,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from saimc.compose.plan import PLAN_FORMAT, default_plan
-from saimc.jobs.state import JobState
-from saimc.jobs.storage import (
-    ArtifactRecord,
-    JobStorage,
+from saimc.compose.plan import (
+    PLAN_FORMAT,
     UnsupportedPlanVersionError,
-    UnsupportedSpecVersionError,
+    default_plan,
 )
-from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, Mood
+from saimc.jobs.state import JobState
+from saimc.jobs.storage import ArtifactRecord, JobStorage
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, Mood, UnsupportedSpecVersionError
 
 
 @pytest.fixture

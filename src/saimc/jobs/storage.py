@@ -33,9 +33,13 @@ from pathlib import Path
 from typing import Any
 
 from saimc.canonical import canonical_dumps
-from saimc.compose.plan import CompositionPlan, PlanError
+from saimc.compose.plan import (
+    CompositionPlan,
+    PlanError,
+    UnsupportedPlanVersionError,
+)
 from saimc.jobs.state import JobState
-from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, UnsupportedSpecVersionError
 
 logger = logging.getLogger(__name__)
 
@@ -373,23 +377,6 @@ class JobStorage:
         )
 
 
-class UnsupportedSpecVersionError(Exception):
-    """Raised when a persisted job's spec schema is newer than this build."""
-
-
-class UnsupportedPlanVersionError(Exception):
-    """Raised when a persisted job carries a composition plan this build cannot read.
-
-    Distinct from `UnsupportedSpecVersionError` because the two are
-    different situations. A spec from the future is *widened* past what
-    this build knows — Pydantic fills the fields it has never heard of
-    with their defaults — and that is a deliberate contract. A plan is
-    stored materialized, so a version this build cannot read is a whole
-    document whose fields it cannot know, and the refusal is exact in
-    both directions.
-    """
-
-
 __all__ = [
     "COMPLETED_RETENTION_DAYS",
     "DEFAULT_JOBS_DIR",
@@ -398,6 +385,4 @@ __all__ = [
     "Job",
     "JobError",
     "JobStorage",
-    "UnsupportedPlanVersionError",
-    "UnsupportedSpecVersionError",
 ]

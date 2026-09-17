@@ -144,6 +144,24 @@ class PlanError(ValueError):
     """
 
 
+class UnsupportedPlanVersionError(PlanError):
+    """A stored plan document this build cannot read.
+
+    Distinct from a plain `PlanError` because the situation is different
+    from a plan the engine refused: this one is *unreadable*, so the reader
+    has to say which container it was found in and what to do about it.
+    The message carries that; the class does not, because the same
+    document found in a job directory or a session directory is the same
+    refusal with a different place to look.
+
+    It lives beside `CompositionPlan` rather than beside either reader,
+    for the reason this repo keeps re-learning: a value reached through a
+    module that merely re-exports it is coupled to that module. Both
+    `jobs/storage.py` and `session/models.py` raise this, which is the
+    evidence that neither of them owns it.
+    """
+
+
 def _weight_pairs(name: str, pairs: tuple[tuple[str, float], ...]) -> None:
     """Validate a named-weight table: non-empty, unique names, weights >= 0."""
     _require(bool(pairs), f"{name} must carry at least one entry")
@@ -788,6 +806,7 @@ __all__ = [
     "PLAN_SCHEMA_VERSION",
     "CompositionPlan",
     "PlanError",
+    "UnsupportedPlanVersionError",
     "default_plan",
     "resolve_plan",
 ]

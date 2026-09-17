@@ -419,6 +419,21 @@ class SpecError(BaseModel):
     attempts: NonNegativeInt = 0
 
 
+class UnsupportedSpecVersionError(Exception):
+    """A stored spec written by a newer build than this one.
+
+    Not a `SpecError`: that is a *parse* failure the model caused, with a
+    stage and an attempt count. This is a stored document this build
+    cannot faithfully complete, and it is raised by a reader rather than
+    by the parser.
+
+    It sits beside `CompositionSpec` rather than beside the storage that
+    raises it, because more than one container stores a spec: a job
+    carries one and a session's draft carries one, and both refuse it the
+    same way. The message names the container and its remedy.
+    """
+
+
 __all__ = [
     "DEDICATED_FONT_INSTRUMENTS",
     "DURATION_SECONDS_DEFAULT",
@@ -436,6 +451,7 @@ __all__ = [
     "RequestKind",
     "SpecError",
     "TimeSignature",
+    "UnsupportedSpecVersionError",
     "VoiceRole",
     "WesternKey",
 ]

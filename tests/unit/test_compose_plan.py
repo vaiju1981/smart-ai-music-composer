@@ -637,6 +637,7 @@ class TestThePlanCannotReachTheEngine:
             "PLAN_SCHEMA_VERSION",
             "CompositionPlan",
             "PlanError",
+            "UnsupportedPlanVersionError",
             "default_plan",
             "resolve_plan",
         ]
