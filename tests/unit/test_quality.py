@@ -7,6 +7,7 @@ fails here rather than in a release gate.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 
 from saimc.compose.engine import compose
@@ -26,6 +27,7 @@ from saimc.compose.score import (
 from saimc.quality import (
     _LOCALISERS,
     AXES,
+    QUALITY_HARMONIC_RHYTHM_VARIETY_MIN,
     QUALITY_HARMONY_PAD_COVERAGE_MIN,
     QUALITY_TESSITURA_OVERLAP_MAX,
     QUALITY_THRESHOLDS,
@@ -33,6 +35,7 @@ from saimc.quality import (
     PieceQuality,
     QualityFinding,
     _spans,
+    _voice_notes,
     localize,
     score_corpus,
     score_piece,
@@ -93,6 +96,24 @@ def _clean_line() -> list[NoteEvent]:
             (70, 2400, 480),
             (72, 2880, 1920),
         )
+    ]
+
+
+def _bass(pitch_classes: list[int | None]) -> list[NoteEvent]:
+    """One bass note on each bar line, or nothing where the entry is None.
+
+    The pitch class is what the harmonic rhythm reads, so a case names the
+    chords it means and the octave is the fixture's business.
+    """
+    return [
+        NoteEvent(
+            voice_id=VOICE_BASS,
+            pitch_midi=36 + pitch_class,
+            tick=index * BAR_TICKS,
+            duration_ticks=BAR_TICKS,
+        )
+        for index, pitch_class in enumerate(pitch_classes)
+        if pitch_class is not None
     ]
 
 
@@ -423,6 +444,125 @@ class TestTheBedBarIsReachable:
         assert coverage >= QUALITY_HARMONY_PAD_COVERAGE_MIN
 
 
+class TestHarmonicRhythm:
+    """How often the harmony changes: a rate, not a metronome.
+
+    The reading is the share of the piece's chord durations that differ from
+    its commonest one, where a chord lasts as long as a run of consecutive
+    bars sharing the bass's pitch class on the bar line. A hand-written bass
+    per case, so a metric that starts counting bars or onsets instead of
+    changes fails here rather than in a release gate.
+    """
+
+    def test_a_chord_that_lasts_the_whole_piece_is_no_variety(self) -> None:
+        assert score_piece(_score(_bass([0, 0, 0, 0]), bars=4)).harmonic_rhythm_variety == 0.0
+
+    def test_a_chord_that_lasts_a_different_number_of_bars_is_variety(self) -> None:
+        # Two chords of two bars and one of three: one change in three outlasts
+        # the commonest duration.
+        score = _score(_bass([0, 0, 7, 7, 5, 5, 5]), bars=7)
+        assert score_piece(score).harmonic_rhythm_variety == 1 / 3
+
+    def test_the_reading_is_taken_at_the_bar_line_and_not_inside_the_bar(self) -> None:
+        """A move inside a bar is a broken chord, not a chord change.
+
+        Every bar states the same chord on its line, and no reading of the
+        notes inside them agrees. Read at the lines the piece is one chord for
+        three bars; read at the note a bar ends on it is two-and-one; read over
+        the runs the bass's onsets make it is six one-note chords.
+        """
+        notes = [
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=480),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=480, duration_ticks=480),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=41, tick=960, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=BAR_TICKS, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=41, tick=BAR_TICKS + 960, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS, duration_ticks=960),
+            NoteEvent(
+                voice_id=VOICE_BASS, pitch_midi=43, tick=2 * BAR_TICKS + 960, duration_ticks=960
+            ),
+        ]
+        assert score_piece(_score(notes, bars=3)).harmonic_rhythm_variety == 0.0
+
+    def test_a_bar_with_no_bar_line_bass_ends_a_run_and_starts_none(self) -> None:
+        """The bar the bass is silent through is not a chord of its own.
+
+        Two bars of one chord and one bar of another, and the silent bar
+        belongs to neither — so the piece has two durations rather than the
+        one it would have if the hole simply continued the run it fell in.
+        """
+        assert score_piece(_score(_bass([0, 0, None, 0]), bars=4)).harmonic_rhythm_variety == 0.5
+
+    def test_a_piece_without_a_bass_voice_has_no_reading(self) -> None:
+        assert score_piece(_score(_melody([60, 62]))).harmonic_rhythm_variety is None
+
+    def test_a_bass_that_never_sounds_on_a_bar_line_has_no_reading(self) -> None:
+        # One note, off the line: there are no chord durations to compare, which
+        # is a different absence from a piece with no bass at all.
+        notes = [NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=480, duration_ticks=480)]
+        assert score_piece(_score(notes, bars=2)).harmonic_rhythm_variety is None
+
+    def test_a_harmony_that_never_moves_is_reported_with_the_knob_that_moves_it(self) -> None:
+        score = _score([*_melody([60, 62, 64, 65]), *_bass([0, 0])], bars=2)
+        harmony = next(
+            finding
+            for finding in score_piece(score).findings()
+            if finding.metric == "harmonic_rhythm_variety"
+        )
+        assert harmony.direction == "min"
+        assert harmony.target == QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+        assert "section_close" in harmony.hint
+        assert harmony.axis == "harmony"
+
+
+class TestTheHarmonicRhythmBarIsReachable:
+    """The bar is fired against a real piece, not asserted.
+
+    A threshold no plan can move is a guard that cannot fail, so the knob the
+    finding's hint names is exercised end to end: the plan's own `section_close`
+    decides whether every section ends on a cadence or runs on, and that is the
+    difference between a progression that moves at a rate and one that pulses.
+    """
+
+    def _variety(self, *, close: str | None) -> float | None:
+        spec = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=180, seed=5)
+        plan = None if close is None else replace(default_plan(spec), section_close=close)
+        return score_piece(compose(spec, plan=plan).notation_score).harmonic_rhythm_variety
+
+    def test_the_shipped_default_clears_the_bar(self) -> None:
+        variety = self._variety(close=None)
+        assert variety is not None
+        assert variety >= QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+        assert QUALITY_HARMONIC_RHYTHM_VARIETY_MIN > 0.0
+
+    def test_the_bar_fires_on_a_plan_that_lets_the_sections_run_on(self) -> None:
+        variety = self._variety(close="hold")
+        assert variety is not None
+        assert variety < QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+
+    def test_the_premise_the_reading_stands_on_is_sampled(self) -> None:
+        """Every bar of a real piece carries exactly one bass note on its line.
+
+        The reading is only a proxy for a chord duration while that holds, so
+        it is checked against the engine rather than assumed. The bass is read
+        the way the metric reads it — ties dropped, since a note held across a
+        bar line is not an attack on it. Sampled across the moods and the
+        lengths rather than swept: the corpus-wide count is 0 missing and 0
+        doubled in 18,360 bars, and 243 composes cost 21 s.
+        """
+        bars = 0
+        for mood in Mood:
+            for duration in (30, 180, 600):
+                spec = CompositionSpec(mood=mood, duration_seconds=duration, seed=5)
+                score = compose(spec, plan=None).notation_score
+                on_line = Counter(note.tick for note in _voice_notes(score, VOICE_BASS))
+                at_line = [on_line.get(bar.start_tick, 0) for bar in score.measures]
+                assert at_line, f"{mood.value} {duration}s has no bars"
+                bars += len(at_line)
+                assert set(at_line) == {1}, f"{mood.value} {duration}s: {Counter(at_line)}"
+        assert bars > 200, "the sample has gone too short to stand for the corpus"
+
+
 class TestWhatTheScoreCannotMeasure:
     """The premises behind the metrics this module deliberately does not have.
 
@@ -449,6 +589,7 @@ _AXIS_BY_METRIC = {
     "tessitura_overlap_semitones": "accompaniment",
     "harmony_pad_coverage": "accompaniment",
     "bass_onset_patterns": "bass",
+    "harmonic_rhythm_variety": "harmony",
 }
 
 _UNLOCALISED_METRICS = (
@@ -617,6 +758,18 @@ class TestLocalisation:
         ]
         score = _score(notes, bars=3)
         assert [span.label() for span in _bars(score, "bass_onset_patterns")] == ["bars 1-2"]
+
+    def test_the_chord_durations_the_piece_falls_back_on(self) -> None:
+        """Where the harmony does not move, and the tie that decides where.
+
+        Two one-bar chords and two two-bar ones: the commonest duration is a
+        tie, and it goes to the length heard first, so the bars named are the
+        first two. The reading is a half whichever way the tie falls, which is
+        why the tiebreak is visible from here and nowhere else.
+        """
+        score = _score(_bass([0, 7, 5, 5, 3, 3]), bars=6)
+        assert score_piece(score).harmonic_rhythm_variety == 0.5
+        assert [span.label() for span in _bars(score, "harmonic_rhythm_variety")] == ["bars 1-2"]
 
     def test_a_metric_that_counts_a_relation_is_placed_nowhere(self) -> None:
         """The four absences, asserted rather than left to the docstring.
@@ -842,6 +995,7 @@ class TestThresholdTable:
                 tessitura_overlap_semitones=None,
                 bass_onset_patterns=None,
                 harmony_pad_coverage=None,
+                harmonic_rhythm_variety=None,
             ).as_dict()
         )
         assert {t.metric for t in QUALITY_THRESHOLDS} == measured

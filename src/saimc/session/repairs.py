@@ -15,7 +15,7 @@ What the measurement says, and it is the whole design:
 - **Four metrics breach at all, and 38 of the 90 pieces breach something.**
   `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
   `max_leap_semitones` (12) and `leap_recovery_ratio` (3). So a repair loop is
-  a loop over four bars in practice, and the other seven have no entry because
+  a loop over four bars in practice, and the other eight have no entry because
   nothing asked for them by *that* corpus — not because they cannot be reached.
   A later sweep of 2592 applied requests over 72 pieces, reached through the
   delta vocabulary rather than through a mood and a seed, finds three of them:
@@ -31,6 +31,18 @@ What the measurement says, and it is the whole design:
   `range_semitones` first and the arbiter ranks `max_leap_semitones` higher — so
   it is what makes "the loop aims at the arbiter's worst bar" a claim a test can
   fail rather than a restatement of `findings()[0]`.
+- **`harmonic_rhythm_variety` is reachable, and it is the one bar this table must
+  not answer.** Measured across the golden corpus under each of the plan's three
+  section closes: under `hold` — sections that run on, so every chord lasts the
+  template's uniform two bars — 36 of 81 pieces breach it, and under the shipped
+  default `half` and under `full`, none of 81 do. So it is not a bar nothing
+  reaches; it is a bar the plan reaches *by asking for it*. Every request in the
+  vocabulary was then measured against those 36 pieces and not one moved any of
+  them, while `SetSectionClose("half")` clears 36 of 36. The only delta that
+  clears the bar is the one that undoes the request that made the piece breach —
+  and a repair is the product's own arithmetic over the piece, which may change
+  how the material is placed and never what the user asked for. So this absence
+  is a judgement rather than a gap, and it is the only one here that is.
 - **The bed's two bars are one repair seen from two sides.**
   `SetHarmonyTexture(broken_chord=False)` — the knob `harmony_pad_coverage`'s
   own hint names, and the mood's texture rule the other way round — clears the

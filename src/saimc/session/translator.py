@@ -53,6 +53,7 @@ from saimc.session.deltas import (
     SetHarmonyTexture,
     SetHumanization,
     SetMood,
+    SetSectionClose,
     delta_from_dict,
     refuse_uncarried,
 )
@@ -245,6 +246,40 @@ KEYWORD_TABLE: Final[tuple[Phrase, ...]] = (
     Phrase(
         ("no drums", "without drums", "no percussion", "drop the drums", "take the drums out"),
         _fixed(SetDrumStyle(None)),
+    ),
+    # How the sections end. "cadence" on its own is not a phrase here: half and
+    # full are the two a listener can mean, and the table cannot pick between
+    # them, so the words that name one are the words that fire.
+    Phrase(
+        (
+            "half cadence",
+            "half cadences",
+            "end on the dominant",
+            "end each section on the dominant",
+            "stop on the dominant",
+        ),
+        _fixed(SetSectionClose(close="half")),
+    ),
+    Phrase(
+        (
+            "full cadence",
+            "full cadences",
+            "end on the tonic",
+            "end each section on the tonic",
+            "resolve each section",
+        ),
+        _fixed(SetSectionClose(close="full")),
+    ),
+    Phrase(
+        (
+            "no cadence",
+            "no cadences",
+            "without cadences",
+            "sections run on",
+            "let the sections run on",
+            "don't close the sections",
+        ),
+        _fixed(SetSectionClose(close="hold")),
     ),
     # Length. "longer section" is the unbuilt request; "longer" is the piece.
     Phrase(

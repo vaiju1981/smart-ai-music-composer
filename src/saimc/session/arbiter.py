@@ -26,7 +26,7 @@ overturned by a later one:
 3. **How far it missed them, as a fraction of each bar.** Missing by a hair
    three times is not the same as missing by half once, and the normalisation is
    what makes a semitone deficit comparable to a ratio deficit at all.
-4. **Which bars it missed.** A fixed priority over the eleven metrics. This is the
+4. **Which bars it missed.** A fixed priority over the twelve metrics. This is the
    only element that is a judgement rather than an arithmetic, so it is a
    written-down table with its reasoning beside it, below.
 5. **The plan's hash.** Arbitrary, and deterministic: it settles two drafts that
@@ -76,10 +76,12 @@ METRIC_TIERS: Final[tuple[str, ...]] = (
     # The tune's shape — how far it spans, and how much of it is repetition.
     "range_semitones",
     "repeat_ratio",
-    # Its rhythm. A melody with one note length is a metronome, and a bass with
-    # one onset pattern is a loop.
+    # Its rhythm. A melody with one note length is a metronome, a bass with one
+    # onset pattern is a loop, and a progression whose chords all last the same
+    # number of bars is a pulse.
     "distinct_durations",
     "bass_onset_patterns",
+    "harmonic_rhythm_variety",
     # How the parts sit together. Last, and not because a bad texture is
     # inaudible — it is the opposite — but because the bed settles *under* the
     # tune: a fix here cannot make an unsingable melody singable, and a piece
@@ -93,7 +95,7 @@ METRIC_TIERS: Final[tuple[str, ...]] = (
     # a crowded tune is harder to hear, an absent bed is harder to notice.
     "harmony_pad_coverage",
 )
-"""The eleven metrics, most important first. The order the arbiter ranks a miss by.
+"""The twelve metrics, most important first. The order the arbiter ranks a miss by.
 
 This is a judgement and it is written as one. It is *not* derived from
 `QUALITY_THRESHOLDS`, because a derived order is not a written-down order: the
@@ -245,14 +247,14 @@ def regression(parent: Draft, child: Draft) -> str | None:
 def _breach(finding: QualityFinding) -> float:
     """How far past its bar a piece went, as a fraction of the bar itself.
 
-    A fraction, because the eleven metrics are not in the same units: a semitone
+    A fraction, because the twelve metrics are not in the same units: a semitone
     deficit and a ratio deficit cannot be summed, and adding them raw would let
     whichever metric happens to carry the largest numbers decide the order. The
     divisor is `abs(target)` — a bar of 0 says "never", and a piece past it has
     no scale to be measured against, so its miss is left as the raw value.
 
     The `abs` is the identity on every threshold `QUALITY_THRESHOLDS` holds,
-    since all eleven bars are positive, so no value through `findings()` can
+    since all twelve bars are positive, so no value through `findings()` can
     witness it; it is here for the bar that is added one day with a negative
     one, which would otherwise invert its own miss.
     """

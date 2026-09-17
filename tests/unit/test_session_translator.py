@@ -44,6 +44,7 @@ from saimc.session.deltas import (
     SetHarmonyTexture,
     SetHumanization,
     SetMood,
+    SetSectionClose,
     apply_deltas,
 )
 from saimc.session.translator import KEYWORD_TABLE, REQUEST_TOOL, Phrase, translate
@@ -99,6 +100,9 @@ class TestTheKeywordTableReadsWhatItClaims:
             ("sparse", SetBassMotion(BassMotion.SPARSE)),
             ("root notes", SetBassMotion(BassMotion.ROOT)),
             ("without drums", SetDrumStyle(None)),
+            ("half cadence", SetSectionClose(close="half")),
+            ("full cadence", SetSectionClose(close="full")),
+            ("no cadence", SetSectionClose(close="hold")),
             ("make it longer", SetDuration(210)),
             ("cut it short", SetDuration(150)),
             ("another take", ReRoll(6)),
@@ -159,6 +163,9 @@ class TestTheKeywordTableReadsWhatItClaims:
             "sparse bass",
             "root notes",
             "no drums",
+            "half cadence",
+            "full cadence",
+            "no cadence",
             "longer",
             "shorter",
             "again",

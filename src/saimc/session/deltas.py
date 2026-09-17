@@ -512,6 +512,29 @@ class SetCadence(Delta):
 
 
 @dataclass(frozen=True)
+class SetSectionClose(Delta):
+    """How every section that is not the last one ends.
+
+    The three closes are the plan's own `SECTION_CLOSES` and this module
+    deliberately does not restate them: the plan refuses a name outside them
+    with a sentence naming the ones it knows, which is where the vocabulary
+    lives. `hold` is a legal request and not the default — it is what the
+    engine did before the choice existed, so asking for it gets it rather
+    than being told the name is unknown.
+
+    This is the one knob `harmonic_rhythm_variety` reads. A close replaces a
+    section's last two bars with two one-bar chords, so the varied chord
+    duration a piece has is the cadence at each seam; `hold` leaves the
+    template's uniform two-bar slots alone and reads as a pulse.
+    """
+
+    close: str
+
+    def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
+        return {"section_close": self.close}
+
+
+@dataclass(frozen=True)
 class SetModulation(Delta):
     """The semitones a long piece's final repetition is lifted by.
 
@@ -604,6 +627,7 @@ DELTA_TYPES: Final[dict[str, type[Delta]]] = {
     "SetMotifVariation": SetMotifVariation,
     "SetBassMotion": SetBassMotion,
     "SetCadence": SetCadence,
+    "SetSectionClose": SetSectionClose,
     "SetModulation": SetModulation,
     "SetIntroBars": SetIntroBars,
     "SetSectionEnergy": SetSectionEnergy,
@@ -937,6 +961,7 @@ __all__ = [
     "SetMood",
     "SetMotifVariation",
     "SetPercussionRest",
+    "SetSectionClose",
     "SetSectionEnergy",
     "SetTempo",
     "SetTimeSignature",

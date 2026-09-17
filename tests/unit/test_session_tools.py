@@ -554,9 +554,9 @@ class TestCritique:
         assert finding["hint"]
 
     def test_every_axis_is_reported_and_a_clean_one_says_so(self, ctx: ToolContext) -> None:
-        """The tune and the bass are clean on this piece, and the report says
-        that rather than leaving them out: an axis missing from a report cannot
-        be told from one whose critic never ran."""
+        """The tune, the bass and the harmony are clean on this piece, and the
+        report says that rather than leaving them out: an axis missing from a
+        report cannot be told from one whose critic never ran."""
         _ready(ctx, _ELECTRIFYING)
         _drafts(ctx)
         payload = _payload(_call(ctx, "critique", draft_id="draft-0"))
@@ -565,9 +565,10 @@ class TestCritique:
             "melody": True,
             "accompaniment": False,
             "bass": True,
+            "harmony": True,
         }
 
-    @pytest.mark.parametrize("axis", ["melody", "accompaniment", "bass"])
+    @pytest.mark.parametrize("axis", ["melody", "accompaniment", "bass", "harmony"])
     def test_one_part_can_be_asked_for_on_its_own(self, ctx: ToolContext, axis: str) -> None:
         _ready(ctx, _ELECTRIFYING)
         _drafts(ctx)

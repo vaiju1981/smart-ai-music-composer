@@ -65,6 +65,7 @@ from saimc.session.deltas import (
     SetMood,
     SetMotifVariation,
     SetPercussionRest,
+    SetSectionClose,
     SetSectionEnergy,
     SetTempo,
     SetTimeSignature,
@@ -113,6 +114,7 @@ _EXAMPLES: dict[str, Delta] = {
     "SetMotifVariation": SetMotifVariation(factor=1.5),
     "SetBassMotion": SetBassMotion(motion=BassMotion.PEDAL),
     "SetCadence": SetCadence(degree=4, seventh=True),
+    "SetSectionClose": SetSectionClose(close="full"),
     "SetModulation": SetModulation(semitones=5),
     "SetIntroBars": SetIntroBars(bars=3),
     "SetSectionEnergy": SetSectionEnergy(role="peak", factor=1.1),
@@ -146,6 +148,7 @@ _PLAN_EFFECTS: dict[str, dict[str, object]] = {
     "SetHarmonyTexture": {"harmony_broken_chord": True},
     "SetHarmonyLevel": {"harmony_pad_velocity": 64},
     "SetCadence": {"cadence_degree": 4, "cadence_seventh": True},
+    "SetSectionClose": {"section_close": "full"},
     "SetModulation": {"modulation_offset": 5},
     "SetIntroBars": {"intro_bars": 3},
     "SetSectionEnergy": {"section_energy_peak": pytest.approx(1.12 * 1.1)},
@@ -449,6 +452,27 @@ class TestSetBassMotion:
         application = apply_deltas(_SPEC, [SetBassMotion(motion=BassMotion.ROOT)])
         assert application.ok
         assert application.plan == _BASE_PLAN
+
+
+class TestSetSectionClose:
+    def test_the_close_the_piece_already_ends_on_is_the_identity(self) -> None:
+        # The shipped default closes on the half cadence, so this asks for what
+        # the piece already does. Honoured rather than refused, like the other
+        # identities here: the request is true, so the piece is unchanged.
+        assert _BASE_PLAN.section_close == "half"
+        application = apply_deltas(_SPEC, [SetSectionClose(close="half")])
+        assert application.ok
+        assert application.plan == _BASE_PLAN
+
+    def test_a_close_outside_the_plans_own_list_is_refused_by_the_plan(self) -> None:
+        (refusal,) = apply_deltas(_SPEC, [SetSectionClose(close="hanging")]).refused
+        assert refusal.reason == "violates_the_plan"
+        assert "SetSectionClose(close=hanging)" in refusal.message
+        # The plan's own sentence names the closes it knows, which is why the
+        # delta does not restate them — and why no `nearest` is invented beside
+        # a message that already lists the alternatives.
+        assert "hold, half, full" in refusal.message
+        assert refusal.nearest is None
 
 
 class TestAPlanDeltaWritesThePlan:

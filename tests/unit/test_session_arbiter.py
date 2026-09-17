@@ -58,6 +58,7 @@ _CLEAN: PieceQuality = PieceQuality(
     tessitura_overlap_semitones=1,
     bass_onset_patterns=4,
     harmony_pad_coverage=1.0,
+    harmonic_rhythm_variety=0.20,
 )
 """A piece that clears every bar, the starting point for every case.
 
@@ -218,6 +219,7 @@ def test_the_table_is_the_order_it_is_written_as() -> None:
         "repeat_ratio",
         "distinct_durations",
         "bass_onset_patterns",
+        "harmonic_rhythm_variety",
         "texture_hierarchy",
         "register_separation_semitones",
         "tessitura_overlap_semitones",

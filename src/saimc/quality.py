@@ -25,7 +25,7 @@ active than its accompaniment. Today's engine misses several of them —
 that is the point, and it is what makes the gate in
 `saimc.release.gates` non-vacuous.
 
-Three axes a critic might ask for are deliberately absent, and the first
+Three readings a critic might ask for are deliberately absent, and the first
 two for one reason: **this module measures a `NotationScore`, which
 carries notes and no tables.** *Bass root motion* — the share of chord
 changes the left hand leaves the root on — needs the bar's chord. This
@@ -53,13 +53,14 @@ vocabulary, not a bar that would call a waltz wrong.
 Two things turn a measurement into a review comment, and both are here
 rather than in the session that reads them. `QualityThreshold.axis` names
 the part of the piece a remedy for the bar would move — the melody's line,
-the accompaniment under it, or the bass — so the critics can be asked one
-part at a time rather than all eleven numbers at once. `localize` then says
+the accompaniment under it, the bass beneath that, or the progression they
+are all drawn from — so the critics can be asked one part at a time rather
+than all twelve numbers at once. `localize` then says
 *where*: the bars the finding's own counted events sit in, so a
 `repeat_ratio` miss arrives as "the melody answers itself in bars 3-6 and
 11" rather than as a piece-wide number with no address. Bars and not
 sections, because a score carries measure boundaries and no section table —
-the same reason three axes above are absent — and 1-based, the way a reader
+the same reason three readings above are absent — and 1-based, the way a reader
 counts them, with `score.measures` indexed from 0 for a caller mapping back.
 
 A localisation is not a second way of taking a metric, and it cannot
@@ -70,7 +71,7 @@ four-note melody reads 0.00, 0.33 or 0.50, and a bar-level breach would
 fire on legal bars: measured, a 120-second calming piece whose own
 `step_ratio` clears its bar at 0.71 has six of its thirty bars with moves
 below 0.45. Four metrics have no localisation at all, and the rule that
-excludes them is what admits the other seven — the metric's counted *thing*
+excludes them is what admits the other eight — the metric's counted *thing*
 has to land in a bar. `range_semitones` counts semitones between two
 extreme notes, `distinct_durations` counts note values, and
 `register_separation_semitones` and `tessitura_overlap_semitones` count
@@ -186,8 +187,28 @@ over the palette grid, a pad clears 0.92-1.00 of them, so the bar is a
 statement about the bed rather than a number today's pieces happen to pass.
 """
 
+QUALITY_HARMONIC_RHYTHM_VARIETY_MIN: float = 0.10
+"""At least a tenth of the piece's chord changes must last a different
+number of bars than the commonest duration.
 
-Axis = Literal["melody", "accompaniment", "bass"]
+Harmonic rhythm is how often the harmony changes, and a piece whose chords
+all last the same length does not have one — it has a pulse. The reading is
+taken over the bass's bar-line pitch class, which is the bar's chord: the
+walk lands on a chord tone at each bar line, so the run lengths of
+consecutive bars sharing that class are the piece's chord durations.
+
+Measured over the golden corpus, and the number is a *floor* rather than
+today's value: the engine's templates are uniform two-bar slots, so the only
+varied duration a piece has is the cadence that ends each section, which is
+two of every seventeen changes on a 32-bar form (0.12) and two of thirteen
+on an 8-bar one (0.15). A plan that asks for `hold` — sections that run
+on — takes even that away and reads 0.02 at length, which is the reading the
+bar exists to catch; every request in the delta vocabulary except the close
+itself was measured and clears it in none of the 36 pieces it fires on.
+"""
+
+
+Axis = Literal["melody", "accompaniment", "bass", "harmony"]
 """The part of a piece the metrics are grouped by, and the parts are closed.
 
 A closed vocabulary rather than a free string, because the axis is what a
@@ -196,8 +217,9 @@ be told when it has asked for something that does not exist, rather than
 being handed an empty report that reads like a clean piece.
 """
 
-AXES: Final[tuple[Axis, ...]] = ("melody", "accompaniment", "bass")
-"""Every axis, in the order a report reads them: the tune, then its bed."""
+AXES: Final[tuple[Axis, ...]] = ("melody", "accompaniment", "bass", "harmony")
+"""Every axis, in the order a report reads them: the tune, the bed under it,
+the bass under that, and the progression they are all drawn from."""
 
 
 @dataclass(frozen=True)
@@ -230,13 +252,15 @@ class QualityThreshold:
     writes the offending notes, and the part that code writes is the part
     the bar is about. So this is a fact about the metric, not a taste, and
     it is what lets one critic own one part — six melody-line metrics, four
-    about the accompaniment's density and placement, and the bass figure.
+    about the accompaniment's density and placement, the bass figure, and the
+    rate the harmony changes at.
 
-    Three rather than the four specialists the harness set out to write,
-    and the two missing ones are E1's finding seen from here: nothing
-    measures the ensemble's orchestration at all, and nothing measures the
-    drum kit's groove, because a score carries no style table to read a
-    variation count from. A part with no metric has no critic.
+    Four axes rather than the four specialists the harness set out to write,
+    and the difference is E1's finding seen from here: the rhythm specialist
+    has no metric at all, because a score carries no style table to count a
+    groove's variations from, and "accompaniment" is the bed's placement
+    rather than the instrumentation that plays it. A part with no metric has
+    no critic.
     """
 
     def violated_by(self, measured: float) -> bool:
@@ -397,6 +421,22 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         ),
         axis="accompaniment",
     ),
+    QualityThreshold(
+        metric="harmonic_rhythm_variety",
+        minimum=QUALITY_HARMONIC_RHYTHM_VARIETY_MIN,
+        maximum=None,
+        rationale="a progression changes at a rate, not on a metronome",
+        hint=(
+            "every section of every template in saimc/compose/forms.py is "
+            "built from two-bar slots, so the only varied chord duration a "
+            "piece has is the cadence that ends each section: `section_close` "
+            "on the composition plan is the knob, and its `hold` setting — "
+            "sections that run on — is what takes the variety away. Adding "
+            "variety rather than keeping it needs the harmonic_rhythm plan "
+            "field, which the plan does not carry yet."
+        ),
+        axis="harmony",
+    ),
 )
 
 
@@ -458,6 +498,7 @@ class PieceQuality:
     tessitura_overlap_semitones: int | None
     bass_onset_patterns: int | None
     harmony_pad_coverage: float | None
+    harmonic_rhythm_variety: float | None
 
     def as_dict(self) -> dict[str, float | None]:
         """Metric name -> value, for the threshold loop and the report.
@@ -477,6 +518,7 @@ class PieceQuality:
             "tessitura_overlap_semitones": self.tessitura_overlap_semitones,
             "bass_onset_patterns": self.bass_onset_patterns,
             "harmony_pad_coverage": self.harmony_pad_coverage,
+            "harmonic_rhythm_variety": self.harmonic_rhythm_variety,
         }
         return {name: None if value is None else float(value) for name, value in measured.items()}
 
@@ -588,6 +630,7 @@ def score_piece(score: NotationScore, *, piece: str = "piece") -> PieceQuality:
         tessitura_overlap_semitones=_tessitura_overlap(score),
         bass_onset_patterns=_bass_onset_patterns(score),
         harmony_pad_coverage=_harmony_pad_coverage(score),
+        harmonic_rhythm_variety=_harmonic_rhythm_variety(score),
     )
 
 
@@ -933,6 +976,84 @@ def _harmony_pad_coverage(score: NotationScore) -> float | None:
     return len(covered) / len(score.measures)
 
 
+def _bar_line_pitch_classes(score: NotationScore) -> list[int | None] | None:
+    """The bass voice's pitch class at each bar line, or None with no bass.
+
+    A bar's chord is read off the note the bass sounds *at* the bar line:
+    the walk lands on a chord tone on the downbeat and plays its figure over
+    it, so that pitch class is the bar's harmony in the only place the
+    harmony is stated. Measured over the golden corpus, every bar of every
+    piece has one — 0 of 18360 bars come back None — which is what lets the
+    run lengths below be read as chord durations rather than as guesses.
+
+    None when the piece has no bass voice at all: a piece with no bass
+    states no chords, and a run of holes is not a chord duration.
+    """
+    bass = _voice_notes(score, VOICE_BASS)
+    if not bass:
+        return None
+    at_line: dict[int, int] = {}
+    for note in bass:
+        at_line.setdefault(note.tick, note.pitch_midi)
+    layout = _BarLayout.of(score)
+    return [
+        None if (pitch := at_line.get(start)) is None else pitch % 12
+        for start in layout.starts
+    ]
+
+
+def _chord_runs(score: NotationScore) -> list[tuple[int, int]] | None:
+    """`(first bar, length)` for each maximal run of bars on one chord.
+
+    None when the piece has no bass voice. A bar with no bar-line bass ends
+    the run it is in and starts none: it is not a chord duration, and
+    counting it as one would invent harmony the piece does not state.
+
+    Shared by the metric and its localisation, so the durations a piece is
+    judged by and the bars a finding names cannot come apart.
+    """
+    pcs = _bar_line_pitch_classes(score)
+    if pcs is None:
+        return None
+    runs: list[tuple[int, int]] = []
+    index = 0
+    while index < len(pcs):
+        if pcs[index] is None:
+            index += 1
+            continue
+        end = index
+        while end + 1 < len(pcs) and pcs[end + 1] == pcs[index]:
+            end += 1
+        runs.append((index, end - index + 1))
+        index = end + 1
+    return runs
+
+
+def _commonest_run_length(runs: list[tuple[int, int]]) -> int:
+    """The chord duration the piece falls back on.
+
+    A tie goes to the duration heard first, which is bar order and
+    therefore stable — the same tie `_looping_bass_bars` breaks the same
+    way, so two readings of one piece cannot disagree about which run is
+    the common one.
+    """
+    return Counter(length for _, length in runs).most_common(1)[0][0]
+
+
+def _harmonic_rhythm_variety(score: NotationScore) -> float | None:
+    """Share of the piece's chord durations that differ from the commonest.
+
+    None when the piece has no bass voice, and None when it has one that
+    never sounds on a bar line: there are no chord durations to read, and
+    reporting zero would read as a miss rather than as a non-measurement.
+    """
+    runs = _chord_runs(score)
+    if not runs:
+        return None
+    commonest = _commonest_run_length(runs)
+    return sum(1 for _, length in runs if length != commonest) / len(runs)
+
+
 def _melody_intervals_by_bar(score: NotationScore) -> list[tuple[int | None, int]]:
     """Each melodic interval with the bar its arrival lands in.
 
@@ -1028,6 +1149,27 @@ def _looping_bass_bars(score: NotationScore) -> set[int]:
     return {bar for bar, figure in figures.items() if figure == commonest}
 
 
+def _uniform_rhythm_bars(score: NotationScore) -> set[int]:
+    """The bars inside the chord durations the piece falls back on.
+
+    `harmonic_rhythm_variety` counts runs that differ from the commonest
+    duration, so the bars that answer for a low count are the ones in the
+    runs that match it — the stretches where the harmony does not move. A
+    tie for commonest is broken the same way the metric breaks it, since
+    both read `_commonest_run_length`.
+    """
+    runs = _chord_runs(score)
+    if not runs:
+        return set()
+    commonest = _commonest_run_length(runs)
+    return {
+        first + offset
+        for first, length in runs
+        if length == commonest
+        for offset in range(length)
+    }
+
+
 _LOCALISERS: dict[str, Callable[[NotationScore], set[int]]] = {
     "step_ratio": lambda score: _interval_bars(
         score, lambda delta: abs(delta) > STEP_MAX_SEMITONES
@@ -1040,11 +1182,12 @@ _LOCALISERS: dict[str, Callable[[NotationScore], set[int]]] = {
     "texture_hierarchy": _outcounted_bars,
     "harmony_pad_coverage": _unsustained_bars,
     "bass_onset_patterns": _looping_bass_bars,
+    "harmonic_rhythm_variety": _uniform_rhythm_bars,
 }
 """The metrics whose counted events land in a bar, and how to find them.
 
 The four absent from this table are absent for one reason, which is the
-same reason three axes are absent from this module's own docstring: the
+same reason three readings are absent from this module's own docstring: the
 metric counts a relation rather than an event, so naming bars for it would
 name the bars where the piece is *legal*. `range_semitones` counts
 semitones between the whole line's two extreme notes, `distinct_durations`
@@ -1059,7 +1202,7 @@ def _spans(bars: Iterable[int]) -> tuple[BarSpan, ...]:
 
     The score indexes its measures from 0 and a finding is prose read by a
     user, so the conversion happens here, once, rather than at each of the
-    seven readings that find the bars.
+    eight readings that find the bars.
     """
     runs: list[list[int]] = []
     for index in sorted(set(bars)):
@@ -1093,6 +1236,7 @@ __all__ = [
     "LEAP_MIN_SEMITONES",
     "QUALITY_BASS_ONSET_PATTERNS_MIN",
     "QUALITY_DISTINCT_DURATIONS_MIN",
+    "QUALITY_HARMONIC_RHYTHM_VARIETY_MIN",
     "QUALITY_HARMONY_PAD_COVERAGE_MIN",
     "QUALITY_LEAP_RECOVERY_MIN",
     "QUALITY_MAX_LEAP_MAX",
