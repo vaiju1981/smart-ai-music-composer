@@ -9,12 +9,11 @@ from itertools import pairwise
 
 import pytest
 
-from saimc.compose.duration import bar_ticks
+from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS, bar_ticks
 from saimc.compose.engine import (
     _RANK_RUBBING,
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
-    ARRANGEMENT_ARC_MIN_REPS,
     HARMONY_MELODY_CLEARANCE,
     MODULATION_OFFSET,
     CompositionEngineError,

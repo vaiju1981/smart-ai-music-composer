@@ -11,11 +11,16 @@ any single field changes the hash. A field missing from
 does not pin, which is the whole failure this type is built to prevent.
 
 `test_the_defaults_describe_todays_engine` is the other kind of test, and
-it is weaker than it looks: at this phase nothing reads the plan, so the
-defaults agree with the tables by construction. It guards a hand-edit
-that replaces a table read with a typed-in number. What actually proves
-`compose(spec)` still produces today's music is the frozen hash corpus in
-`tests/fixtures/golden_hashes.json`, which no plan field can reach yet.
+it is weaker than it looks: the defaults agree with the tables by
+construction, so what it catches is a hand-edit that replaces a table read
+with a typed-in number. What proves `compose(spec)` still produces today's
+music is the frozen hash corpus in `tests/fixtures/golden_hashes.json`.
+
+That corpus proves only that nothing broke. It cannot prove the plan is
+*read* — a `compose` that ignored its `plan` argument would satisfy every
+one of its hashes, since it composes with no plan at all. The other half of
+the argument lives in `tests/unit/test_compose_plan_seam.py`, which
+composes under non-default plans and asserts the output moves.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ import pytest
 from saimc.canonical import canonical_dumps
 from saimc.compose import forms, motif, percussion
 from saimc.compose import plan as plan_module
+from saimc.compose.duration import DEFAULT_ARRANGEMENT_KNOBS, MAX_REPEATS
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
@@ -104,7 +110,11 @@ _MUTATIONS: dict[str, Any] = {
     "cadence_degree": 4,
     "form_sizes": (4, 8, 16, 32),
     "intro_bars": 3,
-    "max_repeats": 9,
+    # Lowered, not raised: §10 #10 caps how often a source section may
+    # repeat, so 8 (MAX_REPEATS) is the ceiling and the plan may only
+    # tighten it. `test_a_plan_above_the_repetition_cap_is_refused`
+    # covers the other direction.
+    "max_repeats": 7,
     "duration_tolerance": 0.03,
     "ritardando_factor": 0.80,
     "ritardando_bars": 3,
@@ -253,6 +263,46 @@ class TestResolutionIsInvisibleByDefault:
         assert resolve_plan(_CALMING, supplied) is supplied
 
 
+class TestTheLayersReadThePlanThroughBridges:
+    """A layer reads its knobs through a struct, because of the cycle.
+
+    `plan.py` imports `duration.py` for its own defaults, so `duration.py`
+    cannot import `plan.py` back. The struct is the one-way bridge, and it
+    is only a bridge if it actually carries the plan's values — a bridge
+    that dropped a field would give the engine a default the plan never
+    named, silently, while the manifest still claimed the plan was pinned.
+    """
+
+    def test_the_default_plan_bridges_to_todays_arrangement(self) -> None:
+        """`plan=None` has to reach the very same struct the module's own
+        default is, or byte-identity under `plan=None` is a coincidence."""
+        for spec in _spec_matrix():
+            assert default_plan(spec).arrangement_knobs() == DEFAULT_ARRANGEMENT_KNOBS
+
+    def test_the_bridge_carries_every_arrangement_field(self) -> None:
+        """Every `ArrangementKnobs` field, checked by name rather than by
+        equality against the default — equality would also hold for a
+        bridge that dropped a field and let the struct's default stand."""
+        plan = replace(
+            _base(),
+            form_sizes=(4, 8),
+            max_repeats=3,
+            duration_tolerance=0.01,
+            arc_min_reps=4,
+            intro_bars=1,
+            ritardando_factor=0.7,
+            ritardando_bars=1,
+        )
+        knobs = plan.arrangement_knobs()
+        assert knobs.form_sizes == (4, 8)
+        assert knobs.max_repeats == 3
+        assert knobs.duration_tolerance == 0.01
+        assert knobs.arc_min_reps == 4
+        assert knobs.intro_bars == 1
+        assert knobs.ritardando_factor == 0.7
+        assert knobs.ritardando_bars == 1
+
+
 class TestAPlanThatCannotBeHonouredIsRefused:
     """Refused with a reason, never silently downgraded.
 
@@ -282,7 +332,9 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"form_sizes": ()}, "must not be empty"),
             ({"form_sizes": (8, 0)}, "positive number of bars"),
             ({"intro_bars": -1}, "not be negative"),
+            ({"intro_bars": 16}, "shorter than the shortest form"),
             ({"max_repeats": 0}, "at least one repeat"),
+            ({"max_repeats": MAX_REPEATS + 1}, "may not exceed"),
             ({"duration_tolerance": 0.0}, r"\(0, 1\)"),
             ({"duration_tolerance": 1.0}, r"\(0, 1\)"),
             ({"ritardando_factor": 0.0}, r"\(0, 1\]"),

@@ -50,6 +50,7 @@ from saimc.compose.duration import (
     MAX_REPEATS,
     RITARDANDO_BARS,
     RITARDANDO_FACTOR,
+    ArrangementKnobs,
 )
 from saimc.compose.forms import PHRASE_SIZES, cadence_degree_for
 from saimc.compose.motif import (
@@ -231,7 +232,23 @@ class CompositionPlan:
             "every form size must be a positive number of bars",
         )
         _require(self.intro_bars >= 0, "intro_bars must not be negative")
+        # The intro is carved from the first section, so it has to be
+        # shorter than the shortest form the arrangement may pick. Without
+        # this the failure surfaces as a bare ValueError from inside the
+        # duration search rather than as the refusal this type exists to
+        # give — the plan is where both numbers are known.
+        _require(
+            self.intro_bars < min(self.form_sizes),
+            f"intro_bars ({self.intro_bars}) must be shorter than the shortest form "
+            f"({min(self.form_sizes)}), or there is no section left to carve it from",
+        )
         _require(self.max_repeats >= 1, "max_repeats must allow at least one repeat")
+        _require(
+            self.max_repeats <= MAX_REPEATS,
+            f"max_repeats may not exceed {MAX_REPEATS} — §10 #10 caps how often a "
+            f"source section may repeat, and the plan may lower that cap, not raise it "
+            f"(got {self.max_repeats})",
+        )
         _require(
             0.0 < self.duration_tolerance < 1.0,
             f"duration_tolerance must sit in (0, 1), got {self.duration_tolerance}",
@@ -304,6 +321,24 @@ class CompositionPlan:
             "percussion_velocity_scale": self.percussion_velocity_scale,
             "section_crash_velocity": self.section_crash_velocity,
         }
+
+    def arrangement_knobs(self) -> ArrangementKnobs:
+        """The arrangement layer, as the struct `duration.py` reads.
+
+        The plan cannot hand `duration.py` the plan: this module imports
+        that one for its defaults, so the dependency cannot also run the
+        other way. This struct is the one-way bridge, and the arrangement
+        layer is the first to need one.
+        """
+        return ArrangementKnobs(
+            form_sizes=self.form_sizes,
+            max_repeats=self.max_repeats,
+            duration_tolerance=self.duration_tolerance,
+            arc_min_reps=self.arc_min_reps,
+            intro_bars=self.intro_bars,
+            ritardando_factor=self.ritardando_factor,
+            ritardando_bars=self.ritardando_bars,
+        )
 
 
 def _named_weights(table: Mapping[str, float]) -> tuple[tuple[str, float], ...]:

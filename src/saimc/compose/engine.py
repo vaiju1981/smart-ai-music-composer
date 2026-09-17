@@ -42,8 +42,7 @@ from itertools import pairwise
 from typing import Any
 
 from saimc.compose.duration import (
-    ARRANGEMENT_ARC_MIN_REPS,
-    RITARDANDO_BARS,
+    ArrangementKnobs,
     DurationArrangement,
     DurationUnfulfillableError,
     arrange_for_duration,
@@ -91,6 +90,7 @@ from saimc.compose.percussion import (
     rotation_index,
     style_for,
 )
+from saimc.compose.plan import CompositionPlan, resolve_plan
 from saimc.compose.score import (
     DEFAULT_VELOCITY,
     PPQ,
@@ -267,8 +267,20 @@ class EngineOutput:
         )
 
 
-def compose(spec: CompositionSpec) -> EngineOutput:
-    """Run the full composition pipeline against the spec."""
+def compose(
+    spec: CompositionSpec, *, plan: CompositionPlan | None = None
+) -> EngineOutput:
+    """Run the full composition pipeline against the spec and its plan.
+
+    `plan=None` resolves to this spec's default plan, which is a
+    description of the engine as it behaved before the plan existed, so
+    a caller that does not know about plans gets byte-identical output.
+    A supplied plan is honoured as written: the engine looks its musical
+    decisions up in the artifact rather than in module tables, which is
+    what makes `(plan, seed) -> notes` a claim about the artifact.
+    """
+    resolved = resolve_plan(spec, plan)
+    knobs = resolved.arrangement_knobs()
     try:
         key = key_signature_from_spec(spec)
     except ValueError as exc:
@@ -284,6 +296,7 @@ def compose(spec: CompositionSpec) -> EngineOutput:
             target_duration_seconds=float(spec.duration_seconds),
             time_signature=time_signature,
             tempo_bpm=float(spec.tempo_bpm) if spec.tempo_bpm is not None else None,
+            knobs=knobs,
         )
     except DurationUnfulfillableError as exc:
         raise CompositionEngineError(
@@ -292,7 +305,14 @@ def compose(spec: CompositionSpec) -> EngineOutput:
         ) from exc
 
     ensemble = resolve_ensemble(spec)
-    score, chord_bars, bar_keys = _build_score(spec, key, time_signature, arrangement, ensemble)
+    score, chord_bars, bar_keys = _build_score(
+        spec,
+        key,
+        time_signature,
+        arrangement,
+        ensemble,
+        knobs=knobs,
+    )
     lint_report = lint(
         score,
         chord_bars=chord_bars or None,
@@ -345,6 +365,8 @@ def _build_score(
     time_signature: str,
     arrangement: DurationArrangement,
     ensemble: Ensemble,
+    *,
+    knobs: ArrangementKnobs,
 ) -> tuple[NotationScore, tuple[tuple[int, ...], ...], tuple[KeySignature, ...]]:
     """Build the NotationScore from the spec + arrangement.
 
@@ -383,7 +405,7 @@ def _build_score(
     bars_since_breath = 0
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
-    long_piece = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+    long_piece = arrangement.repetition_count >= knobs.arc_min_reps
     harmony_voices = tuple(
         (voice_id, instrument)
         for voice_id, instrument in ensemble.voice_instruments().items()
@@ -606,7 +628,7 @@ def _build_score(
             )
         else:
             change_tick = (
-                arrangement.total_bars - RITARDANDO_BARS
+                arrangement.total_bars - knobs.ritardando_bars
             ) * bar_ticks(time_signature)
         tempo_changes = (
             TempoPoint(
