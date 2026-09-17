@@ -257,7 +257,7 @@ start_worker() {
 start_api() {
     [ -x "$UVICORN_BIN" ] || { echo "uvicorn missing: $UVICORN_BIN"; return 1; }
     start_one api api "$UVICORN_BIN" \
-        saimc.jobs.api:create_app --factory \
+        saimc.jobs.api:create_served_app --factory \
         --host "$API_HOST" --port "$API_PORT" || return 1
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         if pid_alive "$RUN_DIR/api.pid" && api_ping; then

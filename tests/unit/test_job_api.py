@@ -12,6 +12,14 @@ import saimc.jobs.worker
 from saimc.jobs.api import create_app
 from saimc.jobs.state import JobState
 from saimc.jobs.storage import ArtifactRecord, JobStorage
+from saimc.llm.base import (
+    ChatRequest,
+    ChatResult,
+    LLMError,
+    ParseRequest,
+    ParseResult,
+    ToolCall,
+)
 from saimc.spec import CompositionSpec, Mood
 
 
@@ -343,3 +351,179 @@ class TestHealth:
         import os
 
         assert saimc.jobs.api._local_worker_process_alive(os.getpid()) is True
+
+
+class _Scripted:
+    """A model with a script, satisfying both protocols on one object.
+
+    Small enough to keep local: this module needs a conductor that asks for a
+    named tool and nothing else, and `test_session_api.py` has the version that
+    also records what it was asked.
+    """
+
+    def __init__(self) -> None:
+        self.replies: list[ChatResult] = []
+        self.requests: list[ChatRequest] = []
+
+    async def parse(self, request: ParseRequest) -> ParseResult:
+        return ParseResult(
+            parser_source="llm",
+            spec=CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5),
+        )
+
+    async def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        if not self.replies:
+            return ChatResult(error=LLMError("llm_unreachable", "the script is empty"))
+        return self.replies.pop(0)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _reply(*calls: ToolCall, content: str = "") -> ChatResult:
+    return ChatResult(content=content, tool_calls=calls)
+
+
+def _call(name: str, **arguments: object) -> ToolCall:
+    return ToolCall(name=name, arguments=dict(arguments))
+
+
+class TestJobsAsASessionAlias:
+    """`POST /jobs` over a session, and the three ways it falls back.
+
+    The alias is the whole of what "the harness replaces one-shot" means to a
+    caller who never learns there is a harness: one prompt in, one `job_id`
+    out, whichever path answered. `test_create_*` above already covers the
+    model-less path — it is what every test in this module takes — so what is
+    here is the session path and the two deliberate ways past it.
+    """
+
+    @staticmethod
+    def _app(roots: Path, model: object) -> TestClient:
+        return TestClient(create_app(jobs_root=roots, session_llm=model))
+
+    @staticmethod
+    def _model(*replies: ChatResult) -> _Scripted:
+        model = _Scripted()
+        model.replies = list(replies)
+        return model
+
+    @staticmethod
+    def _queue(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Record every `enqueue_job` call, and return the ids it was given.
+
+        A job *record* is written before the broker is asked, and a record whose
+        enqueue never happened sits in `queued` for ever, rendering nothing —
+        which is the one failure a caller cannot see from the response, because
+        its shape is identical either way. So the fallback is asserted to have
+        asked, not merely to have written.
+        """
+        enqueued: list[str] = []
+
+        def _record(job_id: str, **_: object) -> str:
+            enqueued.append(job_id)
+            return f"rq:{job_id}"
+
+        monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", _record)
+        return enqueued
+
+    def test_a_prompt_through_a_session_returns_the_job_it_published(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The piece the conductor mastered, not a prompt queued for the worker.
+
+        `parser_source` is what tells the two paths apart from the outside: a
+        job the alias published already carries its spec, because the session
+        composed and measured it before publishing.
+        """
+        enqueued = self._queue(monkeypatch)
+        model = self._model(_reply(_call("parse_brief"), _call("draft", n=1)))
+        client = self._app(tmp_path, model)
+
+        body = client.post("/jobs", json={"prompt": "30s of calm piano in C"}).json()
+
+        assert body["state"] == "queued"
+        assert body["parser_source"] == "from-spec"
+        assert body["input_spec"]["mood"] == "calming"
+        assert len(list(JobStorage(tmp_path).list_all())) == 1
+        assert enqueued == [body["job_id"]]
+
+    def test_a_pass_that_publishes_nothing_queues_the_prompt_instead(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The alias still promises a job, and the session keeps its candidates.
+
+        An open brief ends with several candidates and no choice made; the old
+        path answers the request, and the session is left where the user can
+        come back to it. Exactly one job exists, on either path.
+        """
+        enqueued = self._queue(monkeypatch)
+        model = self._model(
+            _reply(_call("parse_brief"), _call("draft", n=2)),
+            _reply(content="Two candidates."),
+            _reply(content="Still two."),
+        )
+        client = self._app(tmp_path, model)
+
+        body = client.post("/jobs", json={"prompt": "something for a rainy day"}).json()
+
+        assert body["parser_source"] is None
+        assert body["input_spec"] is None
+        assert len(list(JobStorage(tmp_path).list_all())) == 1
+        assert enqueued == [body["job_id"]]
+
+    def test_an_explicit_seed_takes_the_phase_one_path_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A seed asks for one exact piece, so there is nothing for a conductor to choose."""
+        enqueued = self._queue(monkeypatch)
+        model = self._model(_reply(_call("parse_brief"), _call("draft", n=1)))
+        client = self._app(tmp_path, model)
+
+        body = client.post("/jobs", json={"prompt": "anything", "seed": 7}).json()
+
+        assert body["seed"] == 7
+        assert body["parser_source"] is None
+        assert model.requests == []
+        assert enqueued == [body["job_id"]]
+
+    def test_a_broker_outage_on_the_session_path_is_503(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal the session raised is translated, not swallowed into a fallback.
+
+        Falling back here would queue a *second* job for a piece that was
+        already composed, which is the one thing the alias must not do.
+        """
+        model = self._model(_reply(_call("parse_brief"), _call("draft", n=1)))
+        app = create_app(jobs_root=tmp_path, session_llm=model)
+
+        def fail(job_id: str, **_: object) -> str:
+            raise ConnectionError("broker down")
+
+        monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", fail)
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post("/jobs", json={"prompt": "anything"})
+
+        assert response.status_code == 503
+        assert "not queued" in response.json()["detail"]
+
+    def test_the_alias_names_a_session_and_a_real_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`create_served_app` is the only factory that reads configuration.
+
+        Every other caller gets inert defaults, which is what keeps the tests
+        above off the network — so the wiring itself is asserted here rather
+        than assumed.
+        """
+        monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:9")
+        monkeypatch.setenv("OLLAMA_MODEL", "a-model")
+
+        app = saimc.jobs.api.create_served_app()
+
+        assert app.state.session_llm is not None
+        assert app.state.session_storage is not None
+        assert create_app(jobs_root=tmp_path).state.session_llm is None

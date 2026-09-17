@@ -742,6 +742,7 @@ class TestTheHandlersAreAllReachable:
             "ToolRefusal",
             "TurnLedger",
             "dispatch",
+            "publish_draft",
             "tool_specs",
         }
 

@@ -400,17 +400,17 @@ def _mark_failed(job: Job, storage: JobStorage, error: JobError) -> None:
 def _build_default_llm_client() -> Any:
     """Construct the default LLM client. Phase 1 uses OllamaAdapter.
 
-    Settings come from `saimc.config:load_llm_config` (config file,
-    env vars, or built-in defaults — see `saimc.llm.config`). The
-    import is deferred so that running `worker_entry` without a
-    reachable Ollama endpoint doesn't crash on import. If the
-    configuration is invalid, we fall back to a no-op client whose
-    `parse` and `chat` both fail cleanly with a named reason (the
-    parser's fallback path then handles in-vocabulary prompts, and every
-    deterministic session tool still runs — only the conductor's own
-    turns need a model).
+    Settings come from `saimc.llm.config:build_ollama_adapter` (config file,
+    env vars, or built-in defaults — see `saimc.llm.config`). The import is
+    deferred so that running `worker_entry` without a reachable Ollama
+    endpoint doesn't crash on import. If the configuration is invalid, we fall
+    back to a no-op client whose `parse` and `chat` both fail cleanly with a
+    named reason (the parser's fallback path then handles in-vocabulary
+    prompts, and every deterministic session tool still runs — only the
+    conductor's own turns need a model).
     """
     from saimc.llm.base import ChatRequest, ChatResult, LLMError, ParseRequest, ParseResult
+    from saimc.llm.config import build_ollama_adapter
 
     class _NoopLLM:
         """Satisfies both LLMClient and ChatClient by refusing, not by pretending.
@@ -441,14 +441,10 @@ def _build_default_llm_client() -> Any:
         async def aclose(self) -> None:
             return None
 
-    try:
-        from saimc.llm.config import load_llm_config
-        from saimc.llm.ollama import OllamaAdapter
-
-        cfg = load_llm_config()
-        return OllamaAdapter(base_url=cfg.base_url, model=cfg.model, api_key=cfg.api_key)
-    except ValueError:
-        return _NoopLLM()
+    client = build_ollama_adapter()
+    if client is not None:
+        return client
+    return _NoopLLM()
 
 
 def redis_url(url: str) -> str:

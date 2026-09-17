@@ -51,7 +51,7 @@ from typing import Any, Final
 
 from saimc.compose.engine import CompositionEngineError, EngineOutput, compose
 from saimc.compose.linter import lint
-from saimc.jobs.storage import JobStorage
+from saimc.jobs.storage import Job, JobStorage
 from saimc.jobs.worker import QueueUnavailable, enqueue_or_fail
 from saimc.llm.base import LLMClient, ToolCall, ToolSpec
 from saimc.parser import parse_prompt
@@ -484,9 +484,22 @@ async def _sketch(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     )
 
 
-async def _finalize(ctx: ToolContext, args: Mapping[str, Any]) -> str:
-    """Publish one draft: create the job that renders it, and queue it."""
-    draft = _named_draft(ctx, args)
+def publish_draft(ctx: ToolContext, draft: Draft) -> Job:
+    """Publish `draft`: create the job that renders it, queue it, and record it.
+
+    The policy, once, for two callers that report it differently: the
+    conductor's `finalize` tool answers with text the model reads, and the
+    session API answers with a status code. Both get the same record and the
+    same refusal codes, which is why this is a function and not two.
+
+    Both refusals are `ToolRefusal`s rather than exceptions past the caller.
+    `already_finalized`, because a session publishes once and a second publish
+    is a decision rather than a side effect. `queue_unavailable`, because the
+    broker would not take the job: the record is marked failed, the session has
+    **not** published, and the caller may try again — which the message says,
+    since a caller that assumed otherwise would go looking for a render that
+    does not exist.
+    """
     if ctx.session.finalized_job_id is not None:
         raise ToolRefusal(
             "already_finalized",
@@ -495,7 +508,6 @@ async def _finalize(ctx: ToolContext, args: Mapping[str, Any]) -> str:
             "cannot be unpublished — its render is already queued — so a different piece needs "
             "a new session.",
         )
-
     job = ctx.jobs.create(ctx.session.brief)
     job.input_spec = draft.spec
     job.input_plan = draft.plan
@@ -517,6 +529,13 @@ async def _finalize(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     # durably queued and is about to render, so the record that this session
     # published *it* has to be durable at the moment it becomes true.
     ctx.sessions.save(ctx.session)
+    return job
+
+
+async def _finalize(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """Publish one draft, on the user's behalf or the conductor's."""
+    draft = _named_draft(ctx, args)
+    job = publish_draft(ctx, draft)
     return _render({"job_id": job.job_id, "draft_id": draft.draft_id, "state": job.state.value})
 
 
@@ -780,5 +799,6 @@ __all__ = [
     "ToolRefusal",
     "TurnLedger",
     "dispatch",
+    "publish_draft",
     "tool_specs",
 ]

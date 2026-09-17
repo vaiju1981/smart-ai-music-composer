@@ -4,6 +4,15 @@ Per `docs/roadmap.md` §7:
 
 - `POST /jobs` — accepts `{prompt: string}`, creates the job, returns `job_id`.
   Prompt parsing happens in the worker's `parsing` stage.
+
+  **It is now a thin alias over a session.** When this app has a model and a
+  session store — which is what the served app has and what a test app does not
+  — the prompt opens a session, the conductor takes the first turn, and the job
+  it publishes is what comes back. The caller cannot tell the two paths apart
+  and does not have to: one prompt in, one `job_id` out, which is the contract
+  this endpoint has always had. There are exactly two reasons to take the old
+  path instead, plus one deliberate bypass, and all three are named in
+  `create_job` below.
 - `POST /jobs/from-spec` — internal/test-only Phase 1 endpoint that
   accepts an already validated `CompositionSpec`; it is not exposed by
   the user-facing UI.
@@ -38,6 +47,11 @@ from saimc.jobs.storage import (
     JobStorage,
 )
 from saimc.jobs.worker import DEFAULT_QUEUE, QueueUnavailable, enqueue_or_fail
+from saimc.llm.base import ChatClient
+from saimc.session.api import conduct, http_from_refusal
+from saimc.session.api import router as session_router
+from saimc.session.store import SessionStorage
+from saimc.session.tools import ToolRefusal
 from saimc.spec import CompositionSpec
 
 router = APIRouter()
@@ -100,6 +114,17 @@ def _storage(request: Request) -> JobStorage:
     if storage is None:
         raise HTTPException(status_code=500, detail="Job storage not configured.")
     return storage
+
+
+def _session_llm(request: Request) -> ChatClient | None:
+    """The conductor's model, or `None` when this app was built without one.
+
+    `None` is not an error here, unlike on the session routes: this endpoint has
+    a whole second path that needs no model at all, so a model-less app answers
+    `/jobs` exactly as it always did. That is what keeps the existing tests —
+    and a deployment with no Ollama — working unchanged.
+    """
+    return getattr(request.app.state, "session_llm", None)
 
 
 def _serialize_job(job: Job) -> JobResponse:
@@ -215,13 +240,12 @@ def index() -> FileResponse:
     )
 
 
-@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
-def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
-    """Create a queued job from a user prompt.
+def _queue_one_shot(body: CreateJobRequest, request: Request) -> JobResponse:
+    """The Phase 1 path, unchanged: persist the prompt and queue it.
 
-    Parsing happens later, in the worker's `parsing` stage — the API
-    only persists the prompt and returns the job_id. An explicit seed
-    is honoured until/unless the parsed spec supplies its own.
+    Kept whole rather than folded into the alias so that the two ways of
+    answering this endpoint stay readable side by side — one of them is the
+    product's front door and the other is the harness's.
     """
     storage = _storage(request)
     job = storage.create(body.prompt)
@@ -230,6 +254,55 @@ def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
         storage.save(job)
     _enqueue(job, storage)
     return _serialize_job(job)
+
+
+@router.post("/jobs", status_code=status.HTTP_202_ACCEPTED)
+async def create_job(body: CreateJobRequest, request: Request) -> JobResponse:
+    """Create a job from a user prompt — through a session, or the old way.
+
+    The session pass is the product: the conductor reads the brief, drafts, and
+    publishes, and the job that comes back is the piece. The Phase 1 path is
+    taken in three situations, and every one of them is a case where the session
+    pass cannot answer the request as asked:
+
+    - **No model.** A conductor with nothing to think with would draft nothing;
+      queueing the prompt lets the worker's own parse stage handle it, which is
+      what "the product keeps working with the model absent" means here.
+    - **Nothing published.** An open brief can end a pass with several
+      candidates and no piece, because choosing between them is the user's. The
+      alias still promises a job, so the prompt is queued by the old path and
+      the session is left where it is, holding its candidates, for the user to
+      come back to. Exactly one job exists per request on every path.
+    - **An explicit seed.** A seed is a request for one exact piece, which is
+      the one-shot contract itself: it says "compose this again", not "choose
+      something for me". The seeds the conductor fans out over are its own, so
+      there is nothing to hand it — and silently ignoring a request parameter is
+      the deaf-product failure this codebase refuses elsewhere.
+
+    A refusal the *harness* raised — a broker that would not take the job —
+    propagates as its own status, because in that case the session has not
+    published and the caller's recovery is the session's own `/finalize`.
+    """
+    sessions: SessionStorage | None = getattr(request.app.state, "session_storage", None)
+    client = _session_llm(request)
+    if sessions is None or client is None or body.seed is not None:
+        return _queue_one_shot(body, request)
+
+    session = sessions.create(body.prompt)
+    try:
+        await conduct(
+            sessions,
+            _storage(request),
+            client,
+            session,
+            trigger="brief",
+            auto_finalize=True,
+        )
+    except ToolRefusal as exc:
+        raise http_from_refusal(exc, session) from exc
+    if session.finalized_job_id is None:
+        return _queue_one_shot(body, request)
+    return _serialize_job(_storage(request).get(session.finalized_job_id))
 
 
 @router.post("/jobs/from-spec", status_code=status.HTTP_202_ACCEPTED)
@@ -426,8 +499,24 @@ def _media_type(artifact: ArtifactRecord) -> str:
     return table.get(artifact.container, "application/octet-stream")
 
 
-def create_app(jobs_root: Path | str | None = None) -> FastAPI:
-    """Build the FastAPI app with a JobStorage wired into state."""
+def create_app(
+    jobs_root: Path | str | None = None,
+    sessions_root: Path | str | None = None,
+    *,
+    session_llm: ChatClient | None = None,
+) -> FastAPI:
+    """Build the FastAPI app with its two storages and, optionally, a model.
+
+    **No model by default, and that is the decision worth reading.** Every
+    existing test and every local run builds the app through here, and a factory
+    that read `saimc.toml` would hand each of them a real adapter — so
+    `create_app(jobs_root=tmp_path)` would reach the configured host on every
+    `POST /jobs`, in tests that mean to touch no network at all. A factory
+    whose defaults are inert is one whose callers opt into a model.
+
+    `create_served_app` is the one that reads the configuration, and it is what
+    the server runs.
+    """
     app = FastAPI(
         title="Smart AI Music Composer",
         version="0.1.0",
@@ -438,8 +527,29 @@ def create_app(jobs_root: Path | str | None = None) -> FastAPI:
         ),
     )
     app.state.job_storage = JobStorage(jobs_root or DEFAULT_JOBS_DIR)
+    app.state.session_storage = SessionStorage(sessions_root)
+    app.state.session_llm = session_llm
     app.include_router(router)
+    app.include_router(session_router)
     return app
+
+
+def create_served_app() -> FastAPI:
+    """Build the app a server runs: the same one, with the configured model.
+
+    The only factory that reads `saimc.toml` and the environment, and therefore
+    the only one whose behaviour depends on the machine it is started on. A
+    configuration that cannot be read leaves the model empty rather than failing
+    to start: the sessions surface says so with a 503 naming what to set, and
+    `POST /jobs` falls back to the Phase 1 path — a server that serves something
+    is more useful than one that refuses to boot over a missing file.
+
+    The import is deferred so that building an app with no model never pays for
+    the provider's transport.
+    """
+    from saimc.llm.config import build_ollama_adapter
+
+    return create_app(session_llm=build_ollama_adapter())
 
 
 __all__ = [
@@ -447,5 +557,6 @@ __all__ = [
     "CreateJobRequest",
     "JobResponse",
     "create_app",
+    "create_served_app",
     "router",
 ]

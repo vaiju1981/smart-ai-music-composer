@@ -229,6 +229,13 @@ def _user_message(session: Session, *, trigger: TurnTrigger, message: str) -> st
     is an *instruction* about it rather than a second copy of it — the same
     reason the user's own words are quoted back here instead of being left in
     the log as a past turn.
+
+    The `auto` branch is the only one that mentions publishing, because an
+    automatic turn is only ever asked for by a caller that asked for
+    auto-finalize: it is the harness's continuation after a pass that published
+    nothing, and the one thing worth saying about it is that the piece may be
+    finished. Every other turn is the user's, and a user's turn is not the
+    place to be told to hurry.
     """
     if trigger == "brief":
         asked = "This is the session's first turn: work the brief above into candidates."
@@ -237,7 +244,8 @@ def _user_message(session: Session, *, trigger: TurnTrigger, message: str) -> st
     else:
         asked = (
             "No one has spoken. Review where this session stands and take it "
-            "forward: say what you did, and call for whatever is worth doing next."
+            "forward: say what you did, and call for whatever is worth doing next. "
+            "If a candidate is ready to be mastered, publish it."
         )
     return f"{digest(session)}\n\n{asked}"
 
