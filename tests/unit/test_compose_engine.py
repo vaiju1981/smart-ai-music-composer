@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from itertools import pairwise
 
 import pytest
@@ -57,6 +57,7 @@ from saimc.compose.forms import (
 )
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
+from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     VOICE_BASS,
     VOICE_HARMONY,
@@ -151,16 +152,26 @@ def _bar_degrees_and_offsets(
     Returns (degree, tonic-relative tones, key offset) per bar — the
     offset carries the long-piece modulation lift, which exempts each
     section's final two cadence bars.
+
+    The four values the walk decides by — the modulation offset, the arc's
+    repetition floor, and the cadence's degree and seventh — are read from
+    `out.plan`, the plan the engine actually composed under, rather than
+    from the module constants they used to be. That is the whole point of
+    an oracle: a constant here would keep agreeing with the engine for as
+    long as both read the same table, and would go on agreeing after one of
+    them stopped — which is exactly the drift this test exists to catch.
+    The mood stays a parameter because the *variant* template is still a
+    fact about the mood's progression tables and not a plan field.
     """
     from saimc.compose.forms import (
         apply_final_cadence,
-        cadence_degree_for,
-        cadence_seventh_for,
         get_template_for_form,
     )
 
+    plan = out.plan
+    assert plan is not None, "every compose() carries the plan it composed under"
     arrangement = out.arrangement
-    lifted = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+    lifted = arrangement.repetition_count >= plan.arc_min_reps
 
     result: list[tuple[int, tuple[int, ...], int]] = []
     for section in range(arrangement.repetition_count):
@@ -170,13 +181,15 @@ def _bar_degrees_and_offsets(
             else get_template_for_form(mood, arrangement.form_bars, variant_index=section)
         )
         section_offset = (
-            MODULATION_OFFSET if section == arrangement.repetition_count - 1 and lifted else 0
+            plan.modulation_offset
+            if section == arrangement.repetition_count - 1 and lifted
+            else 0
         )
         if section == arrangement.repetition_count - 1:
             template = apply_final_cadence(
                 template,
-                cadence_degree=cadence_degree_for(mood),
-                seventh=cadence_seventh_for(mood),
+                cadence_degree=plan.cadence_degree,
+                seventh=plan.cadence_seventh,
             )
         consumed = 0
         for slot in template.chords:
@@ -190,10 +203,10 @@ def _bar_degrees_and_offsets(
     if arrangement.coda_bars > 0:
         coda = apply_final_cadence(
             _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
-            cadence_degree=cadence_degree_for(mood),
-            seventh=cadence_seventh_for(mood),
+            cadence_degree=plan.cadence_degree,
+            seventh=plan.cadence_seventh,
         )
-        coda_offset = MODULATION_OFFSET if lifted else 0
+        coda_offset = plan.modulation_offset if lifted else 0
         consumed = 0
         for slot in coda.chords:
             exempt = coda_offset and consumed >= coda.bars - 2
@@ -1528,6 +1541,37 @@ class TestArrangementArc:
         tonic_pc = key_root_midi(out.key) % 12
         last_melody = max(self._melody(out), key=lambda n: n.tick)
         assert last_melody.pitch_midi % 12 in (tonic_pc, (tonic_pc + third) % 12)
+
+    def test_the_oracle_reads_the_plan_the_engine_composed_under(self) -> None:
+        """The oracle's plan reads, held against the engine's own output.
+
+        `_bar_degrees_and_offsets` used to read `MODULATION_OFFSET` and
+        `ARRANGEMENT_ARC_MIN_REPS` from the module. Those are the *default
+        plan's* values, so the oracle agreed with the engine for exactly as
+        long as both read the same constant — including after one of them
+        stopped. It reads `out.plan` now, so the two can only agree here if
+        the engine really composed under the plan it published.
+
+        Composed at a lift of 9 semitones rather than the default 2, and
+        the engine's bar keys are what the oracle is checked against: a
+        `compose` that ignored its plan would publish the plan it was
+        handed, lift by 2 anyway, and fail this.
+        """
+        spec = _spec(Mood.CALMING, duration=180)
+        plan = replace(default_plan(spec), modulation_offset=9)
+        out = compose(spec, plan=plan)
+
+        arrangement = out.arrangement
+        assert arrangement.repetition_count >= plan.arc_min_reps, "expected a lifted piece"
+        bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
+        home = out.bar_keys[0]
+        final_section = (arrangement.repetition_count - 1) * arrangement.form_bars
+        for bar in range(final_section, final_section + arrangement.form_bars - 2):
+            _degree, _offsets, key_offset = bars[bar]
+            assert key_offset == 9, f"bar {bar}: the oracle forgot the plan's lift"
+            assert out.bar_keys[bar] == transposed_key(home, 9), (
+                f"bar {bar}: the engine lifted by something other than the plan's 9"
+            )
 
     def test_every_bar_publishes_the_key_its_harmony_belongs_to(self) -> None:
         # The lifted IV of a piece in C is a G major triad, which is also

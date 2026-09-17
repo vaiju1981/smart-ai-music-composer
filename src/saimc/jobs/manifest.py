@@ -160,6 +160,16 @@ def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
     # reads as "no model was involved" instead of "the model is unknown".
     if job.model is not None:
         payload["model"] = job.model
+    # The plan, when the job named one, on the same rule as `model`: its
+    # absence reads as "the engine's defaults composed this", which is what
+    # every job written before the field existed also means. Recorded as the
+    # canonical document *and* its digest, like `input_spec`, so a reader can
+    # verify the plan rather than take it on trust — the plan is the artifact
+    # §6's determinism claim is made about, so a manifest that named only its
+    # hash would be asserting provenance it cannot show.
+    if job.input_plan is not None:
+        plan_payload = job.input_plan.to_canonical_dict()
+        payload["input_plan"] = {"plan": plan_payload, "sha256": _sha256_str(plan_payload)}
     if inputs.quality is not None:
         payload["quality"] = dict(inputs.quality)
     return payload

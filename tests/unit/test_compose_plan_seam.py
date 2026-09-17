@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Mapping
 from dataclasses import fields, replace
 from typing import Any
 
@@ -1788,3 +1789,88 @@ class TestAStoredPlanReplaysAfterTheTablesMove:
         before = _fingerprint(compose(spec))
         monkeypatch.setitem(BASS_FIGURES, "calming", (((0, 16, 0),),))
         assert _fingerprint(compose(spec)) != before
+
+
+_LAYER_INVENTORIES: dict[str, frozenset[str]] = {
+    "arrangement": frozenset(_ARRANGEMENT_KNOBS),
+    "harmony": _HARMONY_FIELDS,
+    "sections": _SECTION_FIELDS,
+    "melody": _MELODY_FIELDS,
+    "voices": _VOICES_FIELDS,
+    "percussion": _DRUM_KIT_FIELDS,
+}
+"""Every layer's field set, by name, because a class cannot be asked.
+
+B5-B7 each spell their layer's fields out rather than deriving them, and
+B4's finding is why this mapping exists at all: a class like
+`TestTheVelocityTerracesAreReadAtEveryCallSite` deliberately owns *no*
+field set, so walking the module's classes and guessing which attribute is
+an inventory would either misread one or need a special case per exception.
+Naming them here makes the inventory a thing the check can count.
+"""
+
+
+def _uncovered_plan_fields(inventories: Mapping[str, frozenset[str]]) -> list[str]:
+    """The plan's own knobs that no listed layer claims. Empty is healthy.
+
+    A function rather than three lines inside the test, so the check can be
+    fired on a deliberately incomplete inventory: an assertion about a
+    partition that has never been seen to fail is a comment.
+    """
+    declared = {field.name for field in fields(CompositionPlan)} - {"format"}
+    return sorted(declared - set().union(*inventories.values()))
+
+
+class TestEveryPlanFieldIsCoveredByASeamCase:
+    """The union check the seam's own header promised.
+
+    Each layer knows its own fields, and nothing else does — there is no
+    struct for the melody, the sections or the drums to enumerate against
+    the way `ArrangementKnobs` enumerates the arrangement's. So a knob added
+    to `CompositionPlan` without a seam case would go unnoticed: the layer
+    tests all pass, the field exists, and no composition ever reads it.
+    That is a dead seam found at Phase C rather than here, which is exactly
+    what this module exists to prevent.
+    """
+
+    def test_the_layer_field_sets_name_every_field_of_the_plan(self) -> None:
+        assert _uncovered_plan_fields(_LAYER_INVENTORIES) == []
+
+    def test_the_field_sets_name_nothing_the_plan_does_not_have(self) -> None:
+        """The other direction: a renamed knob leaves the old name behind
+        in some layer's set, where it would keep the union looking complete
+        while the new name went uncovered."""
+        declared = {field.name for field in fields(CompositionPlan)} - {"format"}
+        extra = sorted(set().union(*_LAYER_INVENTORIES.values()) - declared)
+        assert not extra, (
+            f"the layer field sets name {extra}, which CompositionPlan does not have"
+        )
+
+    def test_no_field_is_claimed_by_two_layers(self) -> None:
+        """Disjoint, not merely covering.
+
+        A field in two sets is a field two layers both believe they own —
+        and when one of them is rewritten the other's case keeps passing,
+        which is the attribution failure B2-B6 kept finding in other
+        clothing. `format` is excluded from all of this: it is the
+        document's tag, not a knob any layer reads.
+        """
+        seen: dict[str, str] = {}
+        for layer, names in _LAYER_INVENTORIES.items():
+            for name in names:
+                assert name not in seen, (
+                    f"{name} is claimed by both {seen[name]} and {layer}; a layer "
+                    "field set is a partition of the plan's knobs"
+                )
+                seen[name] = layer
+
+    def test_the_check_notices_an_uncovered_field(self) -> None:
+        """Fired, with one layer's set withheld.
+
+        The melody's ten knobs go uncovered, so the check has to name all
+        ten — and the count is asserted as well as the membership, because
+        a check that reported *some* uncovered field would be no use to
+        whoever has to add the missing seam case.
+        """
+        without_melody = {k: v for k, v in _LAYER_INVENTORIES.items() if k != "melody"}
+        assert _uncovered_plan_fields(without_melody) == sorted(_MELODY_FIELDS)

@@ -3,7 +3,9 @@
 Every gate returns a `GateResult` and asserts one criterion:
 
 - `gate_canonical_reproducibility` — byte-identical canonical artifacts
-  for two runs of the same spec + seed (§8 "Spec & reproducibility").
+  for two runs of the same spec + seed (§8 "Spec & reproducibility"),
+  optionally under a supplied `CompositionPlan`, since §6's versioned
+  documents now include the plan the determinism claim rests on.
 - `gate_spec_round_trip` — every accepted spec round-trips through the
   Pydantic schema validator.
 - `gate_composition_correctness` — the theory linter passes (range,
@@ -37,6 +39,7 @@ from tempfile import TemporaryDirectory
 from saimc.canonical import canonical_dumps
 from saimc.compose.engine import EngineOutput, compose
 from saimc.compose.linter import lint
+from saimc.compose.plan import CompositionPlan
 from saimc.compose.score import PPQ, NotationScore, PerformancePlan, TempoPoint
 from saimc.quality import QUALITY_THRESHOLDS, score_corpus, score_piece
 from saimc.render.audio import build_smf
@@ -56,10 +59,22 @@ class GateResult:
     detail: str = ""
 
 
-def gate_canonical_reproducibility(spec: CompositionSpec) -> GateResult:
-    """Two engine runs from the same spec produce byte-identical canonical artifacts."""
-    first = compose(spec)
-    second = compose(spec)
+def gate_canonical_reproducibility(
+    spec: CompositionSpec, plan: CompositionPlan | None = None
+) -> GateResult:
+    """Two engine runs from the same `(spec, plan)` produce byte-identical canonical artifacts.
+
+    `plan` is the composition plan to compose under, and `None` means the
+    engine's defaults. It is a parameter rather than something the gate
+    derives, because the whole point of the plan is that a caller may pin
+    the music: a gate that always composes at the defaults would be a gate
+    over a path nothing ships on. Pass a non-default plan and the two runs
+    below exercise the plan path — including the third check, which is the
+    one that catches a plan dropped on the way in, since an ignored plan
+    still reproduces itself perfectly.
+    """
+    first = compose(spec, plan=plan)
+    second = compose(spec, plan=plan)
     score_a = canonical_dumps(first.notation_score.to_canonical_dict())
     score_b = canonical_dumps(second.notation_score.to_canonical_dict())
     plan_a = canonical_dumps(first.performance_plan.to_canonical_dict())
@@ -72,10 +87,28 @@ def gate_canonical_reproducibility(spec: CompositionSpec) -> GateResult:
         )
     if first.notation_score.compute_hash() != second.notation_score.compute_hash():
         return GateResult("canonical_reproducibility", False, "notation score hash differs")
+    # The composition plan is an artifact the determinism claim is made
+    # about (§6), so it is compared for the same two reasons the score is:
+    # the runs have to agree, and the agreement has to be about the plan
+    # that was asked for.
+    if (first.plan is None) != (second.plan is None) or (
+        first.plan is not None
+        and second.plan is not None
+        and first.plan.compute_hash() != second.plan.compute_hash()
+    ):
+        return GateResult("canonical_reproducibility", False, "composition plan hash differs")
+    if plan is not None and first.plan != plan:
+        return GateResult(
+            "canonical_reproducibility",
+            False,
+            "the composition plan that was composed under is not the one that was supplied",
+        )
+    composed_under = "defaults" if first.plan is None else first.plan.compute_hash()[:12]
     return GateResult(
         "canonical_reproducibility",
         True,
-        f"notation+plan hashes stable: {first.notation_score.compute_hash()[:12]}…",
+        f"notation+plan hashes stable: {first.notation_score.compute_hash()[:12]}… "
+        f"(composition plan: {composed_under})",
     )
 
 
@@ -319,8 +352,18 @@ __all__ = [
 ]
 
 
-def run_all_gates(specs: list[CompositionSpec]) -> list[GateResult]:
-    """Run every engine-level gate over a spec matrix; returns all results."""
+def run_all_gates(
+    specs: list[CompositionSpec],
+    planned: Sequence[tuple[CompositionSpec, CompositionPlan]] = (),
+) -> list[GateResult]:
+    """Run every engine-level gate over a spec matrix; returns all results.
+
+    `planned` holds `(spec, plan)` pairs for the same reproducibility gate.
+    They are a separate argument because every other gate judges the notes
+    and the notes are the engine's either way — it is only the
+    reproducibility claim that the *plan* is part of (§6), so it is the
+    only gate that has to be handed one.
+    """
     results: list[GateResult] = []
     scores: list[NotationScore] = []
     for spec in specs:
@@ -338,6 +381,8 @@ def run_all_gates(specs: list[CompositionSpec]) -> list[GateResult]:
             )
         )
         results.append(gate_duration_tolerance(spec, output))
+    for spec, plan in planned:
+        results.append(gate_canonical_reproducibility(spec, plan))
     # The quality gate judges the matrix as a whole, so it runs once at the
     # end rather than per spec.
     results.append(gate_musical_quality(scores))

@@ -8,11 +8,13 @@ real-binary end-to-end run.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from saimc.compose.engine import compose
+from saimc.compose.plan import CompositionPlan, default_plan
 from saimc.compose.score import (
     PPQ,
     VOICE_MELODY,
@@ -61,6 +63,53 @@ SPEC_MATRIX: list[CompositionSpec] = [
         }
     )
 ]
+
+
+PLANNED_SPEC: CompositionSpec = CompositionSpec.model_validate(
+    {
+        "mood": "electrifying",
+        "duration_seconds": 60,
+        "seed": 9,
+        "instrumentation": [
+            {"role": "melody", "instrument": "piano"},
+            {"role": "harmony", "instrument": "strings"},
+            {"role": "bass", "instrument": "contrabass"},
+            {"role": "percussion", "instrument": "drum_set"},
+        ],
+    }
+)
+"""The spec of the one planned case: four roles, so the voices and
+percussion layers have something to move, at the shortest duration that
+still arranges to more than one section."""
+
+RELEASE_PLAN: CompositionPlan = replace(
+    default_plan(PLANNED_SPEC),
+    # One knob per layer, deliberately: the plan path is gated by this case
+    # alone, so a layer whose read was dropped between B2 and B7 should be
+    # able to fail it. A single knob would gate a single layer.
+    apex_position=0.66,  # melody
+    line_band_semitones=16,  # melody
+    cadence_degree=5,  # harmony
+    modulation_offset=0,  # harmony/modulation
+    harmony_pad_velocity=52,  # voices
+    harmony_broken_chord=True,  # voices
+    percussion_velocity_scale=0.8,  # percussion
+    section_crash_velocity=88,  # percussion
+    section_energy_peak=1.5,  # sections
+    percussion_rest_section=2,  # sections
+    intro_bars=2,  # arrangement
+    max_repeats=2,  # arrangement
+)
+"""The plan the release matrix composes under, besides the defaults.
+
+`gate_canonical_reproducibility` compares two runs of the *same build*, so
+without a case like this every gate in the matrix would be a gate over a
+path nothing ships on: a `compose` that accepted a plan and ignored it
+would pass all of them. Two things make this one count — the gate asserts
+the plan it composed under is the plan it was handed, and
+`test_the_planned_case_is_a_different_piece` asserts the notes moved, which
+is what a dropped plan read would break.
+"""
 
 
 @pytest.mark.parametrize(
@@ -244,6 +293,56 @@ class TestMusicalQualityGate:
             ],
         )
         assert report.passed, report.failure_reasons
+
+
+class TestThePlannedCaseIsLive:
+    """The one release case that names its own plan.
+
+    Every other gate here composes at the engine's defaults, and a
+    `compose` that took a plan and ignored it would pass all of them. These
+    are the two checks that make the planned case worth its row: the gate
+    is handed the plan and the notes are the ones it asks for.
+    """
+
+    def test_the_reproducibility_gate_covers_the_plan_path(self) -> None:
+        result = gate_canonical_reproducibility(PLANNED_SPEC, RELEASE_PLAN)
+        assert result.passed, result.detail
+        assert RELEASE_PLAN.compute_hash()[:12] in result.detail
+
+    def test_the_gate_refuses_a_plan_it_did_not_compose_under(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The check that catches a plan dropped on the way in, fired.
+
+        Comparing two runs against each other cannot catch it: a `compose`
+        that discarded its `plan` argument would agree with itself, on the
+        wrong music. So the engine is sabotaged into ignoring the plan —
+        the one failure mode that leaves both runs identical — and the gate
+        has to refuse.
+        """
+
+        def _ignoring_engine(spec, *, plan=None):
+            return compose(spec)
+
+        monkeypatch.setattr("saimc.release.gates.compose", _ignoring_engine)
+        result = gate_canonical_reproducibility(PLANNED_SPEC, RELEASE_PLAN)
+        assert not result.passed
+        assert "not the one that was supplied" in result.detail
+
+    def test_the_planned_case_is_a_different_piece(self) -> None:
+        """The notes moved, so the plan is not merely recorded.
+
+        Compared against the same spec with no plan, which is the one
+        comparison that distinguishes "the engine read the plan" from "the
+        engine wrote down the plan it was given".
+        """
+        planned = compose(PLANNED_SPEC, plan=RELEASE_PLAN)
+        defaulted = compose(PLANNED_SPEC)
+        assert planned.plan == RELEASE_PLAN
+        assert planned.plan != default_plan(PLANNED_SPEC)
+        assert (
+            planned.notation_score.compute_hash() != defaulted.notation_score.compute_hash()
+        ), "a plan that changes nothing would make every gate above vacuous"
 
 
 class TestRenderTimeBudgetGate:

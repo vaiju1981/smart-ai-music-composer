@@ -300,7 +300,7 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 
 ### Canonical symbolic serialization
 
-`CompositionSpec`, `NotationScore`, and `PerformancePlan` are persisted as canonical JSON documents, not hashed from in-memory Python or `music21` objects. Canonicalization rules are part of the format contract:
+`CompositionSpec`, `NotationScore`, `PerformancePlan`, and `CompositionPlan` are persisted as canonical JSON documents, not hashed from in-memory Python or `music21` objects. Canonicalization rules are part of the format contract:
 
 - UTF-8 JSON, sorted object keys, no insignificant whitespace, and no NaN/Infinity values;
 - integer musical ticks for score positions and durations;
@@ -308,6 +308,10 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - integer MIDI pitches and velocities;
 - arrays remain in musically significant order, with deterministic secondary sorting where events share a timestamp; and
 - an explicit format version in each document.
+
+`CompositionPlan` is the resolved plan the engine composes under — the middle layer between the spec's ten fields and the bar-level decisions, and the artifact the conductor's determinism rests on. It is stored **materialized**: every field is written, none is re-derived from a module table at read time, because a plan that carried only overrides would make reproducibility a claim about the source rather than about the artifact. Its version tracks its *shape* rather than the encoding rules, so a reader refuses any version but its own rather than completing a document it cannot know.
+
+An engine-output sidecar carries its own version as well, in the same `{kind}:{version}` form. It is the one canonical document that wraps others: each nested document names only its own version, so the container has to name its own key set and nesting.
 
 Hashes are calculated over these canonical UTF-8 bytes. MusicXML, MIDI, PDF, audio, and video are derived renderer outputs and are not the canonical symbolic representation.
 
@@ -329,6 +333,7 @@ queued → parsing → composing → validating → rendering_audio → renderin
 - `state`, `progress` (0.0–1.0 per stage), `current_stage`
 - `input_prompt` (the original user prompt)
 - `input_spec` (the persisted CompositionSpec; null until parsing succeeds)
+- `input_plan` (the materialized CompositionPlan the job composes under, or null for the engine's defaults)
 - `artifacts`: `{audio: {path, sha256}, sheet: {path, sha256}, animation: {path, sha256}}`
 - `error`: structured error with stage + reason
 - `engine_version`, `seed` — for reproducibility
@@ -357,7 +362,8 @@ queued → parsing → composing → validating → rendering_audio → renderin
 Phase 1 is "done" only when every criterion below is met, measured by an automated test suite run against every release.
 
 **Spec & reproducibility:**
-- Canonically serialized `CompositionSpec`, `NotationScore`, and `PerformancePlan` are **byte-identical** given the same spec + seed + engine version + pinned composition dependencies. These are the canonical, hashed artifacts; their serialization rules are defined in §6.
+- Canonically serialized `CompositionSpec`, `NotationScore`, `PerformancePlan`, and `CompositionPlan` are **byte-identical** given the same spec + seed + engine version + pinned composition dependencies — or, where a plan is supplied, the same plan + seed + engine version + pinned composition dependencies. These are the canonical, hashed artifacts; their serialization rules are defined in §6.
+- Because a plan is stored materialized, `(plan, seed)` is the reproducible pair the artifacts answer to: `(spec, seed)` holds for as long as the module tables the default plan describes are unchanged, and `(plan, seed)` holds across a change to them. Where no plan is supplied the engine resolves the default, and the resolved plan is recorded in the sidecar and (when a job named one) in the manifest, so a piece can be re-composed from what was persisted rather than from what the build does today.
 - **Media artifacts (WAV/OGG, SVG/PNG/PDF, WebM) are not required to be byte-identical across runs, even on the same toolchain.** Encoders can include container metadata, timestamps, platform-specific font output, or non-deterministic muxing. Reproducibility for media is checked **semantically**: same set of scheduled note events, same durations within tolerance, same dimensions, and same audio levels within tolerance. The manifest's `toolchain` block records exactly how a specific media file was produced; its artifact hash verifies that stored file's integrity, not a promise that a future render will have the same hash.
 - Every accepted spec round-trips through the schema validator.
 
@@ -414,6 +420,7 @@ Every completed job emits a machine-readable `manifest.json` alongside the artif
 **Required fields:**
 - `job_id`, `created_at`, `completed_at`
 - `input_spec`: the full `CompositionSpec` (schema_version included) and its sha256
+- `input_plan`: the full `CompositionPlan` (format included) and its sha256, when the job named one. Omitted rather than nulled otherwise, on the same rule as the model identifier below: its absence reads as "the engine's defaults composed this".
 - `seed`, `engine_version`
 - `parser_source`: `llm` | `fallback` | `hybrid`, plus the model identifier when
   the LLM contributed (`llm` or `hybrid`). `hybrid` means the LLM's output never
