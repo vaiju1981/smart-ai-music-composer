@@ -33,6 +33,7 @@ from saimc.quality import score_piece
 from saimc.session.models import (
     SESSION_FORMAT,
     Draft,
+    Publication,
     Session,
     ToolInvocation,
     Turn,
@@ -271,8 +272,9 @@ class TestUndo:
         """
         session = store.create("p")
         session.turns.append(_turn())
+        session.drafts.append(_draft())
         store.save(session)
-        session.finalized_job_id = "publishedjob"
+        session.publication = Publication(job_id="publishedjob", draft_id="draft-one")
         store.save(session)
         with pytest.raises(UndoUnavailable, match="publishedjob"):
             store.undo(session.session_id)

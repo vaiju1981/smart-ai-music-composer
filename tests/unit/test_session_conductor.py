@@ -43,7 +43,14 @@ from saimc.llm.base import (
 )
 from saimc.session import conductor, tools
 from saimc.session.conductor import MAX_DIGEST_TURNS, SYSTEM_PROMPT, digest, replay, take_turn
-from saimc.session.models import Session, ToolInvocation, Turn, TurnTrigger, Verdict
+from saimc.session.models import (
+    Publication,
+    Session,
+    ToolInvocation,
+    Turn,
+    TurnTrigger,
+    Verdict,
+)
 from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolBudget, ToolContext, dispatch, tool_specs
 from saimc.spec import CompositionSpec, Mood
@@ -297,7 +304,8 @@ class TestTheDigest:
 
     def test_the_published_line_flips_once_a_session_has_published(self, ctx: ToolContext) -> None:
         assert "published: not yet" in digest(ctx.session)
-        ctx.session.finalized_job_id = "0f8a4c2b"
+        _drafts(ctx, n=1)
+        ctx.session.publication = Publication(job_id="0f8a4c2b", draft_id="draft-0")
         assert "published: job 0f8a4c2b" in digest(ctx.session)
 
     def test_a_turn_renders_its_trigger_and_the_calls_in_order(self, ctx: ToolContext) -> None:

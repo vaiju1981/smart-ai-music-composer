@@ -86,6 +86,7 @@ from saimc.session.deltas import (
 )
 from saimc.session.models import (
     Draft,
+    Publication,
     Session,
     SketchRecord,
     ToolInvocation,
@@ -1053,7 +1054,7 @@ def publish_draft(ctx: ToolContext, draft: Draft) -> Job:
     except QueueUnavailable as exc:
         raise ToolRefusal("queue_unavailable", str(exc)) from exc
 
-    ctx.session.finalized_job_id = job.job_id
+    ctx.session.publication = Publication(job_id=job.job_id, draft_id=draft.draft_id)
     # Saved here, not left to the end of the turn: the job is already
     # durably queued and is about to render, so the record that this session
     # published *it* has to be durable at the moment it becomes true.

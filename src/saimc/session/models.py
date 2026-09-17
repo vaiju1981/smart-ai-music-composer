@@ -55,25 +55,29 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 7
+SESSION_SCHEMA_VERSION: Final[int] = 8
 """Bump when a record in this module gains, loses or reshapes a field.
 
 Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
 to 4 when it gained `requests_source`, to 5 when the session gained
 `preferences`, to 6 when a draft's scorecard gained
-`harmony_pad_coverage`, and to 7 when `RequestSource` gained `repair`. Bumps
+`harmony_pad_coverage`, to 7 when `RequestSource` gained `repair`, and to 8
+when the session's `finalized_job_id` became the `publication` pair. Bumps
 2 to 5 added fields with defaults, so an older document would have loaded with
 the field silently missing; the sixth and seventh are different in kind — a
 scorecard takes no defaults and is read strictly, and a closed vocabulary
 value an older build does not know is refused rather than tolerated — and
 either way the load has to *refuse*, which is the reason the guard compares
-the tag rather than tolerating what it recognises. A draft's lineage read as
-empty is a draft that claims to have been drafted from the brief when it was
-revised from another, its source read as absent is a request with no record of
-who asked for it, a preference log read as absent is every judgement the user
-has made thrown away, a scorecard read as absent is a piece whose harmony was
-never measured where null means it had none, and a source read as an
-unrecognised word is a request whose provenance nobody can name.
+the tag rather than tolerating what it recognises. The eighth changes what a
+field *is*: an older document's `finalized_job_id` names a job and no draft,
+and reading it as a publication would have to invent the draft — the same
+guess that makes the manifest omit a model it cannot name. A draft's lineage
+read as empty is a draft that claims to have been drafted from the brief when
+it was revised from another, its source read as absent is a request with no
+record of who asked for it, a preference log read as absent is every judgement
+the user has made thrown away, a scorecard read as absent is a piece whose
+harmony was never measured where null means it had none, and a source read as
+an unrecognised word is a request whose provenance nobody can name.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
@@ -647,6 +651,40 @@ def _read_plan(payload: dict[str, Any], *, owner: str) -> CompositionPlan:
         ) from exc
 
 
+@dataclass(frozen=True)
+class Publication:
+    """What a session published: the job it queued, and the draft it queued it from.
+
+    The two ids travel together because they are one decision. A session
+    that recorded only the job would be able to name the piece it shipped
+    but not the piece the user heard before it was mastered, and the
+    scorecard a reader would want to hold the published music against is the
+    *draft's* — the session's gate, and anything that later asks whether the
+    published piece cleared its bars, needs both halves of the pair to be
+    the same act.
+
+    The drafts that were *not* chosen are deliberately not listed. They are
+    exactly the session's own drafts minus the one named here, so a stored
+    rejection list would be a second value that can disagree with the drafts
+    it names — and it is the drafts, not the list, that carry what a reader
+    wants from them (`plan_hash`, `PieceQuality.entry()`).
+    """
+
+    job_id: str
+    draft_id: str
+
+    def __post_init__(self) -> None:
+        require_id_segment(self.job_id, label="job_id")
+        require_id_segment(self.draft_id, label="draft_id")
+
+    def to_document(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_document(cls, payload: dict[str, Any]) -> Publication:
+        return cls(job_id=payload["job_id"], draft_id=payload["draft_id"])
+
+
 @dataclass
 class Session:
     """The persisted record for one interactive session.
@@ -662,11 +700,15 @@ class Session:
     copy that can be mangled and that the recorded turn would then be a
     record of. It is `None` until the brief has been parsed.
 
-    `finalized_job_id` is the only *state* the session has. Everything else
+    `publication` is the only *state* the session has. Everything else
     it knows is what happened, in order; whether the piece has been
     published is the one thing a reader cannot recover from the log, and it
     is explicit so that finalizing twice is a decision rather than an
-    accident.
+    accident. It holds the job *and* the draft that job was queued from, so
+    the session cannot name the piece it shipped without naming the piece
+    the user heard; `finalized_job_id` is a read-only view of the job half
+    rather than a field of its own, because two fields for one act are two
+    fields that can come apart.
 
     `preferences` is the one collection that is not simply a log of what
     happened: each row is a verdict read against the chain of the draft it
@@ -683,14 +725,12 @@ class Session:
     drafts: list[Draft] = field(default_factory=list)
     verdicts: list[Verdict] = field(default_factory=list)
     preferences: list[Preference] = field(default_factory=list)
-    finalized_job_id: str | None = None
+    publication: Publication | None = None
 
     def __post_init__(self) -> None:
         require_id_segment(self.session_id, label="session_id")
         if not self.brief.strip():
             raise ValueError("a session needs a brief; there is nothing to conduct without one")
-        if self.finalized_job_id is not None:
-            require_id_segment(self.finalized_job_id, label="finalized_job_id")
         self.check()
 
     def check(self) -> None:
@@ -703,6 +743,12 @@ class Session:
         refused on load, because every read goes through this constructor.
         A store that never writes a document it could not read is worth one
         method.
+
+        The publication is checked the same way a verdict is: it names a
+        draft this session has to hold. Publishing is the one place a stored
+        id points *at* a draft rather than being one, so it is the one place
+        a pruned or renamed draft can leave a session claiming to have
+        shipped music it can no longer show.
 
         `preferences` is deliberately not checked against the drafts the way
         `verdicts` are. A verdict naming a draft this session does not have is a
@@ -721,10 +767,26 @@ class Session:
                 raise ValueError(
                     f"verdict names draft {verdict.draft_id!r}, which this session does not have"
                 )
+        if self.publication is not None and self.publication.draft_id not in known:
+            raise ValueError(
+                f"this session published from draft {self.publication.draft_id!r}, which it "
+                "does not have"
+            )
+
+    @property
+    def finalized_job_id(self) -> str | None:
+        """The job this session published, or `None`. Always with its draft.
+
+        Kept as the name readers already use — the API, the tools and the
+        conductor all ask a session whether it has published and what it
+        published — but it is a view of `publication` rather than a second
+        stored field, so the job id and the draft it came from cannot drift.
+        """
+        return None if self.publication is None else self.publication.job_id
 
     @property
     def is_finalized(self) -> bool:
-        return self.finalized_job_id is not None
+        return self.publication is not None
 
     def draft(self, draft_id: str) -> Draft:
         """The draft with `draft_id`. Raises `KeyError` if there is none."""
@@ -803,7 +865,7 @@ class Session:
             "updated_at": self.updated_at.isoformat(),
             "brief": self.brief,
             "spec": None if self.spec is None else self.spec.model_dump(mode="json"),
-            "finalized_job_id": self.finalized_job_id,
+            "publication": None if self.publication is None else self.publication.to_document(),
             "turns": [turn.to_document() for turn in self.turns],
             "drafts": [draft.to_document() for draft in self.drafts],
             "verdicts": [verdict.to_document() for verdict in self.verdicts],
@@ -821,6 +883,7 @@ class Session:
                 "faithfully. Upgrade saimc or delete the session directory."
             )
         raw_spec = payload.get("spec")
+        raw_publication = payload.get("publication")
         return cls(
             session_id=payload["session_id"],
             created_at=datetime.fromisoformat(payload["created_at"]),
@@ -831,7 +894,9 @@ class Session:
             drafts=[Draft.from_document(draft) for draft in payload.get("drafts", ())],
             verdicts=[Verdict.from_document(v) for v in payload.get("verdicts", ())],
             preferences=[Preference.from_document(p) for p in payload.get("preferences", ())],
-            finalized_job_id=payload.get("finalized_job_id"),
+            publication=(
+                None if raw_publication is None else Publication.from_document(raw_publication)
+            ),
         )
 
 
@@ -897,6 +962,7 @@ __all__ = [
     "SESSION_SCHEMA_VERSION",
     "Draft",
     "Preference",
+    "Publication",
     "Session",
     "SketchRecord",
     "ToolInvocation",

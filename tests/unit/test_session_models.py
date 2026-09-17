@@ -51,6 +51,7 @@ from saimc.session.models import (
     SESSION_SCHEMA_VERSION,
     Draft,
     Preference,
+    Publication,
     Session,
     SketchRecord,
     ToolInvocation,
@@ -154,7 +155,7 @@ def _session(
     drafts: list[Draft] | None = None,
     verdicts: list[Verdict] | None = None,
     preferences: list[Preference] | None = None,
-    finalized_job_id: str | None = None,
+    publication: Publication | None = None,
     spec: CompositionSpec | None = None,
 ) -> Session:
     return Session(
@@ -167,7 +168,7 @@ def _session(
         drafts=[] if drafts is None else drafts,
         verdicts=[] if verdicts is None else verdicts,
         preferences=[] if preferences is None else preferences,
-        finalized_job_id=finalized_job_id,
+        publication=publication,
     )
 
 
@@ -882,7 +883,47 @@ class TestSession:
 
     def test_a_finalized_session_says_so(self) -> None:
         assert _session().is_finalized is False
-        assert _session(finalized_job_id="abc123").is_finalized is True
+        published = _session(
+            drafts=[_draft("a")],
+            publication=Publication(job_id="abc123", draft_id="a"),
+        )
+        assert published.is_finalized is True
+        assert published.finalized_job_id == "abc123"
+
+    def test_the_job_id_is_a_view_of_the_publication(self) -> None:
+        """One act, one field: the pair cannot come apart, so a reader that
+        wants only the job reads it off the record that holds both."""
+        published = _session(
+            drafts=[_draft("a")],
+            publication=Publication(job_id="abc123", draft_id="a"),
+        )
+        published.publication = Publication(job_id="def456", draft_id="a")
+        assert published.finalized_job_id == "def456"
+
+    def test_a_publication_naming_an_absent_draft_is_refused(self) -> None:
+        """Publishing is the one place a stored id points *at* a draft, so a
+        session claiming to have shipped music it cannot show is refused on
+        the same path a verdict naming an absent draft is."""
+        with pytest.raises(ValueError, match="published from draft"):
+            _session(
+                drafts=[_draft("a")],
+                publication=Publication(job_id="abc123", draft_id="b"),
+            )
+
+    def test_the_refusal_is_reached_through_check_as_well_as_the_constructor(self) -> None:
+        """The publication is set after construction — it is what a publish
+        does — so the guard has to be on `check()`, which is what the store
+        runs before every write."""
+        session = _session(drafts=[_draft("a")])
+        session.publication = Publication(job_id="abc123", draft_id="b")
+        with pytest.raises(ValueError, match="published from draft"):
+            session.check()
+
+    def test_a_publication_refuses_a_traversing_id(self) -> None:
+        with pytest.raises(ValueError, match="job_id"):
+            Publication(job_id="../escape", draft_id="a")
+        with pytest.raises(ValueError, match="draft_id"):
+            Publication(job_id="abc123", draft_id="../escape")
 
     def test_the_lookup_by_id_raises_for_an_absent_draft(self) -> None:
         session = _session(drafts=[_draft("draft-one")])
@@ -911,7 +952,7 @@ class TestSession:
             ],
             drafts=[_draft("a", sketch=_SKETCH), _draft("b")],
             verdicts=[Verdict(draft_id="a", at=_NOW, value="like", feedback="keep the intro")],
-            finalized_job_id="job-1",
+            publication=Publication(job_id="job-1", draft_id="a"),
             spec=_SPEC,
         )
         loaded = Session.from_document(json.loads(json.dumps(session.to_document())))
@@ -921,6 +962,7 @@ class TestSession:
         assert loaded.verdicts[0].feedback == "keep the intro"
         assert loaded.draft("a").sketch == _SKETCH
         assert loaded.spec == _SPEC
+        assert loaded.publication == Publication(job_id="job-1", draft_id="a")
 
     def test_a_session_with_no_parsed_brief_yet_round_trips(self) -> None:
         """`spec` is None until `parse_brief` runs, and that is a state a
@@ -950,11 +992,14 @@ class TestSession:
         literal buys is that moving the schema is a declared edit rather than a
         silent one, which is the same ratchet the `__all__` and tool-catalogue
         pins are. `6` was the draft's scorecard gaining `harmony_pad_coverage`,
-        and `7` is `RequestSource` gaining `repair` — a word an older build would
+        `7` is `RequestSource` gaining `repair` — a word an older build would
         refuse rather than read, which is why it moved the schema and not merely
-        a table.
+        a table — and `8` is the session's `finalized_job_id` becoming the
+        `publication` pair, which is a *change of meaning* rather than an
+        addition: an older document's job id names no draft, and reading it as a
+        publication would have to invent one.
         """
-        assert SESSION_FORMAT == "Session:7"
+        assert SESSION_FORMAT == "Session:8"
 
     def test_a_foreign_session_document_is_refused(self) -> None:
         """Derived, not spelled out: a literal here is a trap for the next
@@ -970,3 +1015,32 @@ class TestSession:
         del document["format"]
         with pytest.raises(UnsupportedSessionVersionError):
             Session.from_document(document)
+
+
+def test_the_module_exports_what_it_claims() -> None:
+    """A ratchet on the public surface, in every other module's shape.
+
+    Added with `Publication`, which is what the ratchet is for: the new
+    record is an export a reader of this module can rely on, and the next one
+    to move the surface fails here rather than going unremarked.
+    """
+    from saimc.session import models
+
+    assert set(models.__all__) == {
+        "SESSION_FORMAT",
+        "SESSION_FORMAT_PREFIX",
+        "SESSION_SCHEMA_VERSION",
+        "Draft",
+        "Preference",
+        "Publication",
+        "Session",
+        "SketchRecord",
+        "ToolInvocation",
+        "ToolOutcome",
+        "Turn",
+        "TurnTrigger",
+        "UnsupportedSessionVersionError",
+        "Verdict",
+        "VerdictValue",
+        "require_id_segment",
+    }

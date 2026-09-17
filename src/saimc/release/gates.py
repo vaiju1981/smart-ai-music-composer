@@ -52,7 +52,16 @@ RENDER_TIME_BUDGET_FACTOR: float = 3.0
 
 @dataclass(frozen=True)
 class GateResult:
-    """Outcome of one release gate."""
+    """Outcome of one gate: a name, a verdict, and the sentence behind it.
+
+    Shared with `saimc.session.gates`, which judges a session's published
+    piece against the same threshold table. The vocabulary is deliberately
+    one type rather than two — "a named bar, and whether this thing cleared
+    it, with a reason" is the same statement about the engine and about the
+    harness, and two records for it would be two spellings of one idea. The
+    name is `release`'s module path because that is where the engine's gates
+    were written; the type itself carries no release-specific concept.
+    """
 
     name: str
     passed: bool
