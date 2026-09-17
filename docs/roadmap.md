@@ -76,6 +76,17 @@ Prompt
 
 **Design implication:** the application depends on a small provider-neutral `LLMClient` interface. Phase 1 supplies one `OllamaAdapter`, configured by environment variables, which wraps the Ollama client. A future commercial provider would require its own adapter behind the same interface; provider-specific authentication and request mapping stay inside each adapter.
 
+**Two interfaces, not one, once the conductor exists.** `LLMClient.parse` is not a transport
+primitive: it is a chat call plus the reading of the reply as a `CompositionSpec`, and the repair
+loop and fallback around it already live in `parser.py`. The session conductor needs the layer
+underneath — messages and tool schemas in, tool calls out — so it is served by a second
+provider-neutral protocol, `ChatClient` (`llm/base.py`), which carries no music type at all: a
+tool call is a tool name and a JSON-args mapping. `OllamaAdapter` and the fallback client satisfy
+both protocols over one HTTP client; a future provider implements both. Keeping them separate is
+what lets `parse` later be re-expressed in terms of `chat` without a caller noticing, and what
+keeps `llm/` a package the music layers may never import (§3's provider-neutrality rule, enforced
+by the AST test in A3).
+
 | Setting | Dev (now) | Production (later) |
 |---|---|---|
 | `OLLAMA_BASE_URL` | Ollama Cloud endpoint | Self-hosted Ollama server URL |

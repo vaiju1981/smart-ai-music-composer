@@ -359,12 +359,21 @@ def _build_default_llm_client() -> Any:
     import is deferred so that running `worker_entry` without a
     reachable Ollama endpoint doesn't crash on import. If the
     configuration is invalid, we fall back to a no-op client whose
-    `parse` always fails cleanly (the parser's fallback path then
-    handles in-vocabulary prompts).
+    `parse` and `chat` both fail cleanly with a named reason (the
+    parser's fallback path then handles in-vocabulary prompts, and every
+    deterministic session tool still runs — only the conductor's own
+    turns need a model).
     """
-    from saimc.llm.base import ParseRequest, ParseResult
+    from saimc.llm.base import ChatRequest, ChatResult, LLMError, ParseRequest, ParseResult
 
     class _NoopLLM:
+        """Satisfies both LLMClient and ChatClient by refusing, not by pretending.
+
+        A client that answered `chat` with an empty reply would be read by
+        the conductor as a model that chose to say nothing, which is a
+        different situation from a model that is not there.
+        """
+
         async def parse(self, request: ParseRequest) -> ParseResult:
             return ParseResult(
                 parser_source="llm",
@@ -373,6 +382,14 @@ def _build_default_llm_client() -> Any:
                     message="No valid LLM configuration found.",
                     stage="parsing",
                 ),
+            )
+
+        async def chat(self, request: ChatRequest) -> ChatResult:
+            return ChatResult(
+                error=LLMError(
+                    error_code="llm_not_configured",
+                    message="No valid LLM configuration found.",
+                )
             )
 
         async def aclose(self) -> None:

@@ -21,15 +21,21 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
+from saimc.llm.base import (
+    ChatRequest,
+    ChatResult,
+    LLMError,
+    Message,
+    ParseRequest,
+    ParseResult,
+    ToolCall,
+    ToolSpec,
+)
 from saimc.spec import CompositionSpec, SpecError
-
-if TYPE_CHECKING:
-    from saimc.llm.base import ParseRequest, ParseResult
-
 
 SCHEMA_ENFORCED_MARKER = "schema_native"
 PROMPTED_JSON_MARKER = "prompted_json"
@@ -41,7 +47,7 @@ _PROBE_PROMPT = "Respond with the single word: pong"
 
 
 class OllamaAdapter:
-    """Async LLMClient backed by an Ollama HTTP host.
+    """Async LLMClient and ChatClient backed by an Ollama HTTP host.
 
     Constructed once per process; the startup capability probe runs once in
     `__init__` (it does NOT make a real chat call — it issues a tiny throwaway
@@ -140,8 +146,6 @@ class OllamaAdapter:
         return False
 
     async def parse(self, request: ParseRequest) -> ParseResult:
-        from saimc.llm.base import ParseResult
-
         if self._structured_output is None:
             await self.probe_capability()
 
@@ -244,6 +248,105 @@ class OllamaAdapter:
                 "request_id": request.request_id,
             },
         )
+
+    async def chat(self, request: ChatRequest) -> ChatResult:
+        """One tool-calling turn against the Ollama host.
+
+        No capability probe gates this. Schema enforcement is a *mode* the
+        host either has or lacks, so `parse` has to detect it before it can
+        choose a body; tool calling has no alternative mode to fall back to,
+        and whether a given model honours `tools` is answered by the reply
+        itself — prose where calls were offered is a normal outcome the
+        conductor decides what to do with, not a transport error. A host
+        that *rejects* the parameter answers with an HTTP error, which is
+        reported as such rather than guessed at from a body shape.
+        """
+        body: dict[str, Any] = {
+            "model": self._model,
+            "messages": [self._wire_message(message) for message in request.messages],
+            "stream": False,
+        }
+        if request.tools:
+            body["tools"] = [self._wire_tool(tool) for tool in request.tools]
+
+        t0 = time.perf_counter()
+        try:
+            resp = await self._http.post(f"{self._base_url}/api/chat", json=body)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            return ChatResult(error=LLMError("llm_unreachable", f"Ollama HTTP error: {exc}"))
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        extra = {"latency_ms": str(latency_ms), "model_identifier": self._model}
+
+        try:
+            payload = resp.json()
+            message = payload.get("message") or {}
+            content = message.get("content") or ""
+            raw_calls = message.get("tool_calls") or []
+        except (json.JSONDecodeError, ValueError, AttributeError) as exc:
+            return ChatResult(
+                error=LLMError("llm_invalid_response", f"Could not parse Ollama response: {exc}"),
+                extra=extra,
+            )
+
+        try:
+            calls = tuple(self._read_tool_call(raw) for raw in raw_calls)
+        except ValueError as exc:
+            return ChatResult(
+                error=LLMError("tool_call_malformed", f"Unreadable tool call: {exc}"),
+                extra=extra,
+            )
+
+        return ChatResult(content=content, tool_calls=calls, extra=extra)
+
+    @staticmethod
+    def _wire_message(message: Message) -> dict[str, Any]:
+        wire: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_name is not None:
+            wire["tool_name"] = message.tool_name
+        if message.tool_calls:
+            wire["tool_calls"] = [
+                {"function": {"name": call.name, "arguments": call.arguments}}
+                for call in message.tool_calls
+            ]
+        return wire
+
+    @staticmethod
+    def _wire_tool(tool: ToolSpec) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            },
+        }
+
+    @staticmethod
+    def _read_tool_call(raw: Any) -> ToolCall:
+        """Read one call from the wire, refusing rather than defaulting.
+
+        The documented shape puts a JSON object in `arguments`, but a model
+        that emits the arguments as a JSON *string* is common enough that
+        reading only the object form would drop its calls on the floor.
+        Unreadable arguments raise instead of becoming `{}`: a tool run with
+        silently empty arguments would be a wrong action, not a missing one.
+        """
+        function = (raw or {}).get("function") or {}
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"call has no tool name: {raw!r}")
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{name}: arguments are not JSON ({exc})") from exc
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            raise ValueError(f"{name}: arguments are not an object: {arguments!r}")
+        return ToolCall(name=name, arguments=arguments)
 
     @staticmethod
     def _build_messages(
