@@ -73,11 +73,11 @@ from saimc.compose.forms import (
 )
 from saimc.compose.linter import DISSONANT_INTERVALS, LintIssue, lint
 from saimc.compose.motif import (
-    CHORD_TONE_DEGREES,
-    LEAP_DEGREES,
+    DEFAULT_MELODY_SHAPE,
     PLAIN_BASS_FIGURE,
     BarSlot,
     BassFigure,
+    MelodyShape,
     MotifVariant,
     apply_rhythm,
     draw_bass_figures,
@@ -391,7 +391,12 @@ def _build_score(
     # that moved between sections would make the tessitura a per-section
     # fact and the register the whole walk is quantised to would not
     # hold.
-    band = _melody_band_for(melody=ensemble.melody, bed=ensemble.harmony)
+    shape = plan.melody_shape()
+    band = _melody_band_for(
+        melody=ensemble.melody,
+        bed=ensemble.harmony,
+        band_semitones=shape.line_band_semitones,
+    )
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
     chord_bars: list[tuple[int, ...]] = []
@@ -458,6 +463,7 @@ def _build_score(
             seed_for_variation=rng_base_seed + section_idx,
             mood=spec.mood.value,
             band=band,
+            shape=shape,
             figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
@@ -537,6 +543,7 @@ def _build_score(
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
             mood=spec.mood.value,
             band=band,
+            shape=shape,
             figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
@@ -739,6 +746,7 @@ def _generate_section(
     mood: str,
     band: MelodyBand,
     figures: tuple[BassFigure, ...],
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
     prev_bass: int | None = None,
     prev_melody: int | None = None,
     prev_melody_leap: int | None = None,
@@ -815,8 +823,8 @@ def _generate_section(
     ticks_per_bar = bar_ticks(time_signature)
     section_ticks = template.bars * ticks_per_bar
     # The melodic apex sits near the 60% mark, never on the final bar.
-    apex_bar = min(int(template.bars * 0.6), template.bars - 2)
-    motif = generate_motif(rng, bar_ticks=ticks_per_bar)
+    apex_bar = min(int(template.bars * shape.apex_position), template.bars - 2)
+    motif = generate_motif(rng, bar_ticks=ticks_per_bar, shape=shape)
 
     # Pre-resolve each slot's chord so a bar can pick up into the next
     # chord's register (the anacrusis needs to know what it leads to).
@@ -984,7 +992,7 @@ def _generate_section(
             if is_final_bar or is_half_cadence or is_apex or breathe:
                 variant = MotifVariant(motif=motif)
             else:
-                variant = vary_motif(motif, rng)
+                variant = vary_motif(motif, rng, shape=shape)
             # Anacrusis: when the next bar exists, the pickup leads into
             # it from the pickup chord's tones — the one nearest the note
             # it follows, skipping any candidate that would sound a close
@@ -1016,7 +1024,7 @@ def _generate_section(
                 position=bar_pos,
                 ticks_per_bar=ticks_per_bar,
                 seed_for_variation=seed_for_variation + bar_index * 101,
-                mood=mood,
+                shape=shape,
                 is_final_bar=is_final_bar,
                 half_cadence=is_half_cadence,
                 apex=is_apex,
@@ -1042,7 +1050,7 @@ def _generate_section(
     # melody note and the next bar's first share the pitch and touch,
     # the first is marked tied (the performance layer plays them as one
     # sound; the engraving shows the tie).
-    tie_probability = TIE_PROBABILITY.get(mood, 0.25)
+    tie_probability = shape.tie_probability
     for index, (a, b) in enumerate(pairwise(melody_notes)):
         if (
             not a.tie
@@ -1169,7 +1177,9 @@ def _active_harmony_voices(
     return voices
 
 
-def _melody_band_for(*, melody: str, bed: str | None) -> MelodyBand:
+def _melody_band_for(
+    *, melody: str, bed: str | None, band_semitones: int = LINE_BAND_SEMITONES
+) -> MelodyBand:
     """The window the tune is written in, given what plays underneath it.
 
     An instrument's own band is where its melody would go if it played
@@ -1194,7 +1204,7 @@ def _melody_band_for(*, melody: str, bed: str | None) -> MelodyBand:
     With no accompaniment voice the tune sits in its instrument's own
     band, which is what a solo piece is.
     """
-    band = melody_band(melody)
+    band = melody_band(melody, band_semitones=band_semitones)
     if bed is None:
         return band
     window = bed_window(bed)
@@ -1202,9 +1212,9 @@ def _melody_band_for(*, melody: str, bed: str | None) -> MelodyBand:
     if floor <= band.low_midi:
         return band
     span = range_for(melody)
-    if floor > span.tessitura_high - LINE_BAND_SEMITONES:
+    if floor > span.tessitura_high - band_semitones:
         return band
-    return MelodyBand(low_midi=floor, high_midi=floor + LINE_BAND_SEMITONES)
+    return MelodyBand(low_midi=floor, high_midi=floor + band_semitones)
 
 
 def _octaves_in_window(pitch: int, window: MelodyBand) -> list[int]:
@@ -1743,6 +1753,7 @@ def _answer_leaps(
     *,
     fixed_tail: int = 0,
     remainders: tuple[int, ...] = (0, 2, 4),
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> list[int]:
     """Answer every leap in a bar's degree walk with a turn back.
 
@@ -1788,7 +1799,7 @@ def _answer_leaps(
     index = 0
     while index + 1 < len(out):
         leap = out[index + 1] - out[index]
-        if abs(leap) < LEAP_DEGREES:
+        if abs(leap) < shape.leap_degrees:
             index += 1
             continue
         back = -1 if leap > 0 else 1
@@ -1831,6 +1842,7 @@ def _licit_line(
     *,
     remainders: tuple[int, ...],
     fixed_tail: int = 0,
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> list[int]:
     """Reshape a walk so every non-chord tone is a passing or neighbour tone.
 
@@ -1874,13 +1886,17 @@ def _licit_line(
         upward = gap > 0 if gap else _was_rising(out, index)
         far = out[index + 1] if index + 1 < count else None
         if index <= last_mutable:
-            out[index] = _bent_step(out[index - 1], upward, far)
+            out[index] = _bent_step(out[index - 1], upward, far, shape=shape)
         elif index - 1 <= last_mutable:
-            out[index - 1] = _bent_step(out[index], not upward, out[index - 2] if index > 1 else None)
+            out[index - 1] = _bent_step(
+                out[index], not upward, out[index - 2] if index > 1 else None, shape=shape
+            )
     return out
 
 
-def _bent_step(anchor: int, upward: bool, far: int | None) -> int:
+def _bent_step(
+    anchor: int, upward: bool, far: int | None, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE
+) -> int:
     """One degree from `anchor`, in the direction the line was going.
 
     A bend is the licence's repair, and a leap is the fault that licence
@@ -1895,7 +1911,7 @@ def _bent_step(anchor: int, upward: bool, far: int | None) -> int:
     if far is not None:
         ordered = (up, down) if upward else (down, up)
         for step in ordered:
-            if abs(far - step) <= CHORD_TONE_DEGREES:
+            if abs(far - step) <= shape.chord_tone_degrees:
                 return step
         if abs(far - ordered[1]) < abs(far - ordered[0]):
             return ordered[1]
@@ -1917,6 +1933,7 @@ def _snap_to_chord(
     tone_count: int,
     prefer_up: bool,
     neighbours: tuple[int, ...] = (),
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> int:
     """The bar's nearest chord degree to `degree`, preferring one direction.
 
@@ -1955,7 +1972,7 @@ def _snap_to_chord(
         for neighbour in neighbours:
             gap = abs(neighbour - candidate)
             if neighbour % 7 in remainders:
-                leapt += gap >= LEAP_DEGREES
+                leapt += gap >= shape.leap_degrees
             else:
                 stranded += gap != 1
         return stranded, leapt
@@ -2002,6 +2019,7 @@ def _legal_slots(
     chord_root: int,
     scale: tuple[int, ...],
     avoid_pcs: frozenset[int] = frozenset(),
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> list[BarSlot]:
     """Snap every slot the passing-tone licence cannot cover to a chord tone.
 
@@ -2087,6 +2105,7 @@ def _legal_slots(
                     tone_count=tone_count,
                     prefer_up=prefer_up,
                     neighbours=neighbours,
+                    shape=shape,
                 )
             changed = True
     return [
@@ -2101,6 +2120,7 @@ def _walk_shape(
     bar_ticks: int,
     tone_count: int,
     closing_degree: int | None = None,
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> tuple[list[int], list[int]]:
     """Walk one bar's motif: scale degrees and durations, in slot order.
 
@@ -2143,7 +2163,7 @@ def _walk_shape(
             break
         # The sequence advances one chord tone per replay, so each replay
         # starts on the next tone of the chord.
-        degree += CHORD_TONE_DEGREES
+        degree += shape.chord_tone_degrees
     if not degrees:
         return degrees, durations
     if closing_degree is not None:
@@ -2155,8 +2175,10 @@ def _walk_shape(
                 _bound_walk(degrees, degrees[0]),
                 fixed_tail=1 if closing_degree is not None else 0,
                 remainders=remainders,
+                shape=shape,
             ),
             remainders=remainders,
+            shape=shape,
         ),
         durations,
     )
@@ -2167,6 +2189,7 @@ def _closing_tone(
     offset: int,
     *,
     half_cadence: bool,
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
 ) -> int | None:
     """The degree a bar closes on when its walk starts `offset` away.
 
@@ -2180,7 +2203,7 @@ def _closing_tone(
     that has no closing degree, and the caller drops it.
     """
     degree = closing_degree + offset
-    allowed = (0,) if half_cadence else (0, CHORD_TONE_DEGREES)
+    allowed = (0,) if half_cadence else (0, shape.chord_tone_degrees)
     return degree if degree % 7 in allowed else None
 
 
@@ -2256,7 +2279,9 @@ def _land_on_chord(
     return [*degrees, landing], [*durations[:-1], durations[-1] - half, half]
 
 
-def _start_offsets(anchor: int, tone_count: int) -> tuple[int, ...]:
+def _start_offsets(
+    anchor: int, tone_count: int, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE
+) -> tuple[int, ...]:
     """Every chord tone a bar could be restated on, the drawn one first.
 
     A bar is one line on one chord, and every tone of that chord is a
@@ -2272,11 +2297,13 @@ def _start_offsets(anchor: int, tone_count: int) -> tuple[int, ...]:
     nothing else fits better; the rest of the lattice is what lets a bar
     come in by step when its own register would have made it leap.
     """
-    drawn = CHORD_TONE_DEGREES * anchor
+    drawn = shape.chord_tone_degrees * anchor
     return (drawn, *(o for o in _chord_lattice(anchor, tone_count) if o != drawn))
 
 
-def _apex_starts(anchor: int, tone_count: int) -> tuple[int, ...]:
+def _apex_starts(
+    anchor: int, tone_count: int, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE
+) -> tuple[int, ...]:
     """The higher tones a section's peak bar may be restated on.
 
     The apex is the one bar whose register is chosen rather than fitted,
@@ -2292,7 +2319,7 @@ def _apex_starts(anchor: int, tone_count: int) -> tuple[int, ...]:
     anchor and strictly inside the octave: never empty (any six
     consecutive degrees hold two tones of a triad), and never a jump.
     """
-    drawn = CHORD_TONE_DEGREES * anchor
+    drawn = shape.chord_tone_degrees * anchor
     return tuple(o for o in _chord_lattice(anchor, tone_count) if drawn < o < drawn + 7)
 
 
@@ -2558,6 +2585,27 @@ def _pickup_pitch(
     return steps[0] if steps else None
 
 
+def _final_closing_degree(
+    rng: random.Random, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE
+) -> int:
+    """The degree the piece's last bar lands on: the tonic, or its third.
+
+    Home twice as often as its third, because a resolution onto the third
+    is a colour and one onto the tonic is an ending. Which third is not a
+    constant: the chord tone away from the tonic is the plan's, so a plan
+    that states a different chord spelling states its own close.
+
+    Named rather than written inline so the read is a thing a test can
+    hold. It is the only reader of `chord_tone_degrees` that is not a
+    helper taking a shape, and an inline expression sharing its field with
+    six other sites cannot be shown to read the plan at all — reverting
+    this one to the constant leaves every test green. The probability
+    itself stays a literal: it is a musical decision, but not one the
+    quality thresholds name, which is the rule the plan's scope follows.
+    """
+    return 0 if rng.random() < 0.6 else shape.chord_tone_degrees
+
+
 def _melody_bar(
     *,
     band: MelodyBand,
@@ -2573,7 +2621,7 @@ def _melody_bar(
     position: float,
     ticks_per_bar: int,
     seed_for_variation: int,
-    mood: str,
+    shape: MelodyShape = DEFAULT_MELODY_SHAPE,
     is_final_bar: bool = False,
     half_cadence: bool = False,
     apex: bool = False,
@@ -2590,7 +2638,7 @@ def _melody_bar(
     template. When `repeat` is set (the sequence operation) the motif
     keeps replaying from the top, the walk advancing one chord tone per
     cycle, until the bar is full. The bar's slots are then re-voiced
-    through the mood's rhythm library (`motif.apply_rhythm`): dotted
+    through the melody's rhythm library (`motif.apply_rhythm`): dotted
     figures, 16th subdivisions, ties, which move durations and never
     pitches.
 
@@ -2623,8 +2671,7 @@ def _melody_bar(
     # because the rhythm library re-voices the bar's slots first.
     closing_degree: int | None = None
     if is_final_bar:
-        # The piece ends at home: tonic or its third.
-        closing_degree = 0 if rng.random() < 0.6 else CHORD_TONE_DEGREES
+        closing_degree = _final_closing_degree(rng, shape=shape)
     elif half_cadence:
         closing_degree = 0
 
@@ -2638,6 +2685,7 @@ def _melody_bar(
         bar_ticks=bar_ticks,
         tone_count=len(chord_tones),
         closing_degree=closing_degree,
+        shape=shape,
     )
     degrees, durations = _land_on_chord(
         degrees,
@@ -2658,7 +2706,7 @@ def _melody_bar(
         rhythm_slots = apply_rhythm(
             slots,
             rng=rng,
-            mood=mood,
+            weights=shape.rhythm_weights,
             remainders=chord_tone_degrees(len(chord_tones)),
         )
 
@@ -2688,11 +2736,14 @@ def _melody_bar(
     # licence pass with the bass's pitch classes to steer around, and
     # that pass rewrites the line, so a bar reaches it only when nothing
     # else can be done.
-    drawn = CHORD_TONE_DEGREES * anchor
+    lattice = _start_offsets(anchor, len(chord_tones), shape=shape)
+    # The drawn start is the lattice's first offset, and it is kept as the
+    # fallback below: a bar whose every start is barred by the closing
+    # gesture is restated where it was drawn. Read from the lattice rather
+    # than recomputed, so the plan's chord tone is read in one place.
+    drawn = lattice[0]
     starts = (
-        _apex_starts(anchor, len(chord_tones))
-        if apex
-        else _start_offsets(anchor, len(chord_tones))
+        _apex_starts(anchor, len(chord_tones), shape=shape) if apex else lattice
     )
     if closing_degree is not None:
         # The closing gesture is a chord tone of the bar, and the bar it
@@ -2706,7 +2757,10 @@ def _melody_bar(
         starts = tuple(
             offset
             for offset in starts
-            if _closing_tone(closing_degree, offset, half_cadence=half_cadence) is not None
+            if _closing_tone(
+                closing_degree, offset, half_cadence=half_cadence, shape=shape
+            )
+            is not None
         ) or (drawn,)
     bass_pcs = frozenset(pitch % 12 for pitch in bass_pitches)
     chord_pcs = frozenset((chord_root + tone) % 12 for tone in chord_tones)
@@ -2733,7 +2787,9 @@ def _melody_bar(
         closing = (
             None
             if closing_degree is None
-            else _closing_tone(closing_degree, start, half_cadence=half_cadence)
+            else _closing_tone(
+                closing_degree, start, half_cadence=half_cadence, shape=shape
+            )
         )
         degrees = [
             degree + start
@@ -2768,6 +2824,7 @@ def _melody_bar(
             [slot[2] for slot in closed],
             remainders=remainders,
             fixed_tail=1 if closing_degree is not None else 0,
+            shape=shape,
         )
         candidate = _legal_slots(
             _hold_tied_pairs(
@@ -2780,6 +2837,7 @@ def _melody_bar(
             chord_root=chord_root,
             scale=scale,
             avoid_pcs=avoid_pcs,
+            shape=shape,
         )
         pitches = [
             scale_walk(degree, chord_root, scale) for _o, _d, degree, _t in candidate
@@ -3062,15 +3120,6 @@ GHOST_NOTE_VELOCITY_RANGE: tuple[int, int] = (20, 35)
 # CC11 (expression) rides the dynamic arch so phrases swell and relax
 # even inside a held chord. 96 is near-full expression at the arch peak.
 EXPRESSION_BASE: int = 96
-
-# Cross-bar ties: when two adjacent bars share a pitch at the boundary,
-# the first is marked tied with this probability (calmer moods hold
-# more; electrifying keeps its attacks).
-TIE_PROBABILITY: dict[str, float] = {
-    "electrifying": 0.18,
-    "calming": 0.28,
-    "sleep": 0.35,
-}
 
 # Arrangement arc (S8): long pieces lift their final repetition a whole
 # step (the piece ends in the new key — the lift IS the ending), drop

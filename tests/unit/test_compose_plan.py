@@ -110,6 +110,12 @@ _MUTATIONS: dict[str, Any] = {
         ("truncate", 0.10),
     ),
     "rhythm_weights": (("straight", 0.40), ("dotted", 0.30), ("tie", 0.30)),
+    # The base is calming, whose ties are drawn at 0.28, so this is a
+    # change and not a restatement of the value the mood already holds.
+    "tie_probability": 0.40,
+    # Apex before the halfway point rather than after it: the base's 0.6 is
+    # the late peak, and a mutation has to move the phrase's shape.
+    "apex_position": 0.45,
     "bass_figures": tuple(reversed(_base().bass_figures)),
     "cadence_degree": 4,
     # The base is calming, whose cadence is a plain triad, so `True` is the
@@ -366,6 +372,10 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"chord_tone_degrees": 0}, "positive"),
             ({"motif_operation_weights": ()}, "at least one entry"),
             ({"rhythm_weights": ()}, "at least one entry"),
+            ({"tie_probability": 1.5}, "probability"),
+            ({"tie_probability": -0.1}, "probability"),
+            ({"apex_position": 0.0}, "fraction of the section"),
+            ({"apex_position": 1.0}, "fraction of the section"),
             (
                 {"motif_operation_weights": (("repeat", 0.5), ("repeat", 0.5))},
                 "twice",

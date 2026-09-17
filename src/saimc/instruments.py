@@ -209,10 +209,10 @@ def range_for(instrument: str) -> InstrumentRange:
     return INSTRUMENT_RANGES[instrument]
 
 
-def melody_band(instrument: str) -> MelodyBand:
+def melody_band(instrument: str, *, band_semitones: int = LINE_BAND_SEMITONES) -> MelodyBand:
     """The window this instrument's melody is placed inside.
 
-    `LINE_BAND_SEMITONES` wide around the middle of the tessitura, then
+    `band_semitones` wide around the middle of the tessitura, then
     moved — not shrunk — to fit the compass, so the band can never ask for
     a note the range gate would reject and a line still has the twelfth
     the walk needs. An instrument whose whole compass is narrower than
@@ -236,14 +236,18 @@ def melody_band(instrument: str) -> MelodyBand:
     `bed_window` instead — the whole comfortable range — because a pad is
     a texture rather than a line, and because the wider window is what
     gives its pitch classes somewhere to fold to.
+
+    The width is an argument because it is a musical decision a plan
+    carries. Widening it past the tessitura it is centred in is legal and
+    simply gives the clamp more to do, so the invariant above still holds.
     """
     span = range_for(instrument)
-    if span.high_midi - span.low_midi < LINE_BAND_SEMITONES:
+    if span.high_midi - span.low_midi < band_semitones:
         return MelodyBand(low_midi=span.low_midi, high_midi=span.high_midi)
     centre = (span.tessitura_low + span.tessitura_high) // 2
-    low = centre - LINE_BAND_SEMITONES // 2
-    low = min(max(low, span.low_midi), span.high_midi - LINE_BAND_SEMITONES)
-    return MelodyBand(low_midi=low, high_midi=low + LINE_BAND_SEMITONES)
+    low = centre - band_semitones // 2
+    low = min(max(low, span.low_midi), span.high_midi - band_semitones)
+    return MelodyBand(low_midi=low, high_midi=low + band_semitones)
 
 
 def bed_window(instrument: str) -> MelodyBand:

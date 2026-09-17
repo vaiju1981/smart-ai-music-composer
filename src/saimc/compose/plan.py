@@ -29,11 +29,12 @@ value in a module `plan.py` is allowed to import — `motif.py`,
 ones `saimc.quality.QUALITY_THRESHOLDS` names in its `hint` fields, which
 are precisely the knobs a critic loop can move. Constants that happen to
 live in `engine.py` (the harmony velocities, the register clearances, the
-tie probability, the modulation offset) join as their layer is wired,
-because `engine.py` imports this module and the move has to go the other
-way. Derivation constants and internal search parameters are left out on
-purpose: `BASS_HIGH_MIDI`, `_WALK_REACH_DEGREES`, `_RANK_RUBBING` and
-their kin are not musical decisions anyone has an opinion about.
+modulation offset) either move to the module that owns the value or join
+here as their layer is wired, because `engine.py` imports this module and
+the import cannot go the other way. Derivation constants and internal
+search parameters are left out on purpose: `BASS_HIGH_MIDI`,
+`_WALK_REACH_DEGREES`, `_RANK_RUBBING` and their kin are not musical
+decisions anyone has an opinion about.
 """
 
 from __future__ import annotations
@@ -68,15 +69,19 @@ from saimc.compose.forms import (
 from saimc.compose.motif import (
     BASS_FIGURES,
     CHORD_TONE_DEGREES,
+    DEFAULT_APEX_POSITION,
     DEFAULT_BASS_FIGURES,
     DEFAULT_RHYTHM_WEIGHTS,
+    DEFAULT_TIE_PROBABILITY,
     LEAP_DEGREES,
     MAX_MOTIF_SPAN_DEGREES,
     MOTIF_OPERATION_WEIGHTS,
     RHYTHM_WEIGHTS,
     STEP_CHOICES,
     STEP_WEIGHTS,
+    TIE_PROBABILITY,
     BassFigure,
+    MelodyShape,
 )
 from saimc.compose.percussion import (
     DRUM_STYLES,
@@ -161,6 +166,31 @@ class CompositionPlan:
     left over is the ornament's, so these need not sum to 1."""
     rhythm_weights: tuple[tuple[str, float], ...]
     """The mood's rhythmic figures and how often each is chosen."""
+    tie_probability: float
+    """How readily a repeated pitch is tied across a bar line.
+
+    Cross-bar ties were a mood lookup inside `_generate_section`
+    (`TIE_PROBABILITY.get(mood, 0.25)`) — real musical values, but not a
+    value a plan could state. The table now lives in `motif.py` and the
+    plan carries the resolved probability.
+    """
+    apex_position: float
+    """Where the section's apex bar sits, as a fraction of its bars.
+
+    It was the literal `0.6` in `_generate_section`'s apex placement.
+    The bar is clamped so the apex can never coincide with the section's
+    final bar, which is why the plan bounds this below 1.0 rather than
+    leaving the clamp to absorb it.
+    """
+    line_band_semitones: int
+    """The register window a melody line is written inside. Wide enough to
+    hold a tune, narrow enough to leave the accompaniment its own room.
+
+    It belongs to the melody rather than to the voices: it is the window
+    the *tune* is written in, not a harmony voice's placement, and the
+    bed settles under it (`_settle_harmony_register`) rather than the
+    other way round.
+    """
 
     # --- Harmony --------------------------------------------------------
     bass_figures: tuple[BassFigure, ...]
@@ -221,12 +251,7 @@ class CompositionPlan:
     percussion_rest_section: int
     """The section a long piece's kit rests for, counting from zero."""
 
-    # --- Voices ---------------------------------------------------------
-    line_band_semitones: int
-    """The register window a melody line is written inside. Wide enough to
-    hold a tune, narrow enough to leave the accompaniment its own room."""
-
-    # --- Percussion -----------------------------------------------------
+    # --- Percussion ------------------------------------------------------
     drum_style_name: str | None
     """The chosen kit's name, or None for a piece with no drums (every
     meter but 4/4, 3/4 and 6/8, and the percussion voice is then skipped)."""
@@ -264,6 +289,21 @@ class CompositionPlan:
         _require(self.chord_tone_degrees > 0, "chord_tone_degrees must be positive")
         _weight_pairs("motif_operation_weights", self.motif_operation_weights)
         _weight_pairs("rhythm_weights", self.rhythm_weights)
+        _require(
+            0.0 <= self.tie_probability <= 1.0,
+            "tie_probability is a probability, so it must sit in [0, 1]; "
+            f"got {self.tie_probability}",
+        )
+        # The apex bar is clamped to the section's penultimate bar, so a
+        # position of 1.0 would not move the apex past the final bar — it
+        # would silently land it where the clamp already put it. The bound
+        # refuses the value that cannot mean anything rather than
+        # accepting it and behaving as if it were smaller.
+        _require(
+            0.0 < self.apex_position < 1.0,
+            "apex_position is a fraction of the section, and the apex may "
+            f"not be its final bar, so it must sit in (0, 1); got {self.apex_position}",
+        )
 
         _require(bool(self.bass_figures), "bass_figures must carry at least one figure")
         for figure in self.bass_figures:
@@ -380,6 +420,9 @@ class CompositionPlan:
             "rhythm_weights": [
                 {"figure": name, "weight": weight} for name, weight in self.rhythm_weights
             ],
+            "tie_probability": self.tie_probability,
+            "apex_position": self.apex_position,
+            "line_band_semitones": self.line_band_semitones,
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
             "cadence_degree": self.cadence_degree,
             "cadence_seventh": self.cadence_seventh,
@@ -397,7 +440,6 @@ class CompositionPlan:
             "section_energy_middle": self.section_energy_middle,
             "harmony_texture_cycle": list(self.harmony_texture_cycle),
             "percussion_rest_section": self.percussion_rest_section,
-            "line_band_semitones": self.line_band_semitones,
             "drum_style_name": self.drum_style_name,
             "rotation_cycle": list(self.rotation_cycle),
             "percussion_velocity_scale": self.percussion_velocity_scale,
@@ -435,6 +477,28 @@ class CompositionPlan:
             texture_cycle=self.harmony_texture_cycle,
         )
 
+    def melody_shape(self) -> MelodyShape:
+        """The melody layer, as the struct `motif.py` and `engine.py` read.
+
+        The third one-way bridge. The melody is the layer with the most
+        readers and the deepest call stack — `_draw_step`, `vary_motif`,
+        `apply_rhythm`, `_bent_step`, `_walk_shape` and their kin are
+        leaves that take no plan — so the seven values they share travel
+        as one argument rather than seven.
+        """
+        return MelodyShape(
+            step_choices=self.step_choices,
+            step_weights=self.step_weights,
+            max_motif_span_degrees=self.max_motif_span_degrees,
+            leap_degrees=self.leap_degrees,
+            chord_tone_degrees=self.chord_tone_degrees,
+            motif_operation_weights=self.motif_operation_weights,
+            rhythm_weights=self.rhythm_weights,
+            tie_probability=self.tie_probability,
+            apex_position=self.apex_position,
+            line_band_semitones=self.line_band_semitones,
+        )
+
 
 def _named_weights(table: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
     """A mood's weight table as the ordered pairs a plan stores."""
@@ -464,6 +528,9 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         chord_tone_degrees=CHORD_TONE_DEGREES,
         motif_operation_weights=MOTIF_OPERATION_WEIGHTS,
         rhythm_weights=_named_weights(RHYTHM_WEIGHTS.get(mood, DEFAULT_RHYTHM_WEIGHTS)),
+        tie_probability=TIE_PROBABILITY.get(mood, DEFAULT_TIE_PROBABILITY),
+        apex_position=DEFAULT_APEX_POSITION,
+        line_band_semitones=LINE_BAND_SEMITONES,
         bass_figures=BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES),
         cadence_degree=cadence_degree_for(mood),
         cadence_seventh=cadence_seventh_for(mood),
@@ -481,7 +548,6 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         section_energy_middle=SECTION_VELOCITY_MIDDLE,
         harmony_texture_cycle=HARMONY_TEXTURE_CYCLE,
         percussion_rest_section=PERCUSSION_REST_SECTION,
-        line_band_semitones=LINE_BAND_SEMITONES,
         drum_style_name=style_name_for(mood, spec.time_signature.value),
         rotation_cycle=ROTATION_CYCLE,
         percussion_velocity_scale=MOOD_VELOCITY_SCALE.get(mood, 1.0),

@@ -26,6 +26,7 @@ seam case fails rather than quietly going uncovered.
 
 from __future__ import annotations
 
+import random
 from dataclasses import fields, replace
 from typing import Any
 
@@ -37,15 +38,45 @@ from saimc.compose.duration import (
     ArrangementKnobs,
     bar_ticks,
 )
-from saimc.compose.engine import CompositionEngineError, EngineErrorCode, EngineOutput, compose
-from saimc.compose.motif import BASS_FIGURES
+from saimc.compose.engine import (
+    CompositionEngineError,
+    EngineErrorCode,
+    EngineOutput,
+    _answer_leaps,
+    _apex_starts,
+    _bent_step,
+    _closing_tone,
+    _final_closing_degree,
+    _snap_to_chord,
+    _start_offsets,
+    _walk_shape,
+    compose,
+)
+from saimc.compose.motif import (
+    BASS_FIGURES,
+    DEFAULT_MELODY_SHAPE,
+    RHYTHM_WEIGHTS,
+    MelodyShape,
+    MotifCell,
+    MotifVariant,
+    _apply_operation,
+    _draw_step,
+    recover_leaps,
+    vary_motif,
+)
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
     PlanError,
     default_plan,
 )
-from saimc.compose.score import VOICE_BASS, VOICE_HARMONY, VOICE_MELODY, VOICE_PERCUSSION
+from saimc.compose.score import (
+    PPQ,
+    VOICE_BASS,
+    VOICE_HARMONY,
+    VOICE_MELODY,
+    VOICE_PERCUSSION,
+)
 from saimc.spec import CompositionSpec
 
 _SPEC = CompositionSpec(mood="calming", duration_seconds=180, seed=11)
@@ -755,6 +786,297 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
                 "an octave away is the same key, which is why an octave is the "
                 "bound the plan states"
             )
+
+
+_MELODY_KNOBS: dict[str, Any] = {
+    # 0 and 1 swapped, so the two most-weighted steps trade places. A
+    # permutation rather than a shortened table: the plan requires one
+    # weight per choice, and a table of another length would be refused
+    # before the hash was ever taken.
+    "step_choices": (-4, -3, -2, -1, 1, 0, 2, 3, 4),
+    # The same shape of table with the two commonest steps flattened: the
+    # draw still walks by step most of the time, and lands elsewhere.
+    "step_weights": (5, 3, 10, 28, 6, 28, 10, 5, 3),
+    # Narrower than any phrase the renderer writes, so the walk folds
+    # where the default let it climb. Four rather than five: the span only
+    # binds once a walk has already left the middle of the vocabulary, and
+    # at five this piece's own draws never leave it — a lower span is the
+    # same knob, past the threshold where it is observable.
+    "max_motif_span_degrees": 4,
+    # A fourth upwards counts as a leap, so the answering pass has more
+    # to answer.
+    "leap_degrees": 4,
+    # Transposition moves the anchor a fourth instead of a third, and
+    # every chord-tone snap looks one degree further.
+    "chord_tone_degrees": 3,
+    # Another mood's figures, which dress the same pitches in a
+    # different rhythm.
+    "rhythm_weights": tuple(RHYTHM_WEIGHTS["electrifying"].items()),
+    # The operation draw all but forced onto inversion, which mirrors the
+    # contour rather than restating it.
+    "motif_operation_weights": (
+        ("repeat", 0.05),
+        ("transpose", 0.05),
+        ("sequence", 0.05),
+        ("invert", 0.80),
+        ("truncate", 0.05),
+    ),
+    # Ties nearly always, where calming holds them a little over a quarter
+    # of the time.
+    "tie_probability": 0.9,
+    # The apex early in the section rather than late.
+    "apex_position": 0.3,
+    # A narrower line band, which the instrument's tessitura can hold.
+    "line_band_semitones": 17,
+}
+
+_MELODY_FIELDS = frozenset(
+    {
+        "step_choices",
+        "step_weights",
+        "max_motif_span_degrees",
+        "leap_degrees",
+        "chord_tone_degrees",
+        "motif_operation_weights",
+        "rhythm_weights",
+        "tie_probability",
+        "apex_position",
+        "line_band_semitones",
+    }
+)
+"""The plan's melody group, which reads these ten — the vocabulary, the
+phrase shape, and the register window the line is written in."""
+
+
+class TestTheMelodyLayerIsLive:
+    """The vocabulary, the phrase shape and the line's register window.
+
+    Every one of these was a module constant or an inline literal before
+    B5: the step table and the motif's span in `motif.py`, the tie
+    probability and the apex fraction inline in `_generate_section`, the
+    rhythm figures looked up by mood inside `_melody_bar`, and the line
+    band from `instruments.LINE_BAND_SEMITONES`.
+    """
+
+    def test_every_melody_knob_has_a_case(self) -> None:
+        assert set(_MELODY_KNOBS) == _MELODY_FIELDS
+
+    @pytest.mark.parametrize("knob", sorted(_MELODY_KNOBS))
+    def test_a_non_default_plan_moves_the_output(self, knob: str) -> None:
+        plan = replace(default_plan(_SPEC), **{knob: _MELODY_KNOBS[knob]})
+        moved = _fingerprint(compose(_SPEC, plan=plan)) != _DEFAULT_FINGERPRINT
+        assert moved, (
+            f"{knob} is carried by the plan but does not reach the engine: "
+            "composing under it produced the same score, performance plan and "
+            "arrangement as the default. The seam is dead for this knob."
+        )
+
+    def test_the_cases_are_not_all_one_knob_in_disguise(self) -> None:
+        base = default_plan(_SPEC)
+        for knob, value in _MELODY_KNOBS.items():
+            assert getattr(base, knob) != value, knob
+
+
+_TWO_CELL_MOTIF = (
+    MotifCell(step=0, length_ticks=PPQ),
+    MotifCell(step=2, length_ticks=PPQ),
+)
+"""The motif the operation cases are applied to."""
+
+_REPEATING_VARIANT = MotifVariant(
+    motif=(MotifCell(step=0, length_ticks=PPQ), MotifCell(step=1, length_ticks=PPQ)),
+    repeat=True,
+)
+"""A sequence — the one walk that reads `chord_tone_degrees` between replays."""
+
+_FLAT_OPERATION_WEIGHTS = (
+    ("repeat", 0.05),
+    ("transpose", 0.05),
+    ("sequence", 0.05),
+    ("invert", 0.80),
+    ("truncate", 0.05),
+)
+
+
+def _drawn_steps(shape: MelodyShape, *, degree: int = 0) -> tuple[int, ...]:
+    """Thirty draws of `_draw_step`, which is where the step table is read."""
+    return tuple(_draw_step(random.Random(seed), degree, shape=shape) for seed in range(30))
+
+
+_MELODY_SITES: dict[str, tuple[str, Any, Any]] = {
+    # One case per *site*, not per field. The parametrised class above
+    # cannot separate these: six of the sites below read the same
+    # `chord_tone_degrees` and three the same `leap_degrees`, so a plan
+    # that mutates either moves the whole fingerprint whichever site is
+    # reading, and a helper that had gone back to the module constant
+    # would leave the layer test green. Each case therefore calls the
+    # reader directly, with a shape mutated in exactly the field that
+    # reader reads, and asserts its own answer moves.
+    "motif._draw_step draws from the plan's step table": (
+        "step_choices",
+        (-4, -3, -2, -1, 1, 0, 2, 3, 4),
+        _drawn_steps,
+    ),
+    "motif._draw_step weights the draw by the plan's weights": (
+        "step_weights",
+        (1,) * 9,
+        _drawn_steps,
+    ),
+    "motif._draw_step stops at the plan's span": (
+        # Walked from degree 2, where a span of 2 and a span of 8 stop
+        # admitting the same steps — the knob only binds away from the
+        # middle of the vocabulary.
+        "max_motif_span_degrees",
+        2,
+        lambda shape: _drawn_steps(shape, degree=2),
+    ),
+    "motif.recover_leaps answers at the plan's leap size": (
+        "leap_degrees",
+        4,
+        lambda shape: recover_leaps([0, 3, 0], shape=shape),
+    ),
+    "motif.vary_motif draws operations by the plan's weights": (
+        "motif_operation_weights",
+        _FLAT_OPERATION_WEIGHTS,
+        lambda shape: vary_motif(_TWO_CELL_MOTIF, random.Random(0), shape=shape),
+    ),
+    "motif._apply_operation transposes by the plan's chord tone": (
+        "chord_tone_degrees",
+        4,
+        lambda shape: _apply_operation(
+            _TWO_CELL_MOTIF, "transpose", random.Random(0), shape=shape
+        ),
+    ),
+    "engine._answer_leaps answers at the plan's leap size": (
+        "leap_degrees",
+        4,
+        lambda shape: _answer_leaps([0, 3, 0], shape=shape),
+    ),
+    "engine._bent_step bends within the plan's chord tone": (
+        # A wide chord tone, because with the default's two both of this
+        # bend's candidates fail the test and the fallback happens to pick
+        # the same direction — so a near-default value would be a case
+        # that could not have failed.
+        "chord_tone_degrees",
+        5,
+        lambda shape: _bent_step(0, True, -4, shape=shape),
+    ),
+    "engine._snap_to_chord weighs leaps at the plan's size": (
+        # The read is a tie-break among equally costly candidates, so the
+        # case needs a neighbour a leap of three away from one candidate
+        # and of five from the other — which is where the two leap sizes
+        # part company.
+        "leap_degrees",
+        4,
+        lambda shape: _snap_to_chord(
+            1, tone_count=3, prefer_up=True, neighbours=(-3,), shape=shape
+        ),
+    ),
+    "engine._walk_shape advances by the plan's chord tone": (
+        "chord_tone_degrees",
+        3,
+        lambda shape: _walk_shape(
+            _REPEATING_VARIANT, bar_ticks=4 * PPQ, tone_count=4, shape=shape
+        )[0],
+    ),
+    "engine._closing_tone closes on the plan's chord tone": (
+        "chord_tone_degrees",
+        3,
+        lambda shape: _closing_tone(2, 0, half_cadence=False, shape=shape),
+    ),
+    "engine._start_offsets restates by the plan's chord tone": (
+        "chord_tone_degrees",
+        3,
+        lambda shape: _start_offsets(1, 4, shape=shape),
+    ),
+    "engine._apex_starts lifts by the plan's chord tone": (
+        # Anchored at 2, where a third and a fourth put the drawn tone on
+        # opposite sides of the lattice and the lift is a different set.
+        "chord_tone_degrees",
+        3,
+        lambda shape: _apex_starts(2, 4, shape=shape),
+    ),
+    "engine._final_closing_degree closes on the plan's chord tone": (
+        # Seed 0 draws past the two-in-three the tonic gets, so this is the
+        # branch that reads the plan at all.
+        "chord_tone_degrees",
+        3,
+        lambda shape: _final_closing_degree(random.Random(0), shape=shape),
+    ),
+}
+"""One case per place the melody layer reads its shape, and why that case
+is the one that can see it.
+
+Every value here is a legal one — a caller may build a `MelodyShape` by
+hand and the plan checks its own — and every case was checked to move its
+reader's answer before it was written down: a case whose two shapes agree
+would be a guard that cannot fail.
+
+`_melody_bar`'s own inline reads are absent because they are gone. The
+drawn start now comes from the lattice `_start_offsets` builds, and the
+final bar's closing degree from `_final_closing_degree` — both because an
+inline expression reading a field that six helpers also read cannot be
+shown to read the plan: reverting it to the constant leaves every other
+case green, which was verified by firing exactly that sabotage.
+"""
+
+
+class TestTheMelodyVocabularyIsReadAtEachSite:
+    """Proof that the melody layer reads its vocabulary where it reads it.
+
+    The fingerprint class above proves the plan reaches the music. This one
+    proves *which read* does it, which a fingerprint cannot: the melody
+    layer reads its shape in thirteen places across two modules, six of
+    them reading the same field, so a single plan mutation moves everything
+    and attributes nothing.
+    """
+
+    @pytest.mark.parametrize("site", sorted(_MELODY_SITES))
+    def test_the_reader_reads_the_shape_it_is_handed(self, site: str) -> None:
+        field, value, call = _MELODY_SITES[site]
+        default = call(DEFAULT_MELODY_SHAPE)
+        changed = call(replace(DEFAULT_MELODY_SHAPE, **{field: value}))
+        assert changed != default, (
+            f"{site}: the reader's answer did not move when `{field}` did, so it "
+            "is reading the module constant rather than the shape it was handed"
+        )
+
+    def test_the_cases_are_not_all_one_reader_in_disguise(self) -> None:
+        """Each case has to be a mutation of the field it names, of the
+        reader it names, and nothing else.
+
+        Two ways this could quietly stop covering what it says. A value
+        that is the field's own default would leave the case asserting on
+        two identical shapes; and two cases reaching the same reader
+        through the same field would be the same guard written twice. A
+        reader may appear more than once — `_draw_step` reads three of the
+        plan's fields — but not for the same one.
+
+        The six chord-tone cases deliberately take different values — 3,
+        4 and 5 — because each site needs the value that makes *it* move:
+        `_bent_step`'s read only surfaces past a wide chord tone, and the
+        lattice helpers need the drawn tone on the other side of the
+        octave. One value for all six would be a tidier table and a worse
+        set of guards.
+        """
+        covered: set[tuple[str, str]] = set()
+        for site, (field, value, _call) in _MELODY_SITES.items():
+            assert getattr(DEFAULT_MELODY_SHAPE, field) != value, site
+            pair = (site.split(maxsplit=1)[0], field)
+            assert pair not in covered, f"{pair} is covered twice"
+            covered.add(pair)
+
+    def test_every_reader_of_the_two_masked_fields_has_a_case(self) -> None:
+        """`chord_tone_degrees` and `leap_degrees` are the fields a
+        fingerprint cannot attribute, so their readers are enumerated here
+        rather than left to the parametrised class: seven sites for the
+        first and three for the second. A reader added to either field
+        without a case above fails here."""
+        by_field: dict[str, list[str]] = {}
+        for site, (field, _value, _call) in _MELODY_SITES.items():
+            by_field.setdefault(field, []).append(site)
+        assert len(by_field["chord_tone_degrees"]) == 7
+        assert len(by_field["leap_degrees"]) == 3
 
 
 class TestTheCodaBranchReadsThePlan:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import random
 from collections import Counter
+from dataclasses import replace
 
 import pytest
 
@@ -12,8 +13,10 @@ from saimc.compose.engine import _melody_band_for, compose
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_BASS_FIGURES,
+    DEFAULT_MELODY_SHAPE,
     PLAIN_BASS_FIGURE,
     PPQ,
+    RHYTHM_WEIGHTS,
     Motif,
     MotifCell,
     _op_tie,
@@ -365,7 +368,13 @@ class TestMotifMelody:
                 position=0.5,
                 ticks_per_bar=4 * PPQ,
                 seed_for_variation=seed,
-                mood="calming",
+                # The calming figures, as a plan resolves them: `_melody_bar`
+                # reads a weight table rather than a mood, because the mood
+                # lookup belongs to the plan's own default.
+                shape=replace(
+                    DEFAULT_MELODY_SHAPE,
+                    rhythm_weights=tuple(RHYTHM_WEIGHTS["calming"].items()),
+                ),
             )
             assert notes
             for index, note in enumerate(notes):
