@@ -16,7 +16,8 @@ The layering below it is one-directional:
   any of this: a sketch is not a job, and a finalized piece becomes one.
 
 What lives here: `models` (the records), `store` (their persistence),
-`conductor` (the loop), `tools` (what the conductor may call).
+`arbiter` (one order over drafts, and the revision ratchet), `conductor`
+(the loop), `tools` (what the conductor may call), `api` (the HTTP surface).
 """
 
 from __future__ import annotations
