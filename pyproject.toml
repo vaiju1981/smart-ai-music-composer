@@ -41,7 +41,6 @@ dev = [
     "mypy==1.13.0",
     "pytest==8.3.4",
     "pytest-cov==6.0.0",
-    "pytest-asyncio==0.24.0",
     "types-requests",
 ]
 render = [
@@ -135,7 +134,6 @@ warn_required_dynamic_aliases = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
