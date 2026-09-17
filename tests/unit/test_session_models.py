@@ -949,9 +949,9 @@ class TestSession:
         number is only readable by a *different* build holding the file. What a
         literal buys is that moving the schema is a declared edit rather than a
         silent one, which is the same ratchet the `__all__` and tool-catalogue
-        pins are. `5` is `preferences`.
+        pins are. `6` is the draft's scorecard gaining `harmony_pad_coverage`.
         """
-        assert SESSION_FORMAT == "Session:5"
+        assert SESSION_FORMAT == "Session:6"
 
     def test_a_foreign_session_document_is_refused(self) -> None:
         """Derived, not spelled out: a literal here is a trap for the next

@@ -7,6 +7,11 @@ fails here rather than in a release gate.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from saimc.compose.engine import compose
+from saimc.compose.motif import FIGURES_BY_MOTION
+from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     PPQ,
     VOICE_BASS,
@@ -19,12 +24,14 @@ from saimc.compose.score import (
     NoteEvent,
 )
 from saimc.quality import (
+    QUALITY_HARMONY_PAD_COVERAGE_MIN,
     QUALITY_TESSITURA_OVERLAP_MAX,
     QUALITY_THRESHOLDS,
     PieceQuality,
     score_corpus,
     score_piece,
 )
+from saimc.spec import CompositionSpec, Mood
 
 BAR_TICKS = 1920
 
@@ -88,9 +95,7 @@ class TestMelodicIntervals:
         # onset as an interval would manufacture a repetition.
         notes = [
             NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=0, duration_ticks=960),
-            NoteEvent(
-                voice_id=VOICE_MELODY, pitch_midi=60, tick=960, duration_ticks=480, tie=True
-            ),
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=960, duration_ticks=480, tie=True),
             NoteEvent(voice_id=VOICE_MELODY, pitch_midi=62, tick=1440, duration_ticks=480),
         ]
         piece = score_piece(_score(notes))
@@ -299,6 +304,111 @@ class TestBassFigures:
         assert score_piece(_score(_melody([60, 62]))).bass_onset_patterns is None
 
 
+class TestTheHarmonyBed:
+    """The bed's coverage: does the accompaniment hold a chord anywhere?
+
+    A hand-written score per case, so a metric that starts measuring
+    something else — the bars the harmony *sounds* in rather than the bars
+    it holds through — fails here rather than in a release gate.
+    """
+
+    def test_a_chord_held_through_its_bar_covers_it(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 1.0
+
+    def test_a_broken_chord_covers_nothing(self) -> None:
+        # The arpeggio's own step is a quarter of a bar: a chord stated and
+        # released leaves the bar unsustained however many notes state it.
+        notes = [
+            NoteEvent(
+                voice_id=VOICE_HARMONY,
+                pitch_midi=60 + step,
+                tick=step * 240,
+                duration_ticks=240,
+            )
+            for step in range(4)
+        ]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 0.0
+
+    def test_half_a_bar_is_a_sustained_note(self) -> None:
+        """The boundary the metric turns on, asserted rather than assumed."""
+        notes = [
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS // 2)
+        ]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 1.0
+
+    def test_the_share_is_of_the_piece_and_not_of_the_bars_it_sounds_in(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes, bars=4)).harmony_pad_coverage == 0.25
+
+    def test_the_last_bar_is_measured_to_the_end_of_the_score(self) -> None:
+        """The final bar has no start after it, so its length comes from the
+        score's own end — a case no middle bar can reach."""
+        notes = [
+            NoteEvent(
+                voice_id=VOICE_HARMONY, pitch_midi=60, tick=2 * BAR_TICKS, duration_ticks=BAR_TICKS
+            )
+        ]
+        assert score_piece(_score(notes, bars=3)).harmony_pad_coverage == 1 / 3
+
+    def test_a_solo_piece_has_no_bed_to_sustain(self) -> None:
+        assert score_piece(_score(_melody([60, 62]))).harmony_pad_coverage is None
+
+    def test_a_held_bass_note_is_a_pedal_and_not_a_bed(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes)).harmony_pad_coverage is None
+
+    def test_a_bed_that_never_sustains_is_reported_with_the_knob_that_moves_it(self) -> None:
+        notes = _melody([60, 62, 64, 65])
+        notes.append(NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=240))
+        bed = next(
+            finding
+            for finding in score_piece(_score(notes)).findings()
+            if finding.metric == "harmony_pad_coverage"
+        )
+        assert bed.direction == "min"
+        assert bed.target == QUALITY_HARMONY_PAD_COVERAGE_MIN
+        assert "harmony_broken_chord" in bed.hint
+
+
+class TestTheBedBarIsReachable:
+    """The bar is fired against a real piece, not asserted.
+
+    A threshold no plan can move is a guard that cannot fail, which is the
+    one thing this repo keeps finding and deleting. So the metric's own knob
+    is exercised end to end — the default electrifying texture sustains
+    nothing, and the plan field the finding's hint names is what fixes it.
+    """
+
+    def _coverage(self, *, broken_chord: bool) -> float | None:
+        spec = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+        plan = replace(default_plan(spec), harmony_broken_chord=broken_chord)
+        return score_piece(compose(spec, plan=plan).notation_score).harmony_pad_coverage
+
+    def test_the_default_texture_misses_the_bar(self) -> None:
+        assert self._coverage(broken_chord=True) == 0.0
+        assert QUALITY_HARMONY_PAD_COVERAGE_MIN > 0.0
+
+    def test_the_bar_clears_once_the_plan_stops_breaking_the_chord(self) -> None:
+        coverage = self._coverage(broken_chord=False)
+        assert coverage is not None
+        assert coverage >= QUALITY_HARMONY_PAD_COVERAGE_MIN
+
+
+class TestWhatTheScoreCannotMeasure:
+    """The premises behind the metrics this module deliberately does not have.
+
+    Each is a claim in the module docstring about a table the score does not
+    carry, pinned here so that a change to the table fails a case instead of
+    quietly making the note false.
+    """
+
+    def test_every_bass_figure_states_the_bar_s_root_on_its_downbeat(self) -> None:
+        for motion, figure in FIGURES_BY_MOTION.items():
+            assert figure[0][0] == 0, motion
+            assert figure[0][2] == 0, motion
+
+
 class TestFindings:
     def test_a_clean_piece_reports_no_findings(self) -> None:
         # Whole-tone steps up an octave, three note values, melody alone:
@@ -472,6 +582,7 @@ class TestThresholdTable:
                 register_separation_semitones=None,
                 tessitura_overlap_semitones=None,
                 bass_onset_patterns=None,
+                harmony_pad_coverage=None,
             ).as_dict()
         )
         assert {t.metric for t in QUALITY_THRESHOLDS} == measured

@@ -24,6 +24,25 @@ engine: a step-dominant line, a leap answered by a step, a melody more
 active than its accompaniment. Today's engine misses several of them —
 that is the point, and it is what makes the gate in
 `saimc.release.gates` non-vacuous.
+
+Three axes a critic might ask for are deliberately absent, and the first
+two for one reason: **a score carries notes and no tables.** *Bass root
+motion* — the share of chord changes the left hand leaves the root on —
+needs the bar's chord, which a `NotationScore` does not carry, and every
+figure in the bass vocabulary states the bar's root on its downbeat, so
+the reading a score *can* take comes out the same whichever motion the
+plan asks for. *Rhythm-section variety* needs the style's own variant
+count: a waltz repeats one bar through 0.80-0.90 of a piece, and a rock
+groove whose rotation the plan switched off repeats it through 0.78-0.90,
+so a bar over that reading fires on a legal one-variant style. *Contour*
+is measured and left alone, because no bar could act on it: across the
+palette grid and seven mutations of the melody's vocabulary the share of
+turning points stays inside 0.37-0.55. What a contour complaint is
+actually about — a line that only steps, a leap that is never answered —
+is `step_ratio` and `leap_recovery_ratio`. The defects behind the first
+two are reported too: one bass figure for a whole piece is
+`bass_onset_patterns`, and a kit with too few bars to play is the style's
+vocabulary, not a bar that would call a waltz wrong.
 """
 
 from __future__ import annotations
@@ -117,6 +136,19 @@ it is the metric that reports it."""
 QUALITY_BASS_ONSET_PATTERNS_MIN: int = 3
 """The bass must show at least three distinct onset patterns across its
 bars. One pattern is a loop, not a bass line."""
+
+QUALITY_HARMONY_PAD_COVERAGE_MIN: float = 0.25
+"""At least this share of the bars must carry a harmony note held through
+half of the bar.
+
+A bed is what an accompaniment *is*. An arpeggio and a stab state the chord
+and move on, so a piece made only of those has a harmony that never sustains
+a note anywhere — and the accompaniment's figure is chosen for the whole
+piece, so nothing in a piece can be holding a chord while the rest stabs.
+A quarter of the bars is the least a bed can be and still be one; measured
+over the palette grid, a pad clears 0.92-1.00 of them, so the bar is a
+statement about the bed rather than a number today's pieces happen to pass.
+"""
 
 
 @dataclass(frozen=True)
@@ -262,6 +294,20 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
             "onset pattern for the whole piece."
         ),
     ),
+    QualityThreshold(
+        metric="harmony_pad_coverage",
+        minimum=QUALITY_HARMONY_PAD_COVERAGE_MIN,
+        maximum=None,
+        rationale="the accompaniment has to sustain its chords somewhere",
+        hint=(
+            "the bed's figure is chosen for the whole piece rather than per "
+            "section, so a mood whose texture is the broken chord plays "
+            "arpeggio or stab in every bar it sounds in: setting "
+            "`harmony_broken_chord` on the composition plan lets the bed "
+            "hold its chords. Per-section control is the texture knob "
+            "saimc/compose/plan.py does not carry yet."
+        ),
+    ),
 )
 
 
@@ -311,6 +357,7 @@ class PieceQuality:
     register_separation_semitones: float | None
     tessitura_overlap_semitones: int | None
     bass_onset_patterns: int | None
+    harmony_pad_coverage: float | None
 
     def as_dict(self) -> dict[str, float | None]:
         """Metric name -> value, for the threshold loop and the report.
@@ -329,6 +376,7 @@ class PieceQuality:
             "register_separation_semitones": self.register_separation_semitones,
             "tessitura_overlap_semitones": self.tessitura_overlap_semitones,
             "bass_onset_patterns": self.bass_onset_patterns,
+            "harmony_pad_coverage": self.harmony_pad_coverage,
         }
         return {name: None if value is None else float(value) for name, value in measured.items()}
 
@@ -416,9 +464,7 @@ def score_piece(score: NotationScore, *, piece: str = "piece") -> PieceQuality:
         piece=piece,
         melody_notes=len(melody),
         melody_bars=_bars_covered(score, melody),
-        step_ratio=_ratio(
-            sum(1 for step in moves if abs(step) <= STEP_MAX_SEMITONES), len(moves)
-        ),
+        step_ratio=_ratio(sum(1 for step in moves if abs(step) <= STEP_MAX_SEMITONES), len(moves)),
         repeat_ratio=_ratio(len(intervals) - len(moves), len(intervals)),
         leap_recovery_ratio=_leap_recovery(intervals),
         max_leap_semitones=max((abs(step) for step in moves), default=None),
@@ -428,6 +474,7 @@ def score_piece(score: NotationScore, *, piece: str = "piece") -> PieceQuality:
         register_separation_semitones=_register_separation(score, melody),
         tessitura_overlap_semitones=_tessitura_overlap(score),
         bass_onset_patterns=_bass_onset_patterns(score),
+        harmony_pad_coverage=_harmony_pad_coverage(score),
     )
 
 
@@ -581,6 +628,15 @@ class _BarLayout:
             return None
         return max(0, bisect_right(self.starts, tick) - 1)
 
+    def length_of(self, index: int) -> int:
+        """How many ticks bar `index` lasts.
+
+        Bars are read from their starts, so the last one is measured to the
+        score's end rather than to a start that is not there.
+        """
+        end = self.starts[index + 1] if index + 1 < len(self.starts) else self.end_tick
+        return end - self.starts[index]
+
 
 def _texture_hierarchy(score: NotationScore, melody: list[NoteEvent]) -> float | None:
     """Melody note count over the busiest accompaniment voice's count.
@@ -696,10 +752,38 @@ def _bass_onset_patterns(score: NotationScore) -> int | None:
     return len({tuple(figure) for figure in per_bar.values()})
 
 
+def _harmony_pad_coverage(score: NotationScore) -> float | None:
+    """Share of the bars a harmony voice holds a note through.
+
+    A note covers its bar when it sounds for at least half of it — the line
+    between a bed and a figure, which is measured rather than chosen: over
+    the palette grid a pad clears 0.92-1.00 of a piece's bars and the
+    broken-chord figures play through none of them, so nothing sits near
+    the half-bar boundary for the bar to be a coin flip about.
+
+    None when the piece is melody and bass alone. A solo has no bed to
+    sustain, and reporting zero would read as a miss rather than as a
+    metric that does not apply.
+    """
+    layout = _BarLayout.of(score)
+    voices = set(_harmony_voice_ids(score))
+    if not layout.starts or not voices:
+        return None
+    covered: set[int] = set()
+    for note in score.notes:
+        if note.voice_id not in voices:
+            continue
+        index = layout.index_of(note.tick)
+        if index is not None and note.duration_ticks * 2 >= layout.length_of(index):
+            covered.add(index)
+    return len(covered) / len(layout.starts)
+
+
 __all__ = [
     "LEAP_MIN_SEMITONES",
     "QUALITY_BASS_ONSET_PATTERNS_MIN",
     "QUALITY_DISTINCT_DURATIONS_MIN",
+    "QUALITY_HARMONY_PAD_COVERAGE_MIN",
     "QUALITY_LEAP_RECOVERY_MIN",
     "QUALITY_MAX_LEAP_MAX",
     "QUALITY_MELODIC_RANGE_MAX",

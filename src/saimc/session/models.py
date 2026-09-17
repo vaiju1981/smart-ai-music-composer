@@ -55,19 +55,22 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 5
+SESSION_SCHEMA_VERSION: Final[int] = 6
 """Bump when a record in this module gains, loses or reshapes a field.
 
 Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
-to 4 when it gained `requests_source`, and to 5 when the session gained
-`preferences`. Every one of those fields has a default, so an older document
-would have loaded with the field silently missing — which is the failure the
-tag exists to prevent, and the reason the guard compares the tag rather than
-tolerating what it recognises. A draft's lineage read as empty is a draft that
-claims to have been drafted from the brief when it was revised from another,
-its source read as absent is a request with no record of who asked for it, and
-a preference log read as absent is every judgement the user has made thrown
-away.
+to 4 when it gained `requests_source`, to 5 when the session gained
+`preferences`, and to 6 when a draft's scorecard gained
+`harmony_pad_coverage`. Bumps 2 to 5 added fields with defaults, so an older
+document would have loaded with the field silently missing; the sixth is
+different in kind — `PieceQuality` takes no defaults and is read strictly —
+and either way the load has to *refuse*, which is the reason the guard
+compares the tag rather than tolerating what it recognises. A draft's lineage
+read as empty is a draft that claims to have been drafted from the brief when
+it was revised from another, its source read as absent is a request with no
+record of who asked for it, a preference log read as absent is every
+judgement the user has made thrown away, and a scorecard read as absent is a
+piece whose harmony was never measured where null means it had none.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
