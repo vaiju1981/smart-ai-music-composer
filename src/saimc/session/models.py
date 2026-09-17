@@ -50,8 +50,14 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 1
-"""Bump when a record in this module gains, loses or reshapes a field."""
+SESSION_SCHEMA_VERSION: Final[int] = 2
+"""Bump when a record in this module gains, loses or reshapes a field.
+
+Moved to 2 when `Session` gained `spec`. The field has a default, so an
+older document would have loaded with the parser's answer silently missing
+— which is the failure the tag exists to prevent, and the reason the guard
+compares the tag rather than tolerating what it recognises.
+"""
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
 
@@ -374,28 +380,13 @@ class Draft:
     @classmethod
     def from_document(cls, payload: dict[str, Any]) -> Draft:
         draft_id = payload.get("draft_id", "?")
-        spec_payload = payload["spec"]
-        written = spec_payload.get("schema_version")
-        if written is not None and int(written) > SPEC_SCHEMA_VERSION:
-            raise UnsupportedSpecVersionError(
-                f"draft {draft_id} carries a spec written with schema version {written}, "
-                f"but this build understands up to version {SPEC_SCHEMA_VERSION}; upgrade "
-                "saimc or delete the session directory."
-            )
-        try:
-            plan = CompositionPlan.from_canonical_dict(payload["plan"])
-        except PlanError as exc:
-            raise UnsupportedPlanVersionError(
-                f"draft {draft_id} carries a composition plan this build cannot read ({exc}); "
-                "upgrade saimc or delete the session directory."
-            ) from exc
         raw_sketch = payload.get("sketch")
         return cls(
             draft_id=draft_id,
             created_at=datetime.fromisoformat(payload["created_at"]),
             parent_id=payload.get("parent_id"),
-            spec=CompositionSpec.model_validate(spec_payload),
-            plan=plan,
+            spec=_read_spec(payload["spec"], owner=f"draft {draft_id}"),
+            plan=_read_plan(payload["plan"], owner=f"draft {draft_id}"),
             performance_plan_hash=payload["performance_plan_hash"],
             quality=PieceQuality(**payload["quality"]),
             lint=_lint_from_document(payload["lint"]),
@@ -448,6 +439,42 @@ class Verdict:
         )
 
 
+def _read_spec(payload: dict[str, Any], *, owner: str) -> CompositionSpec:
+    """Read a stored spec, refusing one written by a newer build.
+
+    Both the session and each of its drafts carry a spec, and both are read
+    by a constructor on load, so the guard lives in one place rather than
+    being written twice with two chances to drift. Unlike a plan, a spec is
+    widened additively and completed by Pydantic, so only a *future*
+    document is refused.
+    """
+    written = payload.get("schema_version")
+    if written is not None and int(written) > SPEC_SCHEMA_VERSION:
+        raise UnsupportedSpecVersionError(
+            f"{owner} carries a spec written with schema version {written}, but this build "
+            f"understands up to version {SPEC_SCHEMA_VERSION}; upgrade saimc or delete the "
+            "session directory."
+        )
+    return CompositionSpec.model_validate(payload)
+
+
+def _read_plan(payload: dict[str, Any], *, owner: str) -> CompositionPlan:
+    """Read a stored plan, refusing one this build cannot read *exactly*.
+
+    A plan has no additive completion — an older document is missing fields
+    and a newer one may carry a knob the engine would silently ignore — so
+    `from_canonical_dict` compares the format tag with `!=` and the refusal
+    is re-raised here naming which draft or session held it.
+    """
+    try:
+        return CompositionPlan.from_canonical_dict(payload)
+    except PlanError as exc:
+        raise UnsupportedPlanVersionError(
+            f"{owner} carries a composition plan this build cannot read ({exc}); upgrade "
+            "saimc or delete the session directory."
+        ) from exc
+
+
 @dataclass
 class Session:
     """The persisted record for one interactive session.
@@ -456,16 +483,25 @@ class Session:
     as the loop runs, and rebuilding it through a frozen `replace` on every
     turn would allocate the whole turn log to add one entry.
 
-    `finalized_job_id` is the only state the session has. Everything else it
-    knows is what happened, in order; whether the piece has been published
-    is the one thing a reader cannot recover from the log, and it is
-    explicit so that finalizing twice is a decision rather than an accident.
+    `spec` is the parsed brief — the answer `parse_brief` gave, kept because
+    every later turn is a proposal *about it* rather than about the words the
+    user typed. Without it a session could not say what it is making, and a
+    `draft` call would have to restate the whole spec in its arguments: a
+    copy that can be mangled and that the recorded turn would then be a
+    record of. It is `None` until the brief has been parsed.
+
+    `finalized_job_id` is the only *state* the session has. Everything else
+    it knows is what happened, in order; whether the piece has been
+    published is the one thing a reader cannot recover from the log, and it
+    is explicit so that finalizing twice is a decision rather than an
+    accident.
     """
 
     session_id: str
     created_at: datetime
     updated_at: datetime
     brief: str
+    spec: CompositionSpec | None = None
     turns: list[Turn] = field(default_factory=list)
     drafts: list[Draft] = field(default_factory=list)
     verdicts: list[Verdict] = field(default_factory=list)
@@ -512,6 +548,23 @@ class Session:
                 return draft
         raise KeyError(draft_id)
 
+    def replace_draft(self, draft: Draft) -> None:
+        """Put `draft` back where the draft it replaces already sits.
+
+        A draft is only ever replaced by a later version of itself — a
+        sketch is attached, a plan is revised — so the position does not
+        move. `Draft` is frozen, so this is how a draft gains a sketch, and
+        appending instead would leave the session with two drafts of one id
+        and a `check()` that refuses to save it. Raises `KeyError` for a
+        draft this session does not have, which is the honest alternative to
+        silently appending one.
+        """
+        for index, existing in enumerate(self.drafts):
+            if existing.draft_id == draft.draft_id:
+                self.drafts[index] = draft
+                return
+        raise KeyError(draft.draft_id)
+
     def to_document(self) -> dict[str, Any]:
         """Every record, in order, and nothing derived.
 
@@ -526,6 +579,7 @@ class Session:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "brief": self.brief,
+            "spec": None if self.spec is None else self.spec.model_dump(mode="json"),
             "finalized_job_id": self.finalized_job_id,
             "turns": [turn.to_document() for turn in self.turns],
             "drafts": [draft.to_document() for draft in self.drafts],
@@ -542,11 +596,13 @@ class Session:
                 "constructors on load, so a document from another shape cannot be read "
                 "faithfully. Upgrade saimc or delete the session directory."
             )
+        raw_spec = payload.get("spec")
         return cls(
             session_id=payload["session_id"],
             created_at=datetime.fromisoformat(payload["created_at"]),
             updated_at=datetime.fromisoformat(payload["updated_at"]),
             brief=payload["brief"],
+            spec=None if raw_spec is None else _read_spec(raw_spec, owner="this session"),
             turns=[Turn.from_document(turn) for turn in payload.get("turns", ())],
             drafts=[Draft.from_document(draft) for draft in payload.get("drafts", ())],
             verdicts=[Verdict.from_document(v) for v in payload.get("verdicts", ())],

@@ -36,6 +36,7 @@ from saimc.llm.base import LLMError
 from saimc.quality import score_piece
 from saimc.session.models import (
     SESSION_FORMAT,
+    SESSION_SCHEMA_VERSION,
     Draft,
     Session,
     SketchRecord,
@@ -102,12 +103,14 @@ def _session(
     drafts: list[Draft] | None = None,
     verdicts: list[Verdict] | None = None,
     finalized_job_id: str | None = None,
+    spec: CompositionSpec | None = None,
 ) -> Session:
     return Session(
         session_id=session_id,
         created_at=_NOW,
         updated_at=_NOW,
         brief=brief,
+        spec=spec,
         turns=[] if turns is None else turns,
         drafts=[] if drafts is None else drafts,
         verdicts=[] if verdicts is None else verdicts,
@@ -394,6 +397,7 @@ class TestSession:
             drafts=[_draft("a", sketch=_SKETCH), _draft("b")],
             verdicts=[Verdict(draft_id="a", at=_NOW, value="like", feedback="keep the intro")],
             finalized_job_id="job-1",
+            spec=_SPEC,
         )
         loaded = Session.from_document(json.loads(json.dumps(session.to_document())))
         assert loaded == session
@@ -401,13 +405,32 @@ class TestSession:
         assert [turn.trigger for turn in loaded.turns] == ["brief", "message"]
         assert loaded.verdicts[0].feedback == "keep the intro"
         assert loaded.draft("a").sketch == _SKETCH
+        assert loaded.spec == _SPEC
+
+    def test_a_session_with_no_parsed_brief_yet_round_trips(self) -> None:
+        """`spec` is None until `parse_brief` runs, and that is a state a
+        document has to be able to hold — omitting the key would read as
+        "a spec was considered here", which is a different claim."""
+        session = _session()
+        assert session.spec is None
+        loaded = Session.from_document(json.loads(json.dumps(session.to_document())))
+        assert loaded.spec is None
+
+    def test_a_spec_from_a_newer_build_is_refused_on_the_session(self) -> None:
+        """The session's own spec is guarded by the reader the drafts use."""
+        document = _session(spec=_SPEC).to_document()
+        document["spec"]["schema_version"] = SPEC_SCHEMA_VERSION + 1
+        with pytest.raises(UnsupportedSpecVersionError, match="this session"):
+            Session.from_document(document)
 
     def test_the_document_names_its_own_shape(self) -> None:
         assert _session().to_document()["format"] == SESSION_FORMAT
 
     def test_a_foreign_session_document_is_refused(self) -> None:
+        """Derived, not spelled out: a literal here is a trap for the next
+        bump — it passed until the constant caught up with it."""
         document = _session().to_document()
-        document["format"] = "Session:2"
+        document["format"] = f"Session:{SESSION_SCHEMA_VERSION + 1}"
         with pytest.raises(UnsupportedSessionVersionError, match="format"):
             Session.from_document(document)
 
