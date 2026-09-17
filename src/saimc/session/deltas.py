@@ -111,6 +111,27 @@ is not faster. A trade is not a bound, and the sentence a user needs is
 See `swallowed_tempo`, which is the only thing that builds one.
 """
 
+RequestSource: TypeAlias = Literal["typed", "conductor", "model", "keywords"]
+"""How a revision's requests were arrived at.
+
+Four *paths* rather than four kinds of request: the same `SetTempo` can come by
+any of them, and what the name says is who expressed the intent and what read
+it. `typed` is a control the studio offered — the user named the change and no
+model saw it. `conductor` is the conductor's own `revise` call, where a model
+chose the deltas. `model` and `keywords` are the feedback translator's two
+readings of a sentence, the first with a model and the second from the keyword
+table.
+
+It lives here rather than beside `Translation` — the only producer of the last
+two — because a `Draft` records one and `models.py` may not import the
+translator: `translator` imports `conductor`, which imports `models`, so the
+vocabulary has to sit below all three. It is also the thing that makes the
+preference log a log of *preferences*: a like attached to a delta a model chose
+and a like attached to one a user named weigh differently when the log is read
+as a dataset, and a record that could not tell them apart would have thrown that
+away at the moment it was written.
+"""
+
 Level: TypeAlias = Literal["none", "light", "expressive"]
 """The spec's `humanization` vocabulary, named once for the delta that sets it."""
 
@@ -143,6 +164,26 @@ class DeltaRefusal:
     alternative to offer. Inventing one would be advice the engine cannot
     honour either.
     """
+
+
+def refusal_line(refusal: DeltaRefusal) -> str:
+    """One refusal as a whole sentence, with the nearest legal request named.
+
+    For the callers where the refusal *is* the answer rather than a line in a
+    report — the conductor's `revise` when it honoured none of its requests, and
+    the studio's feedback box when it read nothing it could act on. Everywhere
+    else the two travel apart, because a sentence with the advice baked into it
+    would be the same advice in two places, and a caller rendering a list of
+    refusals has the `nearest` field to render.
+
+    It lives here rather than with either caller because it is a fact about how
+    a refusal reads: "less than or equal to 240" is a bound, and
+    `SetTempo(240)` is the request that satisfies it. Two callers spelling that
+    rule would be two spellings of one sentence.
+    """
+    if refusal.nearest is None:
+        return refusal.message
+    return f"{refusal.message} The nearest request this piece can honour is {refusal.nearest}."
 
 
 @dataclass(frozen=True)
@@ -876,6 +917,7 @@ __all__ = [
     "Level",
     "ReRoll",
     "Reason",
+    "RequestSource",
     "SetAccompanimentDensity",
     "SetBassMotion",
     "SetCadence",
@@ -902,6 +944,7 @@ __all__ = [
     "apply_deltas",
     "delta_from_dict",
     "delta_to_dict",
+    "refusal_line",
     "refuse_uncarried",
     "swallowed_tempo",
 ]

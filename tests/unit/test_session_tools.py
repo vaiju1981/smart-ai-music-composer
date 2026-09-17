@@ -36,11 +36,13 @@ import pytest
 
 import saimc.jobs.worker
 from saimc.compose.engine import CompositionEngineError, EngineErrorCode, compose
+from saimc.compose.motif import BassMotion
 from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult, ToolCall
 from saimc.render.audio import AudioArtifact
 from saimc.session import tools
 from saimc.session.arbiter import ELEMENTS, musical_key, rank
+from saimc.session.deltas import SetBassMotion, SetMotifVariation, SetTempo
 from saimc.session.models import Draft, Session, ToolInvocation
 from saimc.session.store import SessionStorage
 from saimc.session.tools import (
@@ -48,8 +50,11 @@ from saimc.session.tools import (
     TOOLS,
     ToolBudget,
     ToolContext,
+    ToolRefusal,
     TurnLedger,
     dispatch,
+    parse_requests,
+    revise_draft,
     tool_specs,
 )
 from saimc.spec import CompositionSpec, Mood, SpecError
@@ -1021,6 +1026,142 @@ class TestRevise:
         assert len(ctx.session.drafts) == 1, "and nothing was recorded"
 
 
+class TestReviseDraftAndParseRequests:
+    """The two pieces of `revise` that a second caller now shares.
+
+    `POST /sessions/{id}/deltas` reads requests out of an HTTP body and keeps a
+    revision without taking a turn, which is the same rule read from a different
+    document and reported by a different caller — `publish_draft`'s shape at the
+    other end of a session. These are the properties the two callers depend on:
+    the ceiling is the caller's, the answer is this step's rather than the
+    chain's, and the record is durable before the answer is.
+    """
+
+    _BASS: ClassVar[dict[str, object]] = {"knob": "SetBassMotion", "motion": "sparse"}
+    _MOTIF: ClassVar[dict[str, object]] = {"knob": "SetMotifVariation", "factor": 2.0}
+
+    def test_requests_are_read_in_order_and_with_their_values(self) -> None:
+        parsed = parse_requests([self._BASS, {"knob": "SetTempo", "tempo_bpm": 96}], maximum=8)
+
+        assert parsed == (SetBassMotion(motion=BassMotion.SPARSE), SetTempo(tempo_bpm=96))
+
+    def test_the_ceiling_is_the_callers_and_not_the_budgets(self) -> None:
+        """A policy rather than a shape: the tool's ceiling is its own budget.
+
+        Asserted against a number that is *not* the default, because a reading
+        that quietly used the budget itself would pass every case written at it.
+        """
+        with pytest.raises(ToolRefusal) as caught:
+            parse_requests([self._BASS, self._MOTIF], maximum=1)
+
+        assert caught.value.error_code == "invalid_arguments"
+        assert "at most 1 request(s)" in caught.value.message
+
+    def test_the_tool_reads_its_argument_through_the_shared_reader(self, ctx: ToolContext) -> None:
+        """One rule, one owner — so the refusals are identical, not merely similar.
+
+        Fired against a document both callers must refuse; a second reading at
+        either call site would answer with its own words rather than these.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetSaxophone"}])
+        with pytest.raises(ToolRefusal) as direct:
+            parse_requests([{"knob": "SetSaxophone"}], maximum=8)
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == direct.value.error_code
+        assert invocation.result == direct.value.message
+
+    def test_the_source_is_the_callers_and_is_recorded_on_the_child(self, ctx: ToolContext) -> None:
+        """Who chose these requests is the one thing this function cannot know.
+
+        A conductor's tool call and a studio control both arrive as typed
+        requests, and the difference between them is who picked them — which is
+        what the record keeps, and what a verdict will later be attached to.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        revision = revise_draft(
+            ctx,
+            ctx.session.draft("draft-0"),
+            (SetBassMotion(motion=BassMotion.SPARSE),),
+            source="typed",
+        )
+
+        assert revision.draft.requests_source == "typed"
+
+    def test_the_tool_records_its_own_source_without_being_asked(self, ctx: ToolContext) -> None:
+        """The tool's caller is the model, and that is a fact only the tool has."""
+        _ready(ctx)
+        _drafts(ctx)
+
+        _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+
+        assert ctx.session.draft("draft-1").requests_source == "conductor"
+
+    def test_the_answer_carries_this_steps_requests_and_not_the_chain(
+        self, ctx: ToolContext
+    ) -> None:
+        """The property `Revision` exists for: the child's `deltas` is the whole line.
+
+        A caller rendering the answer says what *this* edit did, and it already
+        has the chain through the draft's own record — so an `applied` that grew
+        with the line would be the same list twice, one of them not this step's.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        first = revise_draft(
+            ctx,
+            ctx.session.draft("draft-0"),
+            (SetBassMotion(motion=BassMotion.SPARSE),),
+            source="typed",
+        )
+        second = revise_draft(
+            ctx, ctx.session.draft("draft-1"), (SetMotifVariation(factor=2.0),), source="typed"
+        )
+
+        assert [delta.knob for delta in first.applied] == ["SetBassMotion"]
+        assert [delta.knob for delta in second.applied] == ["SetMotifVariation"]
+        assert [delta.knob for delta in second.draft.deltas] == [
+            "SetBassMotion",
+            "SetMotifVariation",
+        ]
+
+    def test_a_revision_with_nothing_to_apply_is_refused(self, ctx: ToolContext) -> None:
+        """A step that asked for nothing is not a step, and it is refused before the walk."""
+        _ready(ctx)
+        _drafts(ctx)
+
+        with pytest.raises(ToolRefusal) as caught:
+            revise_draft(ctx, ctx.session.draft("draft-0"), (), source="typed")
+
+        assert caught.value.error_code == "invalid_arguments"
+        assert "at least one request" in caught.value.message
+
+    def test_the_child_is_durable_before_the_answer_is(self, ctx: ToolContext) -> None:
+        """Both callers answer with a draft id, and a caller with the id will fetch it.
+
+        So the record has to be on the disk at the moment it becomes true rather
+        than at the end of a turn — and on `/deltas` there is no turn to end.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        revision = revise_draft(
+            ctx,
+            ctx.session.draft("draft-0"),
+            (SetBassMotion(motion=BassMotion.SPARSE),),
+            source="typed",
+        )
+
+        reloaded = SessionStorage(ctx.sessions.root).get(ctx.session.session_id)
+        assert reloaded.draft(revision.draft.draft_id).requests_source == "typed"
+
+
 class TestCompare:
     """Ranking several drafts, and naming what put each one where it sits."""
 
@@ -1374,10 +1515,13 @@ class TestTheHandlersAreAllReachable:
             "ToolError",
             "ToolFailure",
             "ToolRefusal",
+            "Revision",
             "TurnLedger",
             "dispatch",
+            "parse_requests",
             "publish_draft",
             "request_schema",
+            "revise_draft",
             "tool_specs",
         }
 

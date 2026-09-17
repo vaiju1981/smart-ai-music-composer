@@ -72,6 +72,7 @@ from saimc.session.deltas import (
     apply_deltas,
     delta_from_dict,
     delta_to_dict,
+    refusal_line,
     refuse_uncarried,
     swallowed_tempo,
 )
@@ -635,6 +636,32 @@ class TestARefusalNamesItsReason:
             message=refusal.message,
             nearest="SetTempo(240)",
         )
+
+
+class TestARefusalReadAsAWholeSentence:
+    """`refusal_line`: for the two callers where a refusal *is* the answer.
+
+    The conductor's `revise` when it honoured none of its requests, and the
+    studio's feedback box when it read nothing it could act on — both answer with
+    one refusal rather than a list, so `nearest` has to be folded into the
+    sentence instead of being rendered beside it. Everywhere else the two travel
+    apart, which is why this is a function and not a field.
+    """
+
+    def test_a_failed_bound_is_followed_by_the_request_that_satisfies_it(self) -> None:
+        """ "Less than or equal to 240" is a bound; `SetTempo(240)` is the request."""
+        (refusal,) = apply_deltas(_SPEC, [SetTempo(tempo_bpm=1000)]).refused
+
+        assert refusal_line(refusal) == (
+            f"{refusal.message} The nearest request this piece can honour is SetTempo(240)."
+        )
+
+    def test_a_refusal_with_no_nearest_stays_its_own_sentence(self) -> None:
+        """A message that already names the alternative is not given a second one."""
+        (refusal,) = apply_deltas(_SPEC, [SetDrumStyle(name="polka")]).refused
+
+        assert refusal.nearest is None
+        assert refusal_line(refusal) == refusal.message
 
 
 class TestTheUnbuiltKnobs:

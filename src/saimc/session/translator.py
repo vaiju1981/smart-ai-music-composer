@@ -36,7 +36,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, TypeAlias
+from typing import Final, TypeAlias
 
 from saimc.compose.motif import BassMotion
 from saimc.llm.base import ChatClient, ChatRequest, Message, ToolCall, ToolSpec
@@ -45,6 +45,7 @@ from saimc.session.deltas import (
     DELTA_TYPES,
     Delta,
     DeltaRefusal,
+    RequestSource,
     ReRoll,
     SetBassMotion,
     SetDrumStyle,
@@ -57,15 +58,6 @@ from saimc.session.deltas import (
 )
 from saimc.session.tools import request_schema
 from saimc.spec import CompositionSpec, Mood
-
-Source: TypeAlias = Literal["model", "keywords"]
-"""How a sentence was read. The two paths through this module, and nothing else.
-
-A caller that already holds typed requests is not translating anything — the
-studio's controls and the conductor's own `revise` call both arrive as requests —
-so "typed" and "conductor" are names for paths that never come through here, and
-they belong to the preference log that records all four.
-"""
 
 REQUEST_TOOL: Final[str] = "request_delta"
 """The one tool the model is offered, named for what it does."""
@@ -129,7 +121,11 @@ class Translation:
     """
 
     text: str
-    source: Source
+    # The vocabulary is `deltas.RequestSource` and not one of this module's own:
+    # it names four paths and this module is two of them, so a second alias here
+    # would be a second place the values are spelled and the two could disagree
+    # about what "model" means.
+    source: RequestSource
     deltas: tuple[Delta, ...] = ()
     refusals: tuple[DeltaRefusal, ...] = ()
     unread: tuple[str, ...] = ()
@@ -528,7 +524,6 @@ __all__ = [
     "REQUEST_TOOL_DESCRIPTION",
     "SYSTEM_PROMPT",
     "Phrase",
-    "Source",
     "Translation",
     "translate",
 ]

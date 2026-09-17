@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import get_args
 
 import pytest
 
@@ -35,8 +36,16 @@ from saimc.compose.plan import (
 )
 from saimc.llm.base import LLMError
 from saimc.quality import score_piece
-from saimc.session.deltas import Delta, SetBassMotion, SetTempo, SetTimeSignature, apply_deltas
+from saimc.session.deltas import (
+    Delta,
+    RequestSource,
+    SetBassMotion,
+    SetTempo,
+    SetTimeSignature,
+    apply_deltas,
+)
 from saimc.session.models import (
+    _REQUEST_SOURCES,
     SESSION_FORMAT,
     SESSION_SCHEMA_VERSION,
     Draft,
@@ -85,6 +94,7 @@ def _draft(
     sketch: SketchRecord | None = None,
     parent_id: str | None = None,
     deltas: tuple[Delta, ...] = (),
+    requests_source: RequestSource | None = None,
 ) -> Draft:
     """A real draft: composed, linted and scored, not assembled by hand."""
     return Draft(
@@ -97,6 +107,7 @@ def _draft(
         lint=_lint_report(),
         parent_id=parent_id,
         deltas=deltas,
+        requests_source=requests_source,
         sketch=sketch,
     )
 
@@ -117,6 +128,7 @@ def _revision(deltas: tuple[Delta, ...], *, parent_id: str = "draft-one") -> Dra
         output,
         parent_id=parent_id,
         deltas=application.applied,
+        requests_source="conductor",
     )
 
 
@@ -489,6 +501,89 @@ class TestTheChainOfDeltas:
         document["deltas"][0] = {"knob": "SetSwingRatio", "ratio": 0.5}
 
         with pytest.raises(ValueError, match="unknown knob"):
+            Draft.from_document(document)
+
+
+class TestHowTheRequestsWereAskedFor:
+    """One value per draft: which of the four paths produced this step's requests.
+
+    It is what makes the preference log a log of *preferences* rather than of
+    edits — a like attached to a delta the user named and one attached to a
+    delta a model chose weigh differently when the log is read as a dataset, and
+    a record that could not tell them apart would have thrown that away at the
+    moment it was written. So the field is part of the document, and these are
+    the properties a document has to have.
+    """
+
+    _CHAIN = (SetBassMotion(motion=BassMotion.SPARSE),)
+
+    def test_the_source_is_written_and_read_back(self) -> None:
+        draft = _revision(self._CHAIN)
+
+        assert draft.requests_source == "conductor"
+        assert draft.to_document()["requests_source"] == "conductor"
+        assert Draft.from_document(draft.to_document()).requests_source == "conductor"
+
+    def test_a_draft_drafted_from_the_brief_alone_records_no_source(self) -> None:
+        """There is no step to name: nothing asked for this draft in particular."""
+        assert _draft().requests_source is None
+        assert _draft().to_document()["requests_source"] is None
+
+    def test_a_document_from_before_the_source_is_read_as_absent(self) -> None:
+        """`.get()` tolerance, as every other field of this record has.
+
+        A draft written by the build before `requests_source` is a draft whose
+        step has no record of who asked for it — which is the honest reading and
+        not the same as "typed".
+        """
+        document = _revision(self._CHAIN).to_document()
+        del document["requests_source"]
+
+        assert Draft.from_document(document).requests_source is None
+
+    def test_a_source_outside_the_vocabulary_is_refused_on_load(self) -> None:
+        """A `Literal` field is a promise by the writer, and a document is not the writer."""
+        document = _revision(self._CHAIN).to_document()
+        document["requests_source"] = "whispered"
+
+        with pytest.raises(ValueError, match="requests_source"):
+            Draft.from_document(document)
+
+    def test_the_sources_the_record_accepts_are_the_ones_the_type_names(self) -> None:
+        """The premise the refusal above rests on, asserted rather than believed.
+
+        A value added to `RequestSource` and forgotten here would make the
+        load-time refusal reject a source this build writes, which is the kind of
+        disagreement a ratchet is for.
+        """
+        assert set(_REQUEST_SOURCES) == set(get_args(RequestSource))
+
+    def test_a_chain_with_no_recorded_source_is_read_as_absent(self) -> None:
+        """The tolerance, and the reason the invariant is one-directional.
+
+        A strict "the pair arrives together" would have made this field the one
+        additive field on the record that a document cannot be missing, which is
+        the *opposite* of what every other default-bearing field here does — and
+        `test_a_document_from_before_the_chain_is_read_as_empty` is the
+        precedent. What is refused is the shape nothing can produce: a source
+        for a step that asked for nothing. The complete pair is the writer's
+        business, and `revise_draft` is the only writer.
+        """
+        draft = _draft("draft-two", parent_id="draft-one", deltas=self._CHAIN)
+
+        assert draft.requests_source is None
+
+    def test_a_source_with_no_requests_is_refused(self) -> None:
+        """A root draft has no step to place, so a source on one is provenance for nothing."""
+        with pytest.raises(ValueError, match="no step to place"):
+            _draft("draft-two", requests_source="typed")
+
+    def test_a_document_that_records_a_source_for_no_requests_is_refused_on_load(self) -> None:
+        """The load path, not the constructor: a document on disk is not the writer."""
+        document = _revision(self._CHAIN).to_document()
+        document["deltas"] = []
+
+        with pytest.raises(ValueError, match="no step to place"):
             Draft.from_document(document)
 
 

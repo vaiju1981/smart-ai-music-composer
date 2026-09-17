@@ -528,7 +528,6 @@ class TestTheModuleExports:
             "REQUEST_TOOL_DESCRIPTION",
             "SYSTEM_PROMPT",
             "Phrase",
-            "Source",
             "Translation",
             "translate",
         }

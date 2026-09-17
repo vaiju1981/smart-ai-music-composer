@@ -47,7 +47,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -66,9 +66,11 @@ from saimc.session.deltas import (
     DELTA_TYPES,
     Delta,
     DeltaRefusal,
+    RequestSource,
     apply_deltas,
     delta_from_dict,
     delta_to_dict,
+    refusal_line,
     refuse_uncarried,
     swallowed_tempo,
 )
@@ -348,6 +350,7 @@ def _draft_from(
     *,
     parent_id: str | None = None,
     deltas: tuple[Delta, ...] = (),
+    requests_source: RequestSource | None = None,
 ) -> Draft:
     """One candidate, recorded from what the engine actually produced.
 
@@ -379,6 +382,7 @@ def _draft_from(
         ),
         parent_id=parent_id,
         deltas=deltas,
+        requests_source=requests_source,
     )
 
 
@@ -524,18 +528,28 @@ def _lineage(session: Session, draft: Draft, *, limit: int) -> tuple[Draft, int]
     return walk, depth
 
 
-def _deltas_arg(args: Mapping[str, Any], *, maximum: int) -> tuple[Delta, ...]:
-    """Read the `deltas` argument, refusing anything that is not a request.
+def parse_requests(raw: Any, *, maximum: int) -> tuple[Delta, ...]:
+    """Read a list of requests out of a document nobody here wrote.
 
-    A request the engine carries no knob for is answered from `UNCARRIED`
-    rather than as a misspelling — the same distinction `refuse_uncarried`
-    exists for, and the one a user's words turn into: "add a saxophone" is
-    understood and unbuilt, and telling them it was not understood would be
-    false. Everything else — a bad knob name, a value the knob's own type
-    cannot hold, an argument the knob does not have — is refused by name with
-    the vocabulary listed.
+    Public because two callers read requests out of a body they did not author
+    — the conductor's `revise` call, whose document is a tool-call argument, and
+    `POST /sessions/{id}/deltas`, whose document is an HTTP body — and they have
+    to refuse the same documents for the same reasons. The shape is the same
+    `publish_draft` story at the other end of the session: one rule, one owner,
+    two callers that report it differently.
+
+    The distinction that matters is in here rather than at the call sites: a
+    request the engine carries no knob for is answered from `UNCARRIED` rather
+    than as a misspelling — which is what a user's words turn into, since "add a
+    saxophone" is understood and unbuilt, and telling them it was not understood
+    would be false. Everything else — a bad knob name, a value the knob's own
+    type cannot hold, an argument the knob does not have — is refused by name
+    with the vocabulary listed.
+
+    The ceiling is the caller's because it is a policy rather than a shape: the
+    tool's is the budget it advertises, and a second caller with a different one
+    should not have to agree with it.
     """
-    raw = args.get("deltas")
     if not isinstance(raw, list) or not raw:
         raise ToolRefusal("invalid_arguments", "deltas must be a non-empty list of requests")
     if len(raw) > maximum:
@@ -559,24 +573,48 @@ def _deltas_arg(args: Mapping[str, Any], *, maximum: int) -> tuple[Delta, ...]:
     return tuple(parsed)
 
 
-def _sole_refusal(refusal: DeltaRefusal) -> str:
-    """One refused request as the whole answer, with the alternative named.
+def _deltas_arg(args: Mapping[str, Any], *, maximum: int) -> tuple[Delta, ...]:
+    """The `revise` tool's own reading of its `deltas` argument."""
+    return parse_requests(args.get("deltas"), maximum=maximum)
 
-    A revision that honoured none of its requests is the one case where the
-    applier's sentence *is* the answer rather than a line in a report, and there
-    the sentence alone stops a step short of what the user needs: "less than or
-    equal to 240" is a bound, and `SetTempo(240)` is the request that satisfies
-    it. Everywhere else the two travel apart — `nearest` is a field of the
-    payload's `refused` list — because a sentence with the advice baked into it
-    would be the same advice in two places.
+
+@dataclass(frozen=True)
+class Revision:
+    """A revision that was kept: the draft it made, and what it was made of.
+
+    `applied` and `refused` are *this step's* requests and not the chain's. The
+    child's own `deltas` is the chain, because that is what makes the piece
+    reproducible; these two are the report of what just happened, which is what
+    a caller renders. A bare `Draft` would lose them, and a caller that walked
+    the chain itself to recover them would be re-deciding which requests were
+    accepted — the answer this type exists to carry.
     """
-    if refusal.nearest is None:
-        return refusal.message
-    return f"{refusal.message} The nearest request this piece can honour is {refusal.nearest}."
+
+    draft: Draft
+    applied: tuple[Delta, ...]
+    refused: tuple[DeltaRefusal, ...]
 
 
-async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
-    """Apply typed requests to a draft's piece, and keep the result as a draft.
+def revise_draft(
+    ctx: ToolContext,
+    parent: Draft,
+    requests: Sequence[Delta],
+    *,
+    source: RequestSource,
+) -> Revision:
+    """Apply `requests` to `parent`'s line, and keep the result as a draft.
+
+    The rule, once, for two callers that report it differently: the conductor's
+    `revise` tool answers with text the model reads, and `POST /deltas` answers
+    with a draft card. Both get the same child and the same refusals, which is
+    why this is a function rather than two — `publish_draft`'s shape, at the
+    other end of a session.
+
+    `source` is how the requests were arrived at, and it is the caller's because
+    only the caller knows: a conductor's tool call and a studio control both
+    arrive as typed requests, and the difference between them is who chose them.
+    It is recorded on the child, which is where a verdict will later be attached
+    to it.
 
     The ratchet runs before anything is recorded: a revision that measures worse
     than the draft it came from is refused with the arbiter's own sentence, and
@@ -586,9 +624,17 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     The child is composed at the parent's seed unless a request re-rolls it,
     which is what makes a revision recognisably the same piece: the material the
     seed decides survives the edit.
+
+    The session is saved here rather than left to the caller, for the reason
+    `publish_draft` saves: the answer to both callers is a draft id, and a caller
+    that has the id will fetch the draft by it, so the record has to be durable
+    at the moment it becomes true.
     """
-    parent = _named_draft(ctx, args)
-    requests = _deltas_arg(args, maximum=ctx.budget.max_deltas)
+    if not requests:
+        raise ToolRefusal(
+            "invalid_arguments",
+            "a revision must carry at least one request; there is nothing to apply.",
+        )
     root, depth = _lineage(ctx.session, parent, limit=ctx.budget.max_revisions)
     if depth >= ctx.budget.max_revisions:
         raise ToolRefusal(
@@ -613,7 +659,7 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     added = application.applied[len(parent.deltas) :]
     if not added:
         first = application.refused[0]
-        raise ToolRefusal(first.reason, _sole_refusal(first))
+        raise ToolRefusal(first.reason, refusal_line(first))
 
     try:
         output = compose(application.spec, plan=application.plan)
@@ -635,25 +681,39 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         output,
         parent_id=parent.draft_id,
         deltas=application.applied,
+        requests_source=source,
     )
     regressed = regression(parent, child)
     if regressed is not None:
         raise ToolRefusal("revision_regressed", regressed)
 
     ctx.session.drafts.append(child)
+    ctx.sessions.save(ctx.session)
+    return Revision(draft=child, applied=added, refused=application.refused)
+
+
+async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """The `revise` tool: apply the model's requests, and report what happened.
+
+    The decision is `revise_draft`'s; what is left here is the reading of the
+    argument and the rendering of the answer the model reads.
+    """
+    parent = _named_draft(ctx, args)
+    requests = _deltas_arg(args, maximum=ctx.budget.max_deltas)
+    revision = revise_draft(ctx, parent, requests, source="conductor")
     return _render(
         {
-            "draft_id": child.draft_id,
+            "draft_id": revision.draft.draft_id,
             "parent_id": parent.draft_id,
-            "seed": child.spec.seed,
-            "lint_passed": child.lint.passed,
-            "quality": child.quality.entry(),
-            "applied": [delta_to_dict(delta) for delta in added],
+            "seed": revision.draft.spec.seed,
+            "lint_passed": revision.draft.lint.passed,
+            "quality": revision.draft.quality.entry(),
+            "applied": [delta_to_dict(delta) for delta in revision.applied],
             "refused": [
                 {"reason": refusal.reason, "message": refusal.message, "nearest": refusal.nearest}
-                for refusal in application.refused
+                for refusal in revision.refused
             ],
-            "moved_on": deciding_element(child, parent),
+            "moved_on": deciding_element(revision.draft, parent),
         }
     )
 
@@ -962,9 +1022,9 @@ def _revise_parameters(budget: ToolBudget) -> dict[str, Any]:
     """The `revise` schema, with the vocabulary and the width read off the code.
 
     Two indirections for the same reason `_draft_parameters` has one: the
-    vocabulary comes from `request_schema`, and the ceiling is the budget
-    `_deltas_arg` enforces, so the number the model is told cannot be a
-    different number from the one it is held to.
+    vocabulary comes from `request_schema`, and the ceiling is the one
+    `_deltas_arg` reads off the budget it is handed, so the number the model is
+    told cannot be a different number from the one it is held to.
     """
     return {
         "type": "object",
@@ -1190,6 +1250,7 @@ __all__ = [
     "MAX_SKETCHES_PER_TURN",
     "TOOLS",
     "TURN_DEADLINE_SECONDS",
+    "Revision",
     "Tool",
     "ToolBudget",
     "ToolContext",
@@ -1198,7 +1259,9 @@ __all__ = [
     "ToolRefusal",
     "TurnLedger",
     "dispatch",
+    "parse_requests",
     "publish_draft",
     "request_schema",
+    "revise_draft",
     "tool_specs",
 ]

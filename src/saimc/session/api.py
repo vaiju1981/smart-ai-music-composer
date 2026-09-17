@@ -24,12 +24,16 @@ go and fetch.
 the product rather than about the engine: a session that has already published
 is a 409 whether the publish came from a tool call or from a button.
 
-Two endpoints the plan named are deliberately absent, and both for the same
-reason — a turn runs inline, so there is nothing in flight for either to be
-*about*:
+**`/deltas` takes no turn**, and that is the shape the whole loop rests on. An
+edit goes through `revise_draft` and comes back as a draft card, in the same
+synchronous request; a turn is only spent when the user wants the conductor to
+decide something. So a slider moved twice costs two compositions and no model
+call at all, which is what makes the working surface fast and publishing the
+expensive, deliberate part.
 
-- **`/deltas`.** A delta's vocabulary is Phase D's deliverable. An endpoint whose
-  body is a placeholder is worse than one that does not exist yet.
+One endpoint the plan named is deliberately absent, and for a reason that is
+about it rather than about sequencing:
+
 - **`/events`.** A change stream is worth its keep when something happens
   between requests. Nothing does: a turn's state changes at the moment its own
   request returns, so `GET /sessions/{id}` carries exactly the information a
@@ -55,11 +59,12 @@ from typing import Any, Final
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from saimc.jobs.storage import JobStorage
-from saimc.llm.base import ChatClient, LLMClient
+from saimc.llm.base import ChatClient, LLMClient, ToolCall
 from saimc.session.conductor import digest, take_turn
+from saimc.session.deltas import RequestSource, delta_to_dict, refusal_line
 from saimc.session.models import (
     Draft,
     Session,
@@ -69,7 +74,16 @@ from saimc.session.models import (
     VerdictValue,
 )
 from saimc.session.store import SessionStorage, UndoUnavailable
-from saimc.session.tools import ToolContext, ToolRefusal, publish_draft
+from saimc.session.tools import (
+    ToolBudget,
+    ToolContext,
+    ToolRefusal,
+    dispatch,
+    parse_requests,
+    publish_draft,
+    revise_draft,
+)
+from saimc.session.translator import Translation, translate
 
 router = APIRouter()
 
@@ -174,6 +188,7 @@ class DraftResponse(BaseModel):
     draft_id: str
     created_at: str
     parent_id: str | None
+    requests_source: str | None
     seed: int | None
     score_hash: str
     plan_hash: str
@@ -239,6 +254,68 @@ class VerdictRequest(BaseModel):
     feedback: str = ""
 
 
+class DeltasRequest(BaseModel):
+    """Body for `POST /sessions/{id}/deltas`.
+
+    Two ways to ask for the same change — the requests themselves, or the words
+    they came from — and exactly one of them. A body carrying both would be
+    asking twice with no reading of it that is not a guess about which was meant,
+    so the request model refuses the shape rather than the route picking one.
+
+    `sketch` is on by default because the whole loop rests on an edit being
+    cheap: a caller that has just moved a slider wants the audio back, and a
+    caller dragging one wants the numbers without four seconds of FluidSynth,
+    which is what turning it off is for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    deltas: list[dict[str, Any]] | None = None
+    feedback: str | None = Field(default=None, max_length=4096)
+    sketch: bool = True
+
+    @model_validator(mode="after")
+    def _exactly_one_of_two(self) -> DeltasRequest:
+        if (self.deltas is None) == (self.feedback is None):
+            raise ValueError(
+                "send exactly one of `deltas` — the requests themselves — or `feedback`, "
+                "the words they came from"
+            )
+        return self
+
+
+class DeltaRefusalResponse(BaseModel):
+    """One request the engine would not honour, and what to ask for instead."""
+
+    reason: str
+    message: str
+    nearest: str | None
+
+
+class DeltasResponse(BaseModel):
+    """The draft an edit made, and everything that was made of the edit.
+
+    `applied` and `refused` are *this step's* requests; the draft's own chain is
+    the whole line and is readable through `GET /sessions/{id}`. `note` and
+    `unread` are the translator's and are empty when the caller sent requests
+    directly, since a body that already said what it meant has nothing that was
+    read for it.
+
+    `sketch_error` is a sentence rather than a status code, and it does not
+    change the answer: the edit happened and the draft is real, so a render that
+    failed leaves a usable draft that has no audio yet.
+    """
+
+    draft: DraftResponse
+    applied: list[dict[str, Any]]
+    refused: list[DeltaRefusalResponse]
+    source: str
+    note: str
+    unread: list[str]
+    sketch_error: str | None
+
+
 class FinalizeRequest(BaseModel):
     """Body for `POST /sessions/{id}/finalize`."""
 
@@ -286,6 +363,17 @@ def _session(request: Request, session_id: str) -> Session:
         raise HTTPException(status_code=400, detail=f"not a session id: {exc}") from exc
 
 
+def _configured_model(request: Request) -> ChatClient | None:
+    """The model this app was built with, or `None` if it was built without one.
+
+    Both readers below are this function, because there is one fact being read
+    twice and two functions reading it separately is two places for the slot's
+    name to drift.
+    """
+    client: ChatClient | None = getattr(request.app.state, "session_llm", None)
+    return client
+
+
 def _model(request: Request) -> ChatClient:
     """The model this app was built with, or a refusal naming what is missing.
 
@@ -293,8 +381,12 @@ def _model(request: Request) -> ChatClient:
     session with no model would be a session with nothing in it. So the refusal
     comes before anything is written — a 503 on the way in rather than an empty
     session the caller has to notice and clean up.
+
+    The turn-taking routes use this; `/deltas` deliberately does not, since
+    translating a sentence is the one model-shaped thing that has a reading
+    without one.
     """
-    client: ChatClient | None = getattr(request.app.state, "session_llm", None)
+    client = _configured_model(request)
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -341,6 +433,45 @@ def http_from_refusal(exc: ToolRefusal, session: Session) -> HTTPException:
             detail=f"{exc.error_code}: {exc.message} (session {session.session_id})",
         )
     return HTTPException(status_code=code, detail=f"{exc.message} (session {session.session_id})")
+
+
+def _nothing_read(translation: Translation) -> str:
+    """Why a sentence of feedback changed nothing, in the reader's own terms.
+
+    Both halves are reported, because they are different things to be told: what
+    was understood and cannot be honoured — each naming the request that would be
+    — and what was not recognised as a request at all. A sentence naming only one
+    of them would be the silent ignore this whole vocabulary exists to forbid,
+    one layer above the applier that forbids it.
+
+    The refusal is a 422 rather than an empty success, and that is the same rule
+    from the other side: the user asked for a change and there is no change, so
+    answering 200 with the draft they already had would teach them the product
+    did nothing with their words.
+    """
+    parts = [refusal_line(refusal) for refusal in translation.refusals]
+    if translation.unread:
+        said = ", ".join(repr(words) for words in translation.unread)
+        parts.append(f"nothing in {said} names a change this engine carries")
+    if translation.note:
+        parts.append(translation.note)
+    return " ".join(parts) or "this feedback asked for nothing the engine can change."
+
+
+def _unprocessable(exc: ToolRefusal) -> HTTPException:
+    """422 for a refusal whose own sentence *is* the answer.
+
+    The one place this module's translation rule differs from a turn's: a
+    refusal reached through a turn is recorded in the log and read back from it,
+    while on `/deltas` the caller asked for a change and there is no change, so
+    the refusal is what they get. The code is kept in the sentence because it is
+    the name of the reason, and a client branching on it — "unknown_knob" and
+    "revision_regressed" want different words in front of a user — needs it.
+    """
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"{exc.error_code}: {exc.message}",
+    )
 
 
 def _lone_draft(session: Session) -> Draft | None:
@@ -457,6 +588,7 @@ def _serialize_draft(session_id: str, draft: Draft) -> DraftResponse:
         draft_id=draft.draft_id,
         created_at=draft.created_at.isoformat(),
         parent_id=draft.parent_id,
+        requests_source=draft.requests_source,
         seed=draft.spec.seed,
         score_hash=draft.score_hash,
         plan_hash=draft.plan_hash,
@@ -576,6 +708,100 @@ def record_verdict(session_id: str, body: VerdictRequest, request: Request) -> S
     return _serialize_session(session)
 
 
+@router.post("/sessions/{session_id}/deltas")
+async def revise_session(session_id: str, body: DeltasRequest, request: Request) -> DeltasResponse:
+    """Change one draft — from the requests themselves, or from a sentence.
+
+    No turn is taken. The new draft's chain is the record of the edit, and a
+    conductor's turn is only worth spending when there is a *decision* to make;
+    an edit the user has already decided on is not one. So this is the fast
+    surface: a control press or a sentence, one composition, and a draft card
+    back — with no model in the loop at all on the typed path, and none needed
+    on the feedback path either, where a missing model degrades the reading to
+    the keyword table rather than failing the request.
+
+    Both refusals are 422s through `_unprocessable`, because on this route a
+    refusal is the answer the caller asked for rather than a line in a turn's
+    report.
+
+    The sketch is rendered through the `sketch` tool rather than beside it, so
+    there is one renderer and one budget for it. A render that fails does not
+    fail the edit: the draft exists and is measurable, and `sketch_error` is the
+    sentence that says why it has no audio yet.
+    """
+    sessions = _storage(request)
+    session = _session(request, session_id)
+    if session.is_finalized:
+        raise _already_published(session)
+    try:
+        parent = session.draft(body.draft_id)
+    except KeyError as exc:
+        known = sorted(draft.draft_id for draft in session.drafts)
+        raise HTTPException(
+            status_code=404,
+            detail=f"this session has no draft {body.draft_id!r}; it has {known or 'none'}",
+        ) from exc
+
+    translation: Translation | None = None
+    if body.feedback is None:
+        source: RequestSource = "typed"
+        try:
+            requests = parse_requests(body.deltas, maximum=ToolBudget().max_deltas)
+        except ToolRefusal as exc:
+            # The typed path refuses here and nowhere else: a body naming a knob
+            # this build does not have, or asking for more than a revision may
+            # carry, is answered before anything is composed.
+            raise _unprocessable(exc) from exc
+    else:
+        # The piece as it stands is the draft being revised rather than the
+        # session's original spec: "longer" means longer than what the user is
+        # hearing, and a chain that has already moved the tempo makes those two
+        # different numbers.
+        translation = await translate(
+            body.feedback, spec=parent.spec, client=_configured_model(request)
+        )
+        source = translation.source
+        requests = translation.deltas
+        if not requests:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=_nothing_read(translation),
+            )
+
+    ctx = ToolContext(session=session, sessions=sessions, jobs=_jobs(request))
+    try:
+        revision = revise_draft(ctx, parent, requests, source=source)
+    except ToolRefusal as exc:
+        raise _unprocessable(exc) from exc
+
+    child_id = revision.draft.draft_id
+    sketch_error: str | None = None
+    if body.sketch:
+        call = await dispatch(ToolCall(name="sketch", arguments={"draft_id": child_id}), ctx)
+        # The tool replaced the session's copy of the draft in place, and this
+        # route is the only save that follows — there is no turn to save at the
+        # end of.
+        sessions.save(session)
+        if not call.ok:
+            sketch_error = f"{call.error_code}: {call.result}"
+
+    draft = session.draft(child_id)
+    return DeltasResponse(
+        draft=_serialize_draft(session.session_id, draft),
+        applied=[delta_to_dict(delta) for delta in revision.applied],
+        refused=[
+            DeltaRefusalResponse(
+                reason=refusal.reason, message=refusal.message, nearest=refusal.nearest
+            )
+            for refusal in (*revision.refused, *(translation.refusals if translation else ()))
+        ],
+        source=source,
+        note="" if translation is None else translation.note,
+        unread=[] if translation is None else list(translation.unread),
+        sketch_error=sketch_error,
+    )
+
+
 @router.post("/sessions/{session_id}/finalize", status_code=status.HTTP_202_ACCEPTED)
 def finalize_session(session_id: str, body: FinalizeRequest, request: Request) -> FinalizeResponse:
     """Publish one draft by hand — the button the auto setting would have pressed.
@@ -664,6 +890,9 @@ __all__ = [
     "DEFAULT_AUTO_FINALIZE",
     "MAX_AUTO_TURNS",
     "CreateSessionRequest",
+    "DeltaRefusalResponse",
+    "DeltasRequest",
+    "DeltasResponse",
     "DraftResponse",
     "FinalizeRequest",
     "FinalizeResponse",

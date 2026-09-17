@@ -29,8 +29,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -748,6 +749,364 @@ class TestSketch:
 
         response = client.get(f"/sessions/{sketched['session_id']}/sketch/{_FIRST}/ogg")
         assert response.status_code == 410
+
+
+class TestDeltas:
+    """`POST /deltas`: the fast surface, and the one that takes no turn.
+
+    Three properties carry the weight, and each is a promise the plan makes in
+    its own words. A typed edit is a composition and no model call at all —
+    "the working surface is fast" — so a slider moved twice costs two
+    compositions and no turn. Feedback gets a reading with *or without* a
+    model — "the product functions with no model in the loop" — which is why
+    the route asks for the optional model rather than the required one. And a
+    request the engine will not honour is a 422 whose sentence is the answer —
+    "refuse, never no-op" — never a 200 carrying the draft the user already
+    had.
+    """
+
+    _SPARSE: ClassVar[dict[str, Any]] = {"knob": "SetBassMotion", "motion": "sparse"}
+    """A request the engine can honour, and one no measured metric moves.
+
+    The last part is what makes it usable here: a revision that moved a
+    threshold would be at the arbiter's ratchet for a reason this class is not
+    about, and a `SetTempo` on a 30-second piece is swallowed by the duration
+    search — which is a refusal worth its own case rather than the fixture."""
+
+    @staticmethod
+    def _deltas(client: TestClient, created: dict[str, Any], **body: Any) -> httpx.Response:
+        return client.post(
+            f"/sessions/{created['session_id']}/deltas",
+            json={"draft_id": _FIRST, **body},
+        )
+
+    def test_typed_requests_make_a_draft_and_take_no_turn(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The whole reason this route exists: an edit is cheap and decides nothing."""
+        created = _drafts(client, model)
+        turns = len(created["turns"])
+
+        response = self._deltas(client, created, deltas=[self._SPARSE], sketch=False)
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        assert body["source"] == "typed"
+        assert body["applied"] == [self._SPARSE]
+        assert body["refused"] == []
+        assert body["draft"]["draft_id"] == "draft-2"
+        assert body["draft"]["parent_id"] == _FIRST
+        assert body["draft"]["requests_source"] == "typed"
+
+        after = client.get(f"/sessions/{created['session_id']}").json()
+        assert len(after["turns"]) == turns
+        assert len(after["drafts"]) == 3
+
+    def test_a_typed_edit_never_reaches_a_model(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The second half of "fast", and the reason it is separate from the first.
+
+        A turn count that stayed put while a model call happened would be the
+        same promise kept on paper: what makes the typed path deterministic is
+        that the only client the request could reach is the translator's, and
+        the typed path does not go there.
+        """
+        created = _drafts(client, model)
+        asked = len(model.requests)
+
+        self._deltas(client, created, deltas=[self._SPARSE], sketch=False)
+
+        assert len(model.requests) == asked
+
+    def test_the_edit_comes_back_playable(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """A sketch by default, through the tool rather than beside it."""
+        created = _drafts(client, model)
+
+        body = self._deltas(client, created, deltas=[self._SPARSE]).json()
+
+        assert body["sketch_error"] is None
+        assert body["draft"]["sketch"] is not None
+        assert [call["job_id"] for call in rendered] == ["draft-2"]
+        sketch = client.get(body["draft"]["sketch"]["url"])
+        assert sketch.status_code == 200
+        assert sketch.content == b"OggS"
+
+    def test_the_numbers_can_be_had_without_the_audio(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """What a caller dragging a slider wants: the measurements, and no FluidSynth."""
+        created = _drafts(client, model)
+
+        body = self._deltas(client, created, deltas=[self._SPARSE], sketch=False).json()
+
+        assert rendered == []
+        assert body["draft"]["sketch"] is None
+        assert body["sketch_error"] is None
+
+    def test_a_render_that_fails_leaves_the_edit_a_success(
+        self,
+        client: TestClient,
+        model: ScriptedModel,
+        rendered: list[dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The draft is real whether or not FluidSynth ran; only its audio is missing.
+
+        And the failure is a sentence rather than a status code, because the
+        edit *did* happen — the caller has a draft id, a scorecard and a sketch
+        retry, and telling them the whole request failed would take all three
+        away over the one part that can be run again.
+        """
+
+        def _broken(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError("no fluidsynth today")
+
+        monkeypatch.setattr(tools, "render_sketch", _broken)
+        created = _drafts(client, model)
+
+        response = self._deltas(client, created, deltas=[self._SPARSE])
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        assert body["draft"]["sketch"] is None
+        assert "no fluidsynth today" in body["sketch_error"]
+        after = client.get(f"/sessions/{created['session_id']}").json()
+        assert len(after["drafts"]) == 3
+
+    def test_the_model_reads_the_words_when_there_is_one(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        created = _drafts(client, model)
+        model.replies = [_reply(_call("SetBassMotion", motion="sparse"), content="Sparser bass.")]
+
+        body = self._deltas(
+            client, created, feedback="make it less busy down there", sketch=False
+        ).json()
+
+        assert body["source"] == "model"
+        assert body["applied"] == [self._SPARSE]
+        assert body["note"] == "Sparser bass."
+        assert body["unread"] == []
+
+    def test_the_piece_the_model_is_shown_is_the_draft_being_revised(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """ "Longer" means longer than what the user is hearing.
+
+        The session's own spec and the draft's differ as soon as a chain has
+        moved the duration, and a translator shown the session's would answer a
+        request against a piece nobody is listening to.
+        """
+        created = _drafts(client, model)
+        body = self._deltas(
+            client, created, deltas=[{"knob": "SetDuration", "duration_seconds": 90}]
+        ).json()
+        child = body["draft"]["draft_id"]
+
+        model.replies = [_reply(_call("SetBassMotion", motion="sparse"))]
+        self._deltas(client, created, draft_id=child, feedback="denser bass", sketch=False)
+
+        assert "duration_seconds=90s" in _prompt(model, 1)
+
+    def test_the_keyword_table_reads_them_when_there_is_not(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The degradation the plan asks for, met end to end rather than asserted.
+
+        The model is taken out of the app *after* the session exists, because
+        that is the situation a deployment without one is in: the session was
+        opened when a model was configured and the request arrives when it is
+        not. The words are still read, the piece still moves, and the note says
+        which reader answered.
+        """
+        created = _drafts(client, model)
+        client.app.state.session_llm = None
+
+        response = self._deltas(client, created, feedback="sparse bass", sketch=False)
+        assert response.status_code == 200, response.text
+        body = response.json()
+
+        assert body["source"] == "keywords"
+        assert body["applied"] == [self._SPARSE]
+        assert "no language model is configured" in body["note"]
+        assert len(model.requests) == 1
+
+    def test_a_sentence_that_names_nothing_is_refused_with_its_own_words(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """200 with the draft they already had would teach them the product is deaf."""
+        created = _drafts(client, model)
+        client.app.state.session_llm = None
+
+        response = self._deltas(
+            client, created, feedback="make it sound like rain on a tin roof", sketch=False
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "rain" in detail
+        assert "tin roof" in detail
+        assert "nothing in" in detail
+        after = client.get(f"/sessions/{created['session_id']}").json()
+        assert len(after["drafts"]) == 2
+
+    def test_a_request_the_vocabulary_does_not_carry_is_refused_by_name(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """Understood and unbuilt is a different answer to not understood.
+
+        And the code rides in the sentence, because a client putting this in
+        front of a user wants different words for a knob that does not exist
+        yet than for words it could not read.
+        """
+        created = _drafts(client, model)
+        client.app.state.session_llm = None
+
+        response = self._deltas(client, created, feedback="swing it", sketch=False)
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "SetSwing" in detail
+        assert "SetDrumStyle" in detail
+
+    def test_a_sentence_read_whole_answers_with_the_refusal_and_nothing_else(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The middle bucket, and it has to read unlike the other two.
+
+        `_nothing_read` composes three parts — the refusals, the words nothing
+        named, and the reader's own note — and this is the case where the first
+        is the only one to report: the table understood every word of "swing
+        feel" and the engine can honour none of it. Saying "nothing in these
+        words names a change" would be the collapse `translator.py` refuses,
+        because the user's words *were* understood.
+        """
+        created = _drafts(client, model)
+        client.app.state.session_llm = None
+
+        response = self._deltas(client, created, feedback="swing feel", sketch=False)
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "SetSwing" in detail
+        assert "nothing in" not in detail
+
+    def test_a_model_that_only_calls_a_tool_leaves_the_refusal_to_speak_alone(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """And the note is the part that goes missing here rather than the words.
+
+        A model answering only by calling a tool has said what it read and
+        nothing else, so there is no prose to append: the sentence the user
+        gets is the vocabulary's own refusal, which is the one thing they can
+        act on, rather than the reader's commentary about itself.
+        """
+        created = _drafts(client, model)
+        model.replies = [_reply(_call("SetSwing"))]
+
+        response = self._deltas(client, created, feedback="swing feel", sketch=False)
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "SetSwing" in detail
+        assert "nothing in" not in detail
+        assert "no language model" not in detail
+
+    def test_an_unknown_knob_sent_as_a_request_is_refused_with_its_code(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        created = _drafts(client, model)
+
+        response = self._deltas(client, created, deltas=[{"knob": "SetSaxophone"}], sketch=False)
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail.startswith("invalid_arguments: ")
+        assert "SetSaxophone" in detail
+
+    def test_a_request_the_engine_cannot_honour_is_refused_rather_than_ignored(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """A 30-second calming piece plays at 64 BPM whatever it is asked for.
+
+        The engine re-derives the tempo because the length outranks it, which is
+        deliberate and tested in `duration.py`; what the route owes the user is
+        the trade, named, with both numbers — an edit that quietly composed at
+        the old tempo is the silent no-op the whole vocabulary forbids.
+        """
+        created = _drafts(client, model)
+
+        response = self._deltas(
+            client, created, deltas=[{"knob": "SetTempo", "tempo_bpm": 96}], sketch=False
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail.startswith("tempo_not_honoured: ")
+        assert "96" in detail
+        assert "64" in detail
+        after = client.get(f"/sessions/{created['session_id']}").json()
+        assert len(after["drafts"]) == 2
+
+    def test_the_draft_remembers_how_its_requests_were_asked_for(
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+    ) -> None:
+        """Recorded on the child, and durable before the answer is.
+
+        It is what makes the preference log a log of *preferences*: a like
+        attached to a delta a model chose and one attached to a delta the user
+        named weigh differently when the log is read as a dataset, and a record
+        that could not tell them apart would have thrown that away when it was
+        written.
+        """
+        created = _drafts(client, model)
+        client.app.state.session_llm = None
+
+        body = self._deltas(client, created, feedback="sparse bass", sketch=False).json()
+
+        child = SessionStorage(roots[1]).get(created["session_id"]).draft(body["draft"]["draft_id"])
+        assert child.requests_source == "keywords"
+        assert child.parent_id == _FIRST
+
+    def test_an_unknown_draft_is_404(self, client: TestClient, model: ScriptedModel) -> None:
+        created = _drafts(client, model)
+        response = self._deltas(client, created, draft_id="draft-9", deltas=[self._SPARSE])
+        assert response.status_code == 404
+        assert "draft-9" in response.json()["detail"]
+
+    def test_a_published_session_refuses_an_edit(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """The same rule a turn's 409 states, on the route that edits instead of deciding."""
+        created = _drafts(client, model)
+        client.post(f"/sessions/{created['session_id']}/finalize", json={"draft_id": _FIRST})
+
+        response = self._deltas(client, created, deltas=[self._SPARSE])
+
+        assert response.status_code == 409
+        assert "publishing is final" in response.json()["detail"]
+
+    def test_a_body_that_answers_both_ways_is_refused(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """Two readings of one body with no honest way to pick between them."""
+        created = _drafts(client, model)
+        response = self._deltas(
+            client, created, deltas=[self._SPARSE], feedback="sparse bass", sketch=False
+        )
+        assert response.status_code == 422
+        assert "exactly one of" in response.text
+
+    def test_a_body_that_answers_neither_way_is_refused(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        created = _drafts(client, model)
+        response = self._deltas(client, created, sketch=False)
+        assert response.status_code == 422
+        assert "exactly one of" in response.text
 
 
 class TestUnconfiguredStorage:

@@ -44,22 +44,24 @@ from saimc.compose.linter import LintCode, LintIssue, LintReport
 from saimc.compose.plan import CompositionPlan, PlanError, UnsupportedPlanVersionError
 from saimc.llm.base import LLMError
 from saimc.quality import PieceQuality
-from saimc.session.deltas import Delta, delta_from_dict, delta_to_dict
+from saimc.session.deltas import Delta, RequestSource, delta_from_dict, delta_to_dict
 from saimc.spec import (
     SPEC_SCHEMA_VERSION,
     CompositionSpec,
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 3
+SESSION_SCHEMA_VERSION: Final[int] = 4
 """Bump when a record in this module gains, loses or reshapes a field.
 
-Moved to 2 when `Session` gained `spec`, and to 3 when `Draft` gained
-`deltas`. Both fields have defaults, so an older document would have loaded
-with the field silently missing — which is the failure the tag exists to
-prevent, and the reason the guard compares the tag rather than tolerating
-what it recognises. A draft's lineage read as empty is a draft that claims
-to have been drafted from the brief when it was revised from another.
+Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
+and to 4 when it gained `requests_source`. Every one of those fields has a
+default, so an older document would have loaded with the field silently
+missing — which is the failure the tag exists to prevent, and the reason the
+guard compares the tag rather than tolerating what it recognises. A draft's
+lineage read as empty is a draft that claims to have been drafted from the
+brief when it was revised from another, and its source read as absent is a
+request with no record of who asked for it.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
@@ -91,6 +93,7 @@ sees it.
 VerdictValue = Literal["like", "dislike"]
 
 _TURN_TRIGGERS: Final[tuple[TurnTrigger, ...]] = ("brief", "message", "auto")
+_REQUEST_SOURCES: Final[tuple[RequestSource, ...]] = ("typed", "conductor", "model", "keywords")
 _TOOL_OUTCOMES: Final[tuple[ToolOutcome, ...]] = ("ok", "refused", "error")
 _VERDICT_VALUES: Final[tuple[VerdictValue, ...]] = ("like", "dislike")
 
@@ -334,6 +337,25 @@ class Draft:
     A step would not do, because the plan is derived from the spec and the
     plan-writing half of a chain has to be folded from the root or a second
     revision quietly discards the first.
+
+    `requests_source` is how *this* draft's own step was asked for — a studio
+    control, the conductor's `revise` call, or feedback read with or without a
+    model — and it is `None` on a draft drafted from the brief, which has no
+    requests to place. One value for the chain rather than one per request: the
+    requests of a single step are all read by the same reader, and a draft that
+    recorded a source per delta would be storing the same string N times. It is
+    what makes the preference log a log of preferences, since a like attached to
+    a change a model chose and a like attached to one a user named are not the
+    same datum.
+
+    A chain with no source is `None` and is read tolerantly, like every other
+    default-bearing field here: it means the step's reader was not recorded,
+    which is what a document written before this field existed says. What the
+    record refuses is the shape nothing can produce — a source for a step that
+    has no requests — because a source is a claim *about* requests and there are
+    none to be about. The complete-pair discipline belongs to the writer rather
+    than to the constructor: `revise_draft` is the only thing that builds a
+    revision, and it takes `source` as a required keyword.
     """
 
     draft_id: str
@@ -345,6 +367,7 @@ class Draft:
     lint: LintReport
     parent_id: str | None = None
     deltas: tuple[Delta, ...] = ()
+    requests_source: RequestSource | None = None
     sketch: SketchRecord | None = None
 
     def __post_init__(self) -> None:
@@ -357,6 +380,12 @@ class Draft:
             raise ValueError(
                 "a draft that carries deltas must name the draft they were applied to: "
                 "deltas with no parent are a revision of nothing"
+            )
+        if self.requests_source is not None and not self.deltas:
+            raise ValueError(
+                "a draft records how its own requests were asked for, so a recorded source "
+                "needs requests to be about: a draft with no chain has no step to place, and "
+                "a source on one would be provenance for nothing"
             )
 
     @property
@@ -384,6 +413,7 @@ class Draft:
             "created_at": self.created_at.isoformat(),
             "parent_id": self.parent_id,
             "deltas": [delta_to_dict(delta) for delta in self.deltas],
+            "requests_source": self.requests_source,
             "spec": self.spec.model_dump(mode="json"),
             "plan": self.plan.to_canonical_dict(),
             "performance_plan_hash": self.performance_plan_hash,
@@ -396,11 +426,17 @@ class Draft:
     def from_document(cls, payload: dict[str, Any]) -> Draft:
         draft_id = payload.get("draft_id", "?")
         raw_sketch = payload.get("sketch")
+        raw_source = payload.get("requests_source")
         return cls(
             draft_id=draft_id,
             created_at=datetime.fromisoformat(payload["created_at"]),
             parent_id=payload.get("parent_id"),
             deltas=tuple(delta_from_dict(entry) for entry in payload.get("deltas", [])),
+            requests_source=(
+                None
+                if raw_source is None
+                else _one_of(raw_source, _REQUEST_SOURCES, field_name="requests_source")
+            ),
             spec=_read_spec(payload["spec"], owner=f"draft {draft_id}"),
             plan=_read_plan(payload["plan"], owner=f"draft {draft_id}"),
             performance_plan_hash=payload["performance_plan_hash"],
