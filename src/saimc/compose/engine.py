@@ -535,6 +535,7 @@ def _build_score(
             shape=shape,
             voices=voices,
             figures=bass_figures,
+            bass_root_motion=plan.bass_root_motion,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
             prev_melody_leap=prev_melody_leap,
@@ -615,6 +616,7 @@ def _build_score(
             shape=shape,
             voices=voices,
             figures=bass_figures,
+            bass_root_motion=plan.bass_root_motion,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
             prev_melody_leap=prev_melody_leap,
@@ -816,6 +818,7 @@ def _generate_section(
     seed_for_variation: int,
     band: MelodyBand,
     figures: tuple[BassFigure, ...],
+    bass_root_motion: bool,
     voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
     shape: MelodyShape = DEFAULT_MELODY_SHAPE,
     prev_bass: int | None = None,
@@ -841,7 +844,11 @@ def _generate_section(
     played over that landing tone for every bar of the chord, so the
     bass line moves stepwise through inversions instead of jumping
     root to root, and the walk carries across section boundaries via
-    `prev_bass`. The melody carries too, through `prev_melody` and
+    `prev_bass`. `bass_root_motion` narrows those landing candidates to
+    the chord's root, so the walk states the harmony where it changes
+    and still joins the last bar by the smallest step the octave grid
+    allows; the stepwise-through-inversions rule above is what `False`
+    keeps. The melody carries too, through `prev_melody` and
     `prev_melody_leap`: a section opens on the line the last one left
     off rather than restarting it. The melody develops the section's
     motif: every bar
@@ -969,12 +976,19 @@ def _generate_section(
             bass_pitch = pinned
             prev_bass = pinned
         else:
+            # Which of the chord's tones the landing may choose from. The
+            # plan's root motion narrows it to the root, so a chord change
+            # is stated where it happens; the alternative is every chord
+            # tone, which lets the walk join the last bar by the smallest
+            # step and land on an inversion — or on a tone the two chords
+            # share, and then the bass does not move at all.
+            tones = (0,) if bass_root_motion else chord_tones
             # Two octaves of candidates keep the walk inside the bass
             # register even in sharp minor keys whose chord roots sit
             # above the middle of the keyboard.
             candidates = [
                 _octave_down(chord_root + tone, octaves=octaves)
-                for tone in chord_tones
+                for tone in tones
                 for octaves in (1, 2)
             ]
             candidates = [c for c in candidates if 21 <= c <= 60]

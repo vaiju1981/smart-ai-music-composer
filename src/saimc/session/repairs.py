@@ -11,45 +11,50 @@ come out clean.
 
 What the measurement says, and it is the whole design:
 
-- **Four metrics breach at all, and 39 of the 90 pieces breach something.**
-  `harmony_pad_coverage` (30 pieces), `texture_hierarchy` (30),
-  `max_leap_semitones` (20) and `leap_recovery_ratio` (2). So a repair loop is
+- **Four metrics breach at all, and 38 of the 90 pieces breach something.**
+  `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
+  `max_leap_semitones` (10) and `leap_recovery_ratio` (3). So a repair loop is
   a loop over four bars in practice, and the other seven have no entry because
   nothing asked for them by *that* corpus — not because they cannot be reached.
-  A later sweep of 5182 pieces, reached through the delta vocabulary rather than
-  through a mood and a seed, finds two of them: a `register_separation_semitones`
-  bar (a harmony clearance wide enough to push the bed under the tune) and, very
-  rarely, a `step_ratio` one. Both land on `unmapped`, which is the outcome the
-  next bullet's design has to be able to say out loud. Two more turn up under a
-  one-semitone band — `range_semitones` and, with it, `repeat_ratio` — and that
-  pair earns its place twice over: it is the one reachable combination on which
-  the quality report's order and the arbiter's tier order *disagree*, so it is
-  what makes "the loop aims at the arbiter's worst bar" a claim a test can fail
-  rather than a restatement of `findings()[0]`.
+  A later sweep of 2376 applied requests over 72 pieces, reached through the
+  delta vocabulary rather than through a mood and a seed, finds four of them:
+  `register_separation_semitones` (a harmony clearance wide enough to push the
+  bed under the tune), `tessitura_overlap_semitones` (a band wide enough to put
+  the tune inside the bed), and — twice each — `step_ratio` and `repeat_ratio`.
+  All four land on `unmapped`, which is the outcome the next bullet's design has
+  to be able to say out loud. `repeat_ratio` earns its place twice over: under a
+  one-semitone band it arrives with `range_semitones`, and that pair is the one
+  reachable combination on which the quality report's order and the arbiter's
+  tier order *disagree*, so it is what makes "the loop aims at the arbiter's
+  worst bar" a claim a test can fail rather than a restatement of
+  `findings()[0]`.
 - **The bed's two bars are one repair seen from two sides.**
   `SetHarmonyTexture(broken_chord=False)` — the knob `harmony_pad_coverage`'s
   own hint names, and the mood's texture rule the other way round — clears the
   pad bar in 30 of 30 pieces and the texture bar in 30 of 30, and
   `SetAccompanimentDensity(step_ticks=1440)`, an arpeggio that steps once per
-  three beats instead of once per beat, measures *identically* on all 30. They
-  are both "let the bed hold rather than flurry", and the density move is the
-  one that works when the figure is not the broken chord. Those are
-  single-candidate readings, taken to *choose* the table; what the loop does
-  with them is the next bullet.
+  three beats instead of once per beat, measures *identically* on all 30: the
+  two readings are the same 25 pieces out clean and 5 pieces whose other bar —
+  the tune's — was already missing. They are both "let the bed hold rather than
+  flurry", and the density move is the one that works when the figure is not the
+  broken chord. Those are single-candidate readings, taken to *choose* the
+  table; what the loop does with them is the next bullet.
 - **The tune's leap bar is only partly repairable, and the honest reading of
   that is a bound rather than a knob.** `SetMelodyBand(semitones=9)` — the
-  narrowest band the range bar allows — clears `max_leap_semitones` in 8 of its
-  20 pieces and leaves a different bar missed in 9 of them;
-  `SetMotifVariation(factor=0.5)` clears 6. No single move clears it reliably,
+  narrowest band the range bar allows — clears `max_leap_semitones` in 5 of its
+  10 pieces and leaves a different bar missed in 4 of the other 5;
+  `SetMotifVariation(factor=0.5)` clears 3. No single move clears it reliably,
   which is what the hint says without meaning to: it asks for a change to
   `motif.py`'s walk, and no request in the vocabulary is that change. The loop
   therefore keeps the best of the two and reports what is left.
 - **A trial the engine refuses is skipped, not fatal.** `compose` raises on a
-  lint failure (C4's finding 1), and two of the corpus's candidates do:
-  narrowing the band on `electrifying/120s/1` and `electrifying/240s/1` writes
-  a dissonant collision. A repair loop that let that propagate would turn a
+  lint failure (C4's finding 1), and the wider sweep's 2376 requests are refused
+  26 times — a five-semitone band and a four-bar arpeggio step both write
+  dissonant collisions. A repair loop that let that propagate would turn a
   candidate it cannot use into a failed turn, so `unplayable` is a recorded
-  outcome.
+  outcome. No candidate the table itself holds is refused by this corpus (see
+  the paragraph after the next one); the wider magnitudes are what keeps the arm
+  reachable, and `_ELECTRIC_90_17` is the piece the test reaches it through.
 - **`refused` is the one outcome no request in this table produces**, and it is
   kept for a reason a test cannot supply. `_try` checks that the applier honoured
   the whole chain and records `refused` when it did not; every entry in `_REPAIRS`
@@ -62,15 +67,15 @@ What the measurement says, and it is the whole design:
   branch stays without a case to reach it.
 
 **What the loop does to that corpus**, which is the number the table above was
-chosen for rather than a claim about it — 51 of the 90 pieces are clean before
-it runs, 37 of the 39 breaching ones come out clean, one is improved and still
-missing a bar, and one is refused. Twenty-six of the repaired pieces need one
-kept request and twelve need two, so `maximum` never binds in practice; across
-all of the trials, 95 outcomes are `kept`, 7 are `no_gain` and 2 are
+chosen for rather than a claim about it — 52 of the 90 pieces are clean before
+it runs, 36 of the 38 breaching ones come out clean, one is improved and still
+missing a bar, and one is left as it was. Thirty-two of the repaired pieces need
+one kept request and five need two, so `maximum` never binds in practice; across
+all of the trials, 80 outcomes are `kept`, 8 are `no_gain` and none is
 `unplayable`.
 
-**All seven `no_gain` trials left the bar they aimed at still missed**, in all
-5182 pieces swept, which is worth stating because the other reading is the one
+**All eight `no_gain` trials left the bar they aimed at still missed**, in all
+2376 requests swept, which is worth stating because the other reading is the one
 that sounds more likely: a candidate that clears its bar and still loses on the
 piece as a whole. Nothing writes a sentence about that case — not because it is
 impossible, but because two sweeps wide enough to find it did not, and a message

@@ -330,9 +330,11 @@ class TestTheSidecarRecordsThePlan:
         """The nested document is versioned too, and the refusal is the
         plan's own — the sidecar does not get to accept what the plan type
         would not."""
-        from saimc.compose.plan import PlanError
+        from saimc.compose.plan import PLAN_FORMAT_PREFIX, PLAN_SCHEMA_VERSION, PlanError
 
         payload = _composed().to_sidecar()
-        payload["plan"]["format"] = "CompositionPlan:2"
+        # Derived, so "the next version" stays the next one: written out it
+        # silently becomes this build's own tag, and the test stops firing.
+        payload["plan"]["format"] = f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION + 1}"
         with pytest.raises(PlanError):
             EngineOutput.from_sidecar(payload)

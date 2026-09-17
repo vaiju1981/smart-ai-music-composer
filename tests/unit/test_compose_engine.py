@@ -650,6 +650,160 @@ class TestChordToneHarmony:
         assert final_bar_notes[0].pitch_midi % 12 == tonic % 12
 
 
+class TestBassRootMotion:
+    """The plan's `bass_root_motion`: which tone the walk lands on.
+
+    Every case composes each cell twice — once under the default plan and
+    once under `replace(plan, bass_root_motion=False)` — so the claim and
+    the premise that the two policies *could* differ are measured in the
+    same pass. A rate measured under one policy alone would say nothing:
+    a walk that landed on the root by accident is exactly what the off
+    policy does, at 32% of its chord changes.
+    """
+
+    CELLS = (
+        (Mood.CALMING, 60, 0, None),
+        (Mood.CALMING, 180, 0, "drum_set"),
+        (Mood.SLEEP, 60, 0, None),
+        (Mood.SLEEP, 180, 0, None),
+        (Mood.ELECTRIFYING, 60, 0, None),
+        (Mood.ELECTRIFYING, 180, 0, "drum_set"),
+    )
+    """Six pieces: three moods, two durations, and a rhythm section in two
+    of them so the kit's claims have a kit to be about."""
+
+    def _pair(self, mood: Mood, duration: int, seed: int, instrumentation: str | None):
+        spec = _spec(mood, duration=duration, seed=seed, instrumentation=instrumentation)
+        out = compose(spec)
+        plan = out.plan
+        assert plan is not None, "every compose() carries the plan it composed under"
+        assert plan.bass_root_motion, "the default plan is the policy under test"
+        return out, compose(spec, plan=replace(plan, bass_root_motion=False))
+
+    @staticmethod
+    def _landings(out) -> list[int | None]:
+        """The pitch class the left hand states on each bar line.
+
+        The landing tone is rung 0 of the slot's figure, which every
+        figure puts at the bar line — `_bass_figure_pitches` guarantees
+        it, and the guarantee is what makes the bar's first bass note the
+        tone the walk chose.
+        """
+        measures = out.notation_score.measures
+        ticks_per_bar = bar_ticks(out.time_signature)
+        first: dict[int, tuple[int, int]] = {}
+        for note in out.notation_score.notes:
+            if note.voice_id != VOICE_BASS:
+                continue
+            bar = note.tick // ticks_per_bar
+            if bar not in first or note.tick < first[bar][0]:
+                first[bar] = (note.tick, note.pitch_midi)
+        assert len(measures) == len(out.chord_bars), "one measure per bar"
+        return [first[bar][1] % 12 if bar in first else None for bar in range(len(measures))]
+
+    @staticmethod
+    def _roots(out, mood: Mood) -> list[int]:
+        """The chord root's pitch class per bar, from the oracle's walk.
+
+        The oracle spells each slot's tones from the root, tonic-relative,
+        and `bar_keys` publishes the key the bar belongs to — so the root
+        is the first tone read against the key the engine itself recorded,
+        and the lifted sections need no special case.
+        """
+        return [
+            (key_root_midi(out.bar_keys[bar]) + tones[0]) % 12
+            for bar, (_degree, tones, _key_offset) in enumerate(
+                _bar_degrees_and_offsets(out, mood.value)
+            )
+        ]
+
+    def test_the_left_hand_states_the_root_at_every_chord_change(self) -> None:
+        """The knob's own claim, and the premise it needs.
+
+        Under the default plan the landing tone is the chord's root at
+        every chord change; under `bass_root_motion=False` it is the root
+        at well under half of them, because the walk is free to join the
+        line on any chord tone — and lands on a tone the two chords share
+        often enough that at 43% of changes the left hand does not move at
+        all. The second reading is what makes the first a property of the
+        policy rather than of the chords.
+        """
+        on_root = off_root = changes = 0
+        for mood, duration, seed, instrumentation in self.CELLS:
+            on, off = self._pair(mood, duration, seed, instrumentation)
+            roots = self._roots(on, mood)
+            # The premise: a tone I call the root really does sound in the
+            # bar. Without this a root derived a semitone out would be
+            # reported as a walk that left the chord.
+            assert all(root in pcs for root, pcs in zip(roots, on.chord_bars, strict=True))
+            on_land, off_land = self._landings(on), self._landings(off)
+            for bar in range(1, len(roots)):
+                if on.chord_bars[bar] == on.chord_bars[bar - 1]:
+                    continue
+                changes += 1
+                on_root += on_land[bar] == roots[bar]
+                off_root += off_land[bar] == roots[bar]
+        assert changes >= 60, f"only {changes} chord changes: too few to read a rate off"
+        assert on_root == changes, f"{changes - on_root} of {changes} chord changes not on the root"
+        assert off_root * 2 < changes, (
+            f"the off policy lands on the root at {off_root}/{changes}, which is not "
+            f"far enough below the on policy's {on_root} to attribute anything to it"
+        )
+
+    def test_the_policy_changes_no_part_of_the_harmony(self) -> None:
+        """`chord_bars` and `bar_keys` are the same under either policy.
+
+        The whole justification for calling this a landing choice rather
+        than a harmony change: the bar still sounds the same chord and
+        still belongs to the same key, so a critic reading the harmony
+        cannot see the knob and a listener hears the change where it
+        happens instead of hearing a different progression.
+        """
+        for mood, duration, seed, instrumentation in self.CELLS:
+            on, off = self._pair(mood, duration, seed, instrumentation)
+            assert on.chord_bars == off.chord_bars, mood
+            assert on.bar_keys == off.bar_keys, mood
+            assert on.arrangement == off.arrangement, mood
+
+    def test_the_knob_carries_the_tune_and_the_bed_with_the_hand(self) -> None:
+        """What the field's docstring got wrong before it was measured.
+
+        Narrowing the landing tones moves the bass in every piece — and
+        also the tune, because the melody refuses a candidate that would
+        rub against the bar's sounding bass, and the bed, because
+        `_settle_harmony_register` re-places it under wherever the tune
+        ended up. The kit's *written* notes never move: it reads neither
+        the bass nor the tune. Both counts are asserted against zero as a
+        premise, so a matrix whose tunes all happened to sit still cannot
+        read as a pass.
+        """
+        moved: dict[int, int] = dict.fromkeys(
+            (VOICE_BASS, VOICE_MELODY, VOICE_HARMONY, VOICE_PERCUSSION), 0
+        )
+        for mood, duration, seed, instrumentation in self.CELLS:
+            on, off = self._pair(mood, duration, seed, instrumentation)
+            for voice in moved:
+                written = [
+                    (n.tick, n.pitch_midi, n.duration_ticks, n.velocity)
+                    for n in on.notation_score.notes
+                    if n.voice_id == voice
+                ]
+                other = [
+                    (n.tick, n.pitch_midi, n.duration_ticks, n.velocity)
+                    for n in off.notation_score.notes
+                    if n.voice_id == voice
+                ]
+                moved[voice] += written != other
+        cells = len(self.CELLS)
+        assert moved[VOICE_BASS] == cells, f"the hand itself moved in only {moved[VOICE_BASS]}"
+        assert moved[VOICE_MELODY] > 0, "no tune in this matrix moved: nothing to attribute"
+        assert moved[VOICE_HARMONY] > 0, "no bed in this matrix moved: nothing to attribute"
+        assert moved[VOICE_PERCUSSION] == 0, (
+            "the kit's written notes read neither the bass nor the tune; a change here "
+            "means the coupling is wider than the humanization stream"
+        )
+
+
 class TestSharpMinorKeys:
     """C#m and G#m were advertised by the spec vocabulary but crashed
     the engine with an unstructured ValueError (missing key roots)."""
@@ -2360,17 +2514,32 @@ class TestHarmonyVoice:
         melody's register alone — so the pin is per voice, and a future
         accidental re-timing names its voice in the failure.
 
-        The kit and the bass read *identically* to the pre-table plan:
-        the kit's 207 percussion events and the bass's 46 notes are
-        unchanged, as are the melody's 84 onsets, durations and
-        velocities. What moved is the melody's pitch — from the fixed
-        64-84 window every instrument used to share to the piano's own
-        band, 60-77 — which is the whole point of the table and the one
-        voice this pin is re-based for. It has been re-based three times
-        now, twice before this: once when the melody walk was rewritten
-        to move in scale degrees, and once when the bass replaced its
-        one hard-coded figure with the figure library. Both readings were
-        checked voice by voice the same way.
+        The kit's own notes read *identically* to the pre-table plan and
+        are identical under either bass policy — 191 hits, checked with
+        humanization off so the ghost pass cannot move them. What moved
+        is the melody's pitch — from the fixed 64-84 window every
+        instrument used to share to the piano's own band, 60-77 — which
+        is the whole point of the table. The pin has been re-based four
+        times now: once when the melody walk was rewritten to move in
+        scale degrees, once when the bass replaced its one hard-coded
+        figure with the figure library, once for the instrument table
+        above, and once for `bass_root_motion`, which narrowed the bass
+        walk's landing tones to the chord's root.
+
+        That fourth re-basing exposed a coupling worth naming, because
+        the percussion pin moved with the melody's and neither voice
+        reads the other. The humanization pass draws one `uniform` per
+        melodic, harmonic and percussion note from a single stream, and
+        the ghost pass then draws its `random()` per percussion note
+        from *the same stream* — so the bar of the stream the ghosts
+        begin at is a function of how many melodic notes were written.
+        This piece's melody went from 84 notes to 83, the ghost draws
+        started one position earlier, and the kit's fills changed while
+        its groove did not (16 ghosts became 17). A melodic edit
+        re-writing the drums' fills is a coupling no critic can
+        attribute and no plan can express; giving the ghost pass its own
+        stream is the fix and is Phase F's next commit rather than this
+        one, so that each commit's music change stays singular.
         """
         out = compose(
             _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
@@ -2378,16 +2547,16 @@ class TestHarmonyVoice:
         plan = out.performance_plan
         pinned = {
             VOICE_BASS: (
-                "3759d87e70d0d346e0ffb4088a1ddfbd5598ff7595f927c6a5412281504cf4dc",
+                "2ac870d3a3d66ce1ccf658a61d75fa9dd7a7e7e74e41b917065fcb5d89b1d471",
                 46,
             ),
             VOICE_MELODY: (
-                "b89953fc0a976956f0868113dde9ea2ea03b9e0e7db71f467dc3caaa17294def",
-                84,
+                "bebd0b09428c79c958d5d2414051d9ca582b12eeb77ca5282cda6d495d6cd2db",
+                83,
             ),
             VOICE_PERCUSSION: (
-                "f1a2f2631018d91de93e382997e23d4f55f422b88638a3230be978df674840fb",
-                207,
+                "240d18fe7a1cd3be984b2d266311dbce66427f315be0faf75548b99109a57de8",
+                208,
             ),
         }
         for voice_id, (digest, count) in pinned.items():

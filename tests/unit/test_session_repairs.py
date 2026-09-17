@@ -9,7 +9,7 @@ weight.
   the file.** `musical_order` counts what is *wrong* with a piece, so a repair
   that makes a piece worse moves the tuple up. `_try` reads `order < floor`, and
   a piece exists in which the table's two candidates pull opposite ways —
-  `electrifying/120s/3`, where narrowing the band fixes the piece and halving
+  `electrifying/30s/16`, where narrowing the band fixes the piece and halving
   the motif variation makes it worse. A loop with the comparison inverted keeps
   the second one, which `revise_draft`'s ratchet would then refuse as a
   regression: the candidate that helps discarded and the one that hurts kept.
@@ -52,13 +52,32 @@ from saimc.spec import CompositionSpec, Mood
 _CALM = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=0)
 """Clean before anything runs — found by scanning a corpus rather than by luck."""
 _ELECTRIC_30_0 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0)
-_ELECTRIC_120_0 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=0)
+"""The bed's two candidates tie here, both reaching a clean piece."""
 _ELECTRIC_120_1 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=1)
-_ELECTRIC_120_3 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=3)
+"""Three bars in report order, and clearing the tune's exposes the bed's."""
+_ELECTRIC_90_17 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=17)
+"""The engine refuses the leap bar's first request here.
+
+Found by sweeping the vocabulary's magnitudes over a grid rather than by
+reusing the piece this role had before `bass_root_motion`: the old
+`electrifying/120s/1` no longer produces an unplayable score at band 9,
+and a fixture that stopped raising would leave the trial above passing as
+`kept`. Band 5 still refuses that piece, which is how the sweep says the
+outcome is alive rather than that the arm is dead.
+"""
+_ELECTRIC_30_16 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=16)
+"""The two candidates pull strictly opposite ways, which the old one no longer did.
+
+Narrowing the band moves the order from `(0, 3, 1.385, 9)` to
+`(0, 2, 1.169, 4)`; halving the motif variation moves it to
+`(0, 3, 1.643, 9)` — past the piece it started from. A sweep of 1200
+specs found eight such pieces and this is the shortest, so the case costs
+a 30-second compose rather than a 300-second one.
+"""
 _ELECTRIC_30_2 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=2)
 """The piece on which the report's order and the arbiter's disagree."""
 _SLEEP_30_3 = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=3)
-"""The refusal: both of the leap bar's requests measure no better than the piece."""
+"""The refusal: both of the leap-recovery bar's requests measure no better."""
 _CLEARANCE = SetHarmonyClearance(semitones=24)
 """A prefix, because production folds the draft's own chain as one.
 
@@ -120,7 +139,7 @@ class TestTheTable:
         real piece breached it, and each must still have one here — otherwise a
         key's own case has no music behind it."""
         breaching: set[str] = set()
-        for spec in (_ELECTRIC_30_0, _ELECTRIC_120_0, _SLEEP_30_3):
+        for spec in (_ELECTRIC_30_0, _ELECTRIC_120_1, _SLEEP_30_3):
             breaching |= {finding.metric for finding in _quality(spec).findings()}
         assert set(_REPAIRS) <= breaching, set(_REPAIRS) - breaching
 
@@ -206,19 +225,19 @@ class TestTheDirection:
     """The case the file exists for: one candidate helps and one hurts.
 
     Inverted, `_try` keeps what makes the piece worse and refuses what makes it
-    better. `electrifying/120s/3` is the piece where both are in the same round,
+    better. `electrifying/30s/16` is the piece where both are in the same round,
     so the chain the loop keeps names which reading it took.
     """
 
     def test_the_two_candidates_pull_opposite_ways_premise(self) -> None:
-        floor = musical_order(_quality(_ELECTRIC_120_3), lint_passed=True)
-        assert worst_finding(_quality(_ELECTRIC_120_3).findings()).metric == "max_leap_semitones"
+        floor = musical_order(_quality(_ELECTRIC_30_16), lint_passed=True)
+        assert worst_finding(_quality(_ELECTRIC_30_16).findings()).metric == "max_leap_semitones"
         better, worse = _REPAIRS["max_leap_semitones"]
-        assert musical_order(_quality(_ELECTRIC_120_3, (better,)), lint_passed=True) < floor
-        assert musical_order(_quality(_ELECTRIC_120_3, (worse,)), lint_passed=True) >= floor
+        assert musical_order(_quality(_ELECTRIC_30_16, (better,)), lint_passed=True) < floor
+        assert musical_order(_quality(_ELECTRIC_30_16, (worse,)), lint_passed=True) >= floor
 
     def test_the_loop_keeps_the_one_that_moves_the_order_down(self) -> None:
-        outcome = _repair(_ELECTRIC_120_3, maximum=1)
+        outcome = _repair(_ELECTRIC_30_16, maximum=1)
         assert outcome.added == (SetMelodyBand(semitones=9),)
         assert [attempt.outcome for attempt in outcome.attempts] == ["kept", "no_gain"]
 
@@ -245,7 +264,7 @@ class TestTheUnplayableTrial:
         """Without this the case below is evidence of nothing: if the engine
         stopped raising, `unplayable` would go on passing as `kept`."""
         candidate = _REPAIRS["max_leap_semitones"][0]
-        application = apply_deltas(_ELECTRIC_120_1, [candidate])
+        application = apply_deltas(_ELECTRIC_90_17, [candidate])
         assert application.applied == (candidate,)
         with pytest.raises(CompositionEngineError):
             compose(application.spec, plan=application.plan)
@@ -253,13 +272,13 @@ class TestTheUnplayableTrial:
     def test_a_candidate_the_engine_refuses_is_recorded_and_skipped(self) -> None:
         """A loop that let the engine's refusal propagate would turn a candidate
         it cannot use into a failed turn."""
-        outcome = _repair(_ELECTRIC_120_1, maximum=4)
+        outcome = _repair(_ELECTRIC_90_17, maximum=4)
         assert [(a.metric, a.outcome) for a in outcome.attempts][:2] == [
             ("max_leap_semitones", "unplayable"),
             ("max_leap_semitones", "kept"),
         ]
         assert outcome.added[0] == SetMotifVariation(factor=0.5)
-        assert _after(_ELECTRIC_120_1, (), outcome).findings() == ()
+        assert _after(_ELECTRIC_90_17, (), outcome).findings() == ()
 
 
 class TestTheTwoRoundChain:
@@ -267,7 +286,7 @@ class TestTheTwoRoundChain:
         """Clearing the tune's leap bar leaves the bed's bars missed: the engine
         wrote a different tune under a different band. The loop re-aims because
         of this, and the second round is a second bar rather than a second try."""
-        outcome = _repair(_ELECTRIC_120_0, maximum=4)
+        outcome = _repair(_ELECTRIC_120_1, maximum=4)
         assert [attempt.metric for attempt in outcome.attempts] == [
             "max_leap_semitones",
             "max_leap_semitones",
@@ -278,10 +297,10 @@ class TestTheTwoRoundChain:
             "SetMelodyBand(semitones=9)",
             "SetAccompanimentDensity(step_ticks=1440)",
         ]
-        assert _after(_ELECTRIC_120_0, (), outcome).findings() == ()
+        assert _after(_ELECTRIC_120_1, (), outcome).findings() == ()
 
     def test_the_fixture_has_three_bars_and_clears_them_all(self) -> None:
-        assert [finding.metric for finding in _quality(_ELECTRIC_120_0).findings()] == [
+        assert [finding.metric for finding in _quality(_ELECTRIC_120_1).findings()] == [
             "max_leap_semitones",
             "texture_hierarchy",
             "harmony_pad_coverage",
@@ -338,9 +357,9 @@ class TestTheRefusals:
         cannot tell a trial that cleared the bar it aimed at from one that did
         not. Both of this round's candidates clear the leap bar and still miss
         the bed's, which no summary of the parent could say."""
-        quality = _quality(_ELECTRIC_120_0)
+        quality = _quality(_ELECTRIC_120_1)
         assert "max_leap_semitones" in (in_hand := tuple(f.metric for f in quality.findings()))
-        outcome = _repair(_ELECTRIC_120_0, maximum=4)
+        outcome = _repair(_ELECTRIC_120_1, maximum=4)
         assert {attempt.remaining for attempt in outcome.attempts[:2]} == {
             ("texture_hierarchy", "harmony_pad_coverage")
         }, in_hand
@@ -352,24 +371,24 @@ class TestTheBound:
         """`stopped_by` is `None` at the bound on purpose: stopping because the
         caller allowed one move is not stopping because nothing works, and the
         two carry different advice."""
-        outcome = _repair(_ELECTRIC_120_0, maximum=1)
+        outcome = _repair(_ELECTRIC_120_1, maximum=1)
         assert outcome.added == (SetMelodyBand(semitones=9),)
         assert outcome.remaining == ("texture_hierarchy", "harmony_pad_coverage")
         assert outcome.stopped_by is None
 
     def test_the_second_move_is_the_one_that_finishes_it(self) -> None:
-        one = _repair(_ELECTRIC_120_0, maximum=1)
-        two = _repair(_ELECTRIC_120_0, maximum=2)
+        one = _repair(_ELECTRIC_120_1, maximum=1)
+        two = _repair(_ELECTRIC_120_1, maximum=2)
         assert two.added[:1] == one.added
         assert two.remaining == ()
-        assert musical_order(_after(_ELECTRIC_120_0, (), two), lint_passed=True) < (
-            musical_order(_after(_ELECTRIC_120_0, (), one), lint_passed=True)
+        assert musical_order(_after(_ELECTRIC_120_1, (), two), lint_passed=True) < (
+            musical_order(_after(_ELECTRIC_120_1, (), one), lint_passed=True)
         )
 
     def test_the_bound_is_a_backstop_and_the_corpus_never_needs_it(self) -> None:
         """Measured: the widest chain any corpus piece needed was two kept
         requests, which is why the budget's default is four rather than two."""
-        for spec in (_ELECTRIC_120_0, _ELECTRIC_120_1, _ELECTRIC_120_3, _SLEEP_30_3):
+        for spec in (_ELECTRIC_120_1, _ELECTRIC_90_17, _ELECTRIC_30_16, _SLEEP_30_3):
             assert len(_repair(spec, maximum=4).added) <= 2, spec
 
 
@@ -377,15 +396,15 @@ class TestDeterminism:
     def test_the_same_piece_repairs_the_same_way_twice(self) -> None:
         """No model, no audio, and no dependence on iteration order: the two
         `Repair`s are equal, which is what makes a recorded turn replayable."""
-        first = _repair(_ELECTRIC_120_0, maximum=4)
-        second = _repair(_ELECTRIC_120_0, maximum=4)
+        first = _repair(_ELECTRIC_120_1, maximum=4)
+        second = _repair(_ELECTRIC_120_1, maximum=4)
         assert first == second
         assert list(first.added) == list(second.added)
 
     def test_the_candidates_are_tried_in_the_tables_order(self) -> None:
         """A tie goes to the table rather than to whoever happens to sort first,
         so the order the `dict` states is contract."""
-        assert [a.delta for a in _repair(_ELECTRIC_120_0, maximum=1).attempts] == list(
+        assert [a.delta for a in _repair(_ELECTRIC_120_1, maximum=1).attempts] == list(
             _REPAIRS["max_leap_semitones"]
         )
 
@@ -416,8 +435,8 @@ class TestTheAim:
         """
         for spec, chain in (
             (_ELECTRIC_30_0, ()),
-            (_ELECTRIC_120_0, ()),
-            (_ELECTRIC_120_3, ()),
+            (_ELECTRIC_120_1, ()),
+            (_ELECTRIC_30_16, ()),
             (_SLEEP_30_3, ()),
             (_CALM, (_CLEARANCE,)),
             (_ELECTRIC_30_2, (_TINY_BAND,)),
@@ -431,7 +450,7 @@ class TestTheAim:
         """Every kept chain has already moved the arbiter's order down — the
         same comparison the ratchet makes — so no repair this loop returns can
         be refused as a regression by the tool that applies it."""
-        for spec in (_ELECTRIC_30_0, _ELECTRIC_120_0, _ELECTRIC_120_1, _ELECTRIC_120_3):
+        for spec in (_ELECTRIC_30_0, _ELECTRIC_120_1, _ELECTRIC_90_17, _ELECTRIC_30_16):
             outcome = _repair(spec, maximum=4)
             assert musical_order(_after(spec, (), outcome), lint_passed=True) <= (
                 musical_order(_quality(spec), lint_passed=True)

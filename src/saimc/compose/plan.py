@@ -104,7 +104,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec
 
-PLAN_SCHEMA_VERSION: Final[int] = 1
+PLAN_SCHEMA_VERSION: Final[int] = 2
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -234,6 +234,34 @@ class CompositionPlan:
     """The mood's bass vocabulary, most characteristic figure first. A
     figure belongs to a chord slot: the left hand states one for as long
     as its harmony lasts, which is what `bass_onset_patterns` counts."""
+    bass_root_motion: bool
+    """Whether the left hand lands on the chord's *root* at each change.
+
+    The walk used to land on the chord tone nearest the line it joined,
+    which is what makes it move stepwise through inversions — and what
+    leaves the bar's harmony unstated. Measured over 162 pieces (three
+    moods, three durations, three ensembles, six seeds) the landing tone
+    is the root at 32% of the 2322 chord changes and does not move at all
+    at 43%: the left hand is a counter-line, and the bar's chord is
+    asserted by the right hand alone. Set, the walk lands on the root
+    instead — in the octave nearest the line, so it still moves by the
+    smallest step the harmony allows — and a change of chord is audible
+    where it happens.
+
+    Off is the pre-plan behaviour, and the two differ in nothing but which
+    of the chord's tones the landing may choose from: `chord_bars` and
+    `bar_keys` read identically under either policy. What it is *not* is a
+    change to the bass alone, which is what this field first claimed. The
+    melody reads the bar's sounding bass — `_melody_bar` refuses a
+    candidate that would rub against it — so a bass that moves where the
+    harmony moves carries the tune with it, and `_settle_harmony_register`
+    moves the bed under the tune in turn. Over the same matrix the bass
+    moves in every one of the 162 pieces, the tune in 44 and the bed in
+    33. The kit's written notes never move; its *fills* do, with the
+    tune's note count, through the humanization stream the ghost pass
+    shares — a coupling owed its own stream before anything can attribute
+    it.
+    """
     cadence_degree: int
     """The scale degree the final cadence approaches the tonic from."""
     cadence_seventh: bool
@@ -523,6 +551,7 @@ class CompositionPlan:
             "apex_position": self.apex_position,
             "line_band_semitones": self.line_band_semitones,
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
+            "bass_root_motion": self.bass_root_motion,
             "cadence_degree": self.cadence_degree,
             "cadence_seventh": self.cadence_seventh,
             "modulation_offset": self.modulation_offset,
@@ -599,6 +628,7 @@ class CompositionPlan:
             bass_figures=tuple(
                 tuple(tuple(note) for note in figure) for figure in payload["bass_figures"]
             ),
+            bass_root_motion=payload["bass_root_motion"],
             cadence_degree=payload["cadence_degree"],
             cadence_seventh=payload["cadence_seventh"],
             modulation_offset=payload["modulation_offset"],
@@ -749,6 +779,13 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         apex_position=DEFAULT_APEX_POSITION,
         line_band_semitones=LINE_BAND_SEMITONES,
         bass_figures=BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES),
+        # The first plan value that is not a description of the engine as
+        # it behaved before the plan existed. Every other field here was
+        # read out of a table so that `compose(spec)` would stay
+        # byte-identical while the plan was threaded through; this one is
+        # a change to the music, made deliberately and carried as a knob
+        # so a critic or a user can turn it the other way.
+        bass_root_motion=True,
         cadence_degree=cadence_degree_for(mood),
         cadence_seventh=cadence_seventh_for(mood),
         modulation_offset=MODULATION_OFFSET,

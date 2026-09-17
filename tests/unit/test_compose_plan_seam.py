@@ -299,6 +299,12 @@ _HARMONY_KNOBS: dict[str, Any] = {
     # same slots differently, so swapping the vocabulary re-writes the
     # bass line without touching the chords it is built on.
     "bass_figures": BASS_FIGURES["electrifying"],
+    # The walk landing on the chord tone nearest the line rather than on
+    # the chord's root. It changes nothing but which tones the landing may
+    # choose from, so it re-writes the bass line against the same chords —
+    # and, through the tune's own avoid-the-bass rule, whatever the tune
+    # writes against it.
+    "bass_root_motion": False,
     # Calming closes plagally, approaching the tonic from degree 3; this
     # is the authentic V-I the cadence would otherwise be written with.
     "cadence_degree": 4,
@@ -312,9 +318,15 @@ _HARMONY_KNOBS: dict[str, Any] = {
 }
 
 _HARMONY_FIELDS = frozenset(
-    {"bass_figures", "cadence_degree", "cadence_seventh", "modulation_offset"}
+    {
+        "bass_figures",
+        "bass_root_motion",
+        "cadence_degree",
+        "cadence_seventh",
+        "modulation_offset",
+    }
 )
-"""The plan's `--- Harmony ---` block, which reads these four.
+"""The plan's `--- Harmony ---` block, which reads these five.
 
 Spelled out because, unlike the arrangement, this layer has no struct to
 enumerate — the comparison below is what keeps this set honest against
@@ -325,10 +337,13 @@ the plan's own field list until B9's union check makes it mechanical.
 class TestTheHarmonyLayerIsLive:
     """The chords, the cadence, the bass vocabulary and the lift.
 
-    `bass_figures` reaches the notes through `draw_bass_figures`; the two
-    cadence fields through `apply_final_cadence`; `modulation_offset`
-    through the `key_offset` the section is transposed by. All four were
-    module-table or inline-mood reads before B3.
+    `bass_figures` reaches the notes through `draw_bass_figures`;
+    `bass_root_motion` through the candidate tones the walk may land on;
+    the two cadence fields through `apply_final_cadence`;
+    `modulation_offset` through the `key_offset` the section is transposed
+    by. The first four were module-table or inline-mood reads that B3
+    lifted into the plan; the fifth is a new musical choice Phase F added,
+    and it is here because it belongs to the same block.
     """
 
     def test_every_harmony_knob_has_a_case(self) -> None:

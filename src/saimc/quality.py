@@ -26,18 +26,24 @@ that is the point, and it is what makes the gate in
 `saimc.release.gates` non-vacuous.
 
 Three axes a critic might ask for are deliberately absent, and the first
-two for one reason: **a score carries notes and no tables.** *Bass root
-motion* — the share of chord changes the left hand leaves the root on —
-needs the bar's chord, which a `NotationScore` does not carry, and every
-figure in the bass vocabulary states the bar's root on its downbeat, so
-the reading a score *can* take comes out the same whichever motion the
-plan asks for. *Rhythm-section variety* needs the style's own variant
-count: a waltz repeats one bar through 0.80-0.90 of a piece, and a rock
-groove whose rotation the plan switched off repeats it through 0.78-0.90,
-so a bar over that reading fires on a legal one-variant style. *Contour*
-is measured and left alone, because no bar could act on it: across the
-palette grid and seven mutations of the melody's vocabulary the share of
-turning points stays inside 0.37-0.55. What a contour complaint is
+two for one reason: **this module measures a `NotationScore`, which
+carries notes and no tables.** *Bass root motion* — the share of chord
+changes the left hand leaves the root on — needs the bar's chord. This
+paragraph used to claim the reading was unreachable as well, and Phase F1
+falsified both halves of that. `EngineOutput.chord_bars` and `bar_keys`
+carry the bar's chord and the key it belongs to, so every caller that
+holds the engine's output rather than a score — the repair loop, the
+critics, the conductor — can take the reading, and under the plan's
+`bass_root_motion` knob the two settings measure 100% and 32% of chord
+changes on the root. What survives is narrower and still true:
+`score_piece` takes a `NotationScore`, so an axis that needs the chord
+table has no home in this file. *Rhythm-section variety* needs the style's
+own variant count: a waltz repeats one bar through 0.80-0.90 of a piece,
+and a rock groove whose rotation the plan switched off repeats it through
+0.78-0.90, so a bar over that reading fires on a legal one-variant style.
+*Contour* is measured and left alone, because no bar could act on it:
+across the palette grid and seven mutations of the melody's vocabulary the
+share of turning points stays inside 0.37-0.55. What a contour complaint is
 actually about — a line that only steps, a leap that is never answered —
 is `step_ratio` and `leap_recovery_ratio`. The defects behind the first
 two are reported too: one bass figure for a whole piece is

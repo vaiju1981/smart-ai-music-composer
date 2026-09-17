@@ -43,6 +43,7 @@ from saimc.compose.duration import (
 )
 from saimc.compose.plan import (
     PLAN_FORMAT,
+    PLAN_FORMAT_PREFIX,
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
     PlanError,
@@ -122,6 +123,9 @@ _MUTATIONS: dict[str, Any] = {
     # the late peak, and a mutation has to move the phrase's shape.
     "apex_position": 0.45,
     "bass_figures": tuple(reversed(_base().bass_figures)),
+    # The default is the root-motion policy, so the mutation is the walk
+    # that lands on the chord tone nearest the line.
+    "bass_root_motion": False,
     "cadence_degree": 4,
     # The base is calming, whose cadence is a plain triad, so `True` is the
     # change and the electrifying V7 is the value it does not already hold.
@@ -279,7 +283,17 @@ class TestTheStoredPlanIsReadBack:
 
     @pytest.mark.parametrize(
         "document_format",
-        ["CompositionPlan:2", "CompositionPlan:0", "CompositionPlan", "NotationScore:1", ""],
+        # Derived from the constant, not written out: a hardcoded "the next
+        # version" is a literal that stops testing anything the moment the
+        # version it names becomes this build's own — which is exactly what
+        # happened when the plan gained `bass_root_motion`.
+        [
+            f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION + 1}",
+            f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION - 1}",
+            PLAN_FORMAT_PREFIX,
+            "NotationScore:1",
+            "",
+        ],
         ids=["newer", "older", "untagged", "wrong-kind", "absent"],
     )
     def test_a_document_of_another_version_is_refused(self, document_format: str) -> None:
