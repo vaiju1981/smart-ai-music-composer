@@ -39,6 +39,7 @@ from saimc.compose.engine import CompositionEngineError, EngineErrorCode, compos
 from saimc.compose.motif import BassMotion
 from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult, ToolCall
+from saimc.quality import AXES
 from saimc.render.audio import AudioArtifact
 from saimc.session import tools
 from saimc.session.arbiter import ELEMENTS, musical_key, rank
@@ -511,20 +512,136 @@ class TestCritique:
         draft = ctx.session.drafts[0]
         payload = _payload(_call(ctx, "critique", draft_id=draft.draft_id))
         assert payload["measured"] == draft.quality.as_dict()
-        assert len(payload["findings"]) == len(draft.quality.findings())
+        reported = {
+            finding["metric"] for report in payload["axes"] for finding in report["findings"]
+        }
+        assert reported == {finding.metric for finding in draft.quality.findings()}
 
     def test_a_breached_threshold_is_reported_with_what_would_move_it(
         self, ctx: ToolContext
     ) -> None:
-        """This spec breaches `texture_hierarchy`, so the finding path is
+        """This spec breaches two accompaniment metrics, so the finding path is
         fired rather than asserted about in the abstract."""
         _ready(ctx, _ELECTRIFYING)
         _drafts(ctx)
         payload = _payload(_call(ctx, "critique", draft_id="draft-0"))
-        assert payload["findings"], "this fixture is meant to breach a threshold"
-        finding = payload["findings"][0]
-        assert set(finding) == {"metric", "measured", "target", "direction", "rationale", "hint"}
+        accompaniment = next(
+            report for report in payload["axes"] if report["axis"] == "accompaniment"
+        )
+        assert accompaniment["findings"], "this fixture is meant to breach a threshold"
+        finding = accompaniment["findings"][0]
+        assert set(finding) == {
+            "metric",
+            "measured",
+            "target",
+            "direction",
+            "rationale",
+            "hint",
+            "axis",
+            "bars",
+        }
         assert finding["hint"]
+
+    def test_every_axis_is_reported_and_a_clean_one_says_so(self, ctx: ToolContext) -> None:
+        """The tune and the bass are clean on this piece, and the report says
+        that rather than leaving them out: an axis missing from a report cannot
+        be told from one whose critic never ran."""
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        payload = _payload(_call(ctx, "critique", draft_id="draft-0"))
+        assert [report["axis"] for report in payload["axes"]] == list(AXES)
+        assert {report["axis"]: report["clean"] for report in payload["axes"]} == {
+            "melody": True,
+            "accompaniment": False,
+            "bass": True,
+        }
+
+    @pytest.mark.parametrize("axis", ["melody", "accompaniment", "bass"])
+    def test_one_part_can_be_asked_for_on_its_own(self, ctx: ToolContext, axis: str) -> None:
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        payload = _payload(_call(ctx, "critique", draft_id="draft-0", axis=axis))
+        assert [report["axis"] for report in payload["axes"]] == [axis]
+
+    @pytest.mark.parametrize("asked", ["percussion", "orchestration", "Melody"])
+    def test_a_part_nothing_measures_is_refused_rather_than_reported_clean(
+        self, ctx: ToolContext, asked: str
+    ) -> None:
+        """An empty report for a part with no critic reads exactly like a clean
+        piece, which is the wrong answer dressed as the right one."""
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        invocation = _call(ctx, "critique", draft_id="draft-0", axis=asked)
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "invalid_arguments"
+        assert "melody" in invocation.result
+
+    def test_a_miss_is_placed_in_the_bars_its_own_events_sit_in(self, ctx: ToolContext) -> None:
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        payload = _payload(_call(ctx, "critique", draft_id="draft-0"))
+        findings = [f for report in payload["axes"] for f in report["findings"]]
+        assert findings
+        assert all(finding["bars"] for finding in findings), "both metrics localise"
+        for finding in findings:
+            for span in finding["bars"]:
+                assert set(span) == {"first_bar", "last_bar"}
+                # Numbered the way a reader counts them, which is a bar 1 and
+                # not a bar 0 — the score indexes its measures from zero.
+                assert 1 <= span["first_bar"] <= span["last_bar"]
+
+    def test_a_clean_draft_is_reported_without_composing_it_again(
+        self, ctx: ToolContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bars are read off the notes, so a draft with nothing to place
+        needs no score — and the way to say so is to make composing it fatal."""
+        _ready(ctx)
+        _drafts(ctx)
+
+        def _explode(draft: Draft) -> Any:
+            raise AssertionError(f"{draft.draft_id} was recomposed with nothing to place")
+
+        monkeypatch.setattr(tools, "_recompose", _explode)
+        payload = _payload(_call(ctx, "critique", draft_id="draft-0"))
+        assert all(report["clean"] for report in payload["axes"])
+
+    def test_a_draft_that_no_longer_recomposes_to_itself_is_a_failure(
+        self, ctx: ToolContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same claim `sketch` cashes, cashed before any bar is named: a
+        draft that cannot be placed cannot be reported on either."""
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        # Not `_OUTPUT`: the draft is at the electrifying spec, so returning
+        # the calming piece is returning music the draft never described.
+        monkeypatch.setattr(tools, "compose", lambda spec, plan=None: _OUTPUT)
+        invocation = _call(ctx, "critique", draft_id="draft-0")
+        assert invocation.outcome == "error"
+        assert invocation.error_code == "performance_mismatch"
+
+    def test_a_revised_draft_is_placed_against_the_plan_it_was_revised_under(
+        self, ctx: ToolContext
+    ) -> None:
+        """A revision's plan is not the one its own spec would derive, so a
+        localisation that re-derived the default would recompose a different
+        piece — the failure `_recompose` exists to catch, and a revised draft is
+        the only draft that can reach it."""
+        _ready(ctx, _ELECTRIFYING)
+        _drafts(ctx)
+        revised = _payload(
+            _call(
+                ctx,
+                "revise",
+                draft_id="draft-0",
+                deltas=[{"knob": "SetHarmonyClearance", "semitones": 12}],
+            )
+        )
+        draft = ctx.session.draft(revised["draft_id"])
+        assert draft.plan_hash != ctx.session.drafts[0].plan_hash, "the premise: the plan moved"
+        payload = _payload(_call(ctx, "critique", draft_id=draft.draft_id))
+        findings = [f for report in payload["axes"] for f in report["findings"]]
+        assert findings
+        assert all(finding["bars"] for finding in findings)
 
     def test_an_unknown_draft_lists_the_ones_the_session_has(self, ctx: ToolContext) -> None:
         _ready(ctx)

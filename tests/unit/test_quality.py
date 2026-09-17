@@ -24,10 +24,16 @@ from saimc.compose.score import (
     NoteEvent,
 )
 from saimc.quality import (
+    _LOCALISERS,
+    AXES,
     QUALITY_HARMONY_PAD_COVERAGE_MIN,
     QUALITY_TESSITURA_OVERLAP_MAX,
     QUALITY_THRESHOLDS,
+    BarSpan,
     PieceQuality,
+    QualityFinding,
+    _spans,
+    localize,
     score_corpus,
     score_piece,
 )
@@ -65,6 +71,28 @@ def _melody(pitches: list[int], *, duration: int = 480) -> list[NoteEvent]:
             duration_ticks=duration,
         )
         for index, pitch in enumerate(pitches)
+    ]
+
+
+def _clean_line() -> list[NoteEvent]:
+    """A solo line every metric that applies to a solo clears.
+
+    Whole-tone steps up an octave over three note values. It is the fixture
+    for "this part has nothing to say": a test that needs a clean axis adds
+    its offending part to this line, so whatever is reported can be
+    attributed to what it added rather than to the tune underneath.
+    """
+    return [
+        NoteEvent(voice_id=VOICE_MELODY, pitch_midi=pitch, tick=tick, duration_ticks=duration)
+        for pitch, tick, duration in (
+            (60, 0, 480),
+            (62, 480, 480),
+            (64, 960, 960),
+            (66, 1440, 480),
+            (68, 1920, 1920),
+            (70, 2400, 480),
+            (72, 2880, 1920),
+        )
     ]
 
 
@@ -409,23 +437,222 @@ class TestWhatTheScoreCannotMeasure:
             assert figure[0][2] == 0, motion
 
 
+_AXIS_BY_METRIC = {
+    "step_ratio": "melody",
+    "leap_recovery_ratio": "melody",
+    "repeat_ratio": "melody",
+    "range_semitones": "melody",
+    "max_leap_semitones": "melody",
+    "distinct_durations": "melody",
+    "texture_hierarchy": "accompaniment",
+    "register_separation_semitones": "accompaniment",
+    "tessitura_overlap_semitones": "accompaniment",
+    "harmony_pad_coverage": "accompaniment",
+    "bass_onset_patterns": "bass",
+}
+
+_UNLOCALISED_METRICS = (
+    "range_semitones",
+    "distinct_durations",
+    "register_separation_semitones",
+    "tessitura_overlap_semitones",
+)
+"""The four metrics no bar can hold, named so that the partition is a ratchet."""
+
+
+class TestTheAxisTable:
+    """One axis per metric, and the axes are the parts a remedy can move.
+
+    Pinned as a literal, in the idiom the arbiter's metric tiers are pinned
+    in: the axis is a judgement recorded once, so re-deciding which critic
+    owns a bar is a declared edit rather than a swap that leaves every test
+    green while the melody's report fills with the accompaniment's misses.
+    """
+
+    def test_the_table_is_the_partition_it_is_written_as(self) -> None:
+        assert {t.metric: t.axis for t in QUALITY_THRESHOLDS} == _AXIS_BY_METRIC
+
+    def test_the_axes_are_exactly_the_parts_the_table_names(self) -> None:
+        assert set(_AXIS_BY_METRIC.values()) == set(AXES)
+
+    def test_no_metric_pretends_to_say_where_it_is_when_no_bar_holds_it(self) -> None:
+        """The localised metrics and the four that count a relation partition
+        the table, so a fifth absent one arrives as a failed test rather than
+        as a finding silently reported without bars."""
+        assert set(_LOCALISERS) | set(_UNLOCALISED_METRICS) == set(_AXIS_BY_METRIC)
+        assert not set(_LOCALISERS) & set(_UNLOCALISED_METRICS)
+
+
+class TestBarSpans:
+    def test_no_bars_is_no_spans(self) -> None:
+        assert _spans([]) == ()
+
+    def test_a_run_of_bars_reads_as_one_span(self) -> None:
+        assert _spans([0, 1, 3]) == (BarSpan(1, 2), BarSpan(4, 4))
+
+    def test_indices_are_sorted_and_deduplicated_before_they_are_merged(self) -> None:
+        # A localiser collects bars in a set, so neither order nor repetition
+        # is information — but both arrive from a reading rather than a
+        # choice, and a span built from either would be a span built from
+        # iteration order.
+        assert _spans([3, 0, 3, 1]) == (BarSpan(1, 2), BarSpan(4, 4))
+
+    def test_a_bar_is_numbered_the_way_a_reader_counts_it(self) -> None:
+        assert BarSpan(7, 7).label() == "bar 7"
+        assert BarSpan(3, 6).label() == "bars 3-6"
+
+
+def _finding_for(metric: str) -> QualityFinding:
+    """A finding named for one metric, so a localisation case names its own.
+
+    Only the metric selects a localiser, so the numbers are placeholders and
+    the axis and the remedy come from the shipped table — what is under test
+    is a reading of the *score*, and a case that first had to make a metric
+    breach its bar would be testing the bar as well as the bars it names.
+    """
+    bar = next(threshold for threshold in QUALITY_THRESHOLDS if threshold.metric == metric)
+    return QualityFinding(
+        metric=bar.metric,
+        measured=0.0,
+        target=0.0,
+        direction="min",
+        rationale=bar.rationale,
+        hint=bar.hint,
+        axis=bar.axis,
+    )
+
+
+def _bars(score: NotationScore, metric: str) -> tuple[BarSpan, ...]:
+    """The bars `localize` reports for one metric on a hand-written score."""
+    (localised,) = localize(score, [_finding_for(metric)])
+    return localised.bars
+
+
+class TestLocalisation:
+    """Where a miss sits, read off the score its metrics were taken from.
+
+    Each case is a hand-written score whose answer is known by construction,
+    and by the same reading the metric itself makes: the bars named are the
+    bars the metric's own counted events sit in, so a localisation that
+    disagreed with its measurement would fail here.
+    """
+
+    def test_a_leap_is_placed_in_the_bar_it_lands_in(self) -> None:
+        # Four quarters of steps, then a fifth: the interval is heard where
+        # it arrives, which is beat 1 of bar 2.
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        assert [span.label() for span in _bars(score, "step_ratio")] == ["bar 2"]
+
+    def test_a_repeat_is_placed_in_the_bar_it_sits_in(self) -> None:
+        score = _score(_melody([60, 62, 62, 64]))
+        assert [span.label() for span in _bars(score, "repeat_ratio")] == ["bar 1"]
+
+    def test_a_repeat_is_not_an_offence_against_the_step_bar(self) -> None:
+        # `step_ratio` measures the line's *moves*, and a repeat is not one —
+        # it is scored by `repeat_ratio` — so the same interval must not be
+        # reported against both bars.
+        score = _score(_melody([60, 60, 62, 64]))
+        assert _bars(score, "step_ratio") == ()
+
+    def test_a_leap_past_the_cap_is_placed_where_it_lands(self) -> None:
+        score = _score(_melody([60, 84]))
+        assert [span.label() for span in _bars(score, "max_leap_semitones")] == ["bar 1"]
+
+    def test_an_answered_leap_is_not_placed_at_all(self) -> None:
+        score = _score(_melody([60, 67, 65]))
+        assert _bars(score, "leap_recovery_ratio") == ()
+
+    def test_an_unanswered_leap_is_placed_in_the_bar_it_lands_in(self) -> None:
+        score = _score(_melody([60, 67, 69]))
+        assert [span.label() for span in _bars(score, "leap_recovery_ratio")] == ["bar 1"]
+
+    def test_a_leap_at_the_very_end_of_the_line_is_not_placed(self) -> None:
+        # `_leap_recovery` does not count a closing leap — nothing follows it
+        # to answer it — so the localisation must not name a bar for one.
+        score = _score(_melody([60, 67]))
+        assert _bars(score, "leap_recovery_ratio") == ()
+
+    def test_consecutive_offending_bars_read_as_one_span(self) -> None:
+        # Steps for two bars, then thirds for two: every interval of bars 3
+        # and 4 is offending, and the two bars are one address.
+        line = [60, 62, 64, 65, 67, 69, 71, 72, 76, 80, 84, 88, 84, 80, 76, 72]
+        score = _score(_melody(line), bars=4)
+        assert _bars(score, "step_ratio") == (BarSpan(3, 4),)
+
+    def test_an_outcounting_voice_is_placed_in_the_bar_it_outcounts_in(self) -> None:
+        # The bed plays four notes in bar 1 and holds its tongue in bar 2, so
+        # the bar the tune is crowded in is the bar with the figure in it.
+        notes = [
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=0, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=62, tick=BAR_TICKS, duration_ticks=960),
+            *(
+                NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=tick, duration_ticks=480)
+                for tick in (0, 480, 960, 1440)
+            ),
+        ]
+        score = _score(notes, bars=2)
+        assert [span.label() for span in _bars(score, "texture_hierarchy")] == ["bar 1"]
+
+    def test_an_unsustained_bar_is_placed_and_not_the_bed_s_own_bar(self) -> None:
+        notes = _melody([60, 62, 64, 65, 67, 69, 71, 72])
+        notes.append(NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=480))
+        notes.append(
+            NoteEvent(
+                voice_id=VOICE_HARMONY, pitch_midi=57, tick=BAR_TICKS, duration_ticks=BAR_TICKS
+            )
+        )
+        score = _score(notes, bars=2)
+        # The bed holds bar 2 through and only states bar 1, so bar 1 is the
+        # bar with nothing held — the complement of the metric's own reading.
+        assert _bars(score, "harmony_pad_coverage") == (BarSpan(1, 1),)
+
+    def test_the_bars_the_bass_repeats_its_commonest_figure_in(self) -> None:
+        notes = [
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=BAR_TICKS),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=BAR_TICKS, duration_ticks=BAR_TICKS),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS, duration_ticks=960),
+            NoteEvent(
+                voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS + 960, duration_ticks=960
+            ),
+        ]
+        score = _score(notes, bars=3)
+        assert [span.label() for span in _bars(score, "bass_onset_patterns")] == ["bars 1-2"]
+
+    def test_a_metric_that_counts_a_relation_is_placed_nowhere(self) -> None:
+        """The four absences, asserted rather than left to the docstring.
+
+        No bar holds a relation between the line's two extremes, so naming
+        bars for one would name the bars where the piece is legal.
+        """
+        score = _score(_melody([60, 84, 60]))
+        for metric in _UNLOCALISED_METRICS:
+            assert _bars(score, metric) == (), metric
+        # The contrast, so that "no bars" cannot be "nobody asked for the
+        # score": the widest leap in the same line is placed.
+        assert _bars(score, "max_leap_semitones")
+
+    def test_a_scorecard_alone_carries_no_bars(self) -> None:
+        # A `PieceQuality` is a block of numbers and has no notes to
+        # attribute, which is the other cause of an empty `bars` — and the
+        # difference between "nowhere" and "not asked".
+        piece = score_piece(_score(_melody([60, 84, 60])))
+        assert piece.findings()
+        assert all(finding.bars == () for finding in piece.findings())
+
+    def test_localizing_a_finding_moves_nothing_but_the_bars(self) -> None:
+        finding = _finding_for("step_ratio")
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        assert localize(score, [finding]) == (replace(finding, bars=(BarSpan(2, 2),)),)
+
+    def test_a_localized_message_names_the_bars_it_speaks_of(self) -> None:
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        (finding,) = localize(score, [_finding_for("step_ratio")])
+        assert "(bar 2)" in finding.message()
+
+
 class TestFindings:
     def test_a_clean_piece_reports_no_findings(self) -> None:
-        # Whole-tone steps up an octave, three note values, melody alone:
-        # every metric that applies to a solo clears its bar.
-        notes = [
-            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=pitch, tick=tick, duration_ticks=duration)
-            for pitch, tick, duration in (
-                (60, 0, 480),
-                (62, 480, 480),
-                (64, 960, 960),
-                (66, 1440, 480),
-                (68, 1920, 1920),
-                (70, 2400, 480),
-                (72, 2880, 1920),
-            )
-        ]
-        piece = score_piece(_score(notes, bars=3))
+        piece = score_piece(_score(_clean_line(), bars=3))
         assert piece.step_ratio == 1.0
         assert piece.range_semitones == 12
         assert piece.distinct_durations == 3
@@ -455,6 +682,38 @@ class TestFindings:
         assert step.direction == "min"
         assert step.measured == 0.0
         assert step.target > 0
+
+
+class TestFindingsByAxis:
+    """One critic per axis, and every axis answers — a clean one included.
+
+    A report that listed only the axes which found something could not be
+    told from one whose other critics never ran, and "the melody is clean" is
+    exactly what a user asking about the melody wants to be told.
+    """
+
+    def test_every_axis_answers_even_when_it_has_nothing_to_say(self) -> None:
+        piece = score_piece(_score(_melody([60, 84, 60])))
+        grouped = piece.findings_by_axis()
+        assert set(grouped) == set(AXES)
+        assert grouped["bass"] == ()
+        # The melody is the axis this line offends, so the finding lands
+        # there and nowhere else: the two assertions together are what make
+        # "clean" a reading rather than a silence.
+        assert {f.metric for f in grouped["melody"]} == {f.metric for f in piece.findings()}
+
+    def test_a_finding_sits_under_the_part_its_remedy_moves(self) -> None:
+        # A clean tune, so the only thing that can be reported is the bed
+        # added underneath it — a broken chord, which sustains nothing.
+        notes = _clean_line()
+        notes.extend(
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=step * 240, duration_ticks=240)
+            for step in range(4)
+        )
+        grouped = score_piece(_score(notes, bars=3)).findings_by_axis()
+        assert [f.metric for f in grouped["accompaniment"]] == ["harmony_pad_coverage"]
+        assert grouped["melody"] == ()
+        assert grouped["bass"] == ()
 
 
 class TestCorpusReport:

@@ -368,6 +368,7 @@ class TestTheBreachFraction:
             direction="max",
             rationale="",
             hint="",
+            axis="accompaniment",
         )
 
         assert _breach(never) == 3.0

@@ -58,7 +58,7 @@ from saimc.jobs.storage import Job, JobStorage
 from saimc.jobs.worker import QueueUnavailable, enqueue_or_fail
 from saimc.llm.base import LLMClient, ToolCall, ToolSpec
 from saimc.parser import parse_prompt
-from saimc.quality import score_piece
+from saimc.quality import AXES, Axis, QualityFinding, localize, score_piece
 from saimc.render.audio import render_sketch
 from saimc.render.instruments import resolve_job_soundfont
 from saimc.session.arbiter import deciding_element, rank, regression
@@ -302,6 +302,29 @@ def _str_arg(args: Mapping[str, Any], name: str, *, default: str | None = None) 
     return raw
 
 
+def _axis_arg(args: Mapping[str, Any]) -> Axis | None:
+    """Read the `axis` argument, or `None` when the caller wants all of them.
+
+    Checked against the closed vocabulary rather than accepted as a free
+    string, because a critic asked for a part of the piece no metric
+    measures has to be told so: an empty report for the percussion reads
+    exactly like a clean piece, which is the wrong answer dressed as the
+    right one. The membership check and the narrowing are one statement, so
+    what a caller may ask for and what the loop returns cannot come apart.
+    """
+    asked = _str_arg(args, "axis")
+    if asked is None:
+        return None
+    for known in AXES:
+        if asked == known:
+            return known
+    raise ToolRefusal(
+        "invalid_arguments",
+        f"{asked!r} is not a part of a piece the scorecard measures; it measures "
+        f"{', '.join(AXES)}.",
+    )
+
+
 def _named_draft(ctx: ToolContext, args: Mapping[str, Any]) -> Draft:
     """Resolve the `draft_id` argument against this session's drafts."""
     draft_id = _str_arg(args, "draft_id")
@@ -330,6 +353,26 @@ def _draft_named(ctx: ToolContext, draft_id: str) -> Draft:
 def _render(payload: Mapping[str, Any]) -> str:
     """A tool's answer, as the text the model reads and the log keeps."""
     return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _recompose(draft: Draft) -> EngineOutput:
+    """The draft's music, recomposed from what the draft recorded.
+
+    A draft stores no notes — it stores the pair `compose` is a function of
+    and reads the music back by composing again — so a tool that needs the
+    notes has to do the same. Shared by `sketch` and `critique`, because the
+    check below is what makes "this draft describes the music the user heard"
+    a claim rather than a hope, and a second copy of it would be a second
+    place for that claim to be made differently.
+    """
+    output = compose(draft.spec, plan=draft.plan)
+    if output.performance_plan.compute_hash() != draft.performance_plan_hash:
+        raise ToolFailure(
+            "performance_mismatch",
+            f"draft {draft.draft_id} recomposed to a different performance than the one it "
+            "recorded, so the draft no longer describes the music it claims to.",
+        )
+    return output
 
 
 def _with_seed(spec: CompositionSpec, seed: int) -> CompositionSpec:
@@ -467,9 +510,44 @@ async def _draft(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     )
 
 
+def _axis_reports(
+    grouped: Mapping[Axis, tuple[QualityFinding, ...]], *, only: Axis | None
+) -> list[dict[str, Any]]:
+    """One report per axis, in `AXES` order, the clean ones included.
+
+    Every axis and not only the offending ones: a report that listed the
+    axes which found something cannot be told from one whose other critics
+    never ran, and "the melody is clean" is the thing a user asking about the
+    melody wants to be told.
+    """
+    return [
+        {
+            "axis": name,
+            "clean": not grouped[name],
+            "findings": [asdict(finding) for finding in grouped[name]],
+        }
+        for name in AXES
+        if only is None or name == only
+    ]
+
+
 async def _critique(ctx: ToolContext, args: Mapping[str, Any]) -> str:
-    """Report every quality threshold one draft misses, and what moves it."""
+    """Report every quality threshold one draft misses, and what moves it.
+
+    Grouped by the part of the piece a remedy would move, because that is how
+    a finding is read: the melody's critic answers about the tune, the
+    accompaniment's about the bed under it, and the bars each finding names
+    are the bars its own counted events sit in.
+    """
     draft = _named_draft(ctx, args)
+    axis = _axis_arg(args)
+    grouped = draft.quality.findings_by_axis()
+    if any(grouped.values()):
+        # The bars are a reading of the notes, and a draft stores none — so
+        # the score comes back the way `sketch` gets it, and only when there
+        # is a miss to place. A clean draft costs no composition at all.
+        score = _recompose(draft).notation_score
+        grouped = {name: localize(score, findings) for name, findings in grouped.items()}
     return _render(
         {
             "draft_id": draft.draft_id,
@@ -478,7 +556,7 @@ async def _critique(ctx: ToolContext, args: Mapping[str, Any]) -> str:
                 {"code": str(issue.code), "message": issue.message} for issue in draft.lint.issues
             ],
             "measured": draft.quality.as_dict(),
-            "findings": [asdict(finding) for finding in draft.quality.findings()],
+            "axes": _axis_reports(grouped, only=axis),
         }
     )
 
@@ -785,13 +863,7 @@ async def _sketch(ctx: ToolContext, args: Mapping[str, Any]) -> str:
             "one renders audio. A new turn is what buys another.",
         )
 
-    output = compose(draft.spec, plan=draft.plan)
-    if output.performance_plan.compute_hash() != draft.performance_plan_hash:
-        raise ToolFailure(
-            "performance_mismatch",
-            f"draft {draft.draft_id} recomposed to a different performance than the one it "
-            "recorded, so the draft no longer describes the music it claims to.",
-        )
+    output = _recompose(draft)
 
     voice_instruments = {v.voice_id: v.instrument for v in output.voice_instruments}
     out_dir = ctx.sessions.sketch_dir(ctx.session.session_id, draft.draft_id)
@@ -906,6 +978,15 @@ _CRITIQUE_PARAMETERS: Final[dict[str, Any]] = {
         "draft_id": {
             "type": "string",
             "description": "The id of the draft to read, exactly as `draft` returned it.",
+        },
+        "axis": {
+            "type": "string",
+            "enum": list(AXES),
+            "description": (
+                "Which part of the piece to report on: `melody` is the tune's own line, "
+                "`accompaniment` the bed and the bass's relation to the tune's register, "
+                "and `bass` the figure the bass line plays. Omit to hear from all three."
+            ),
         },
     },
     "required": ["draft_id"],
@@ -1106,9 +1187,12 @@ TOOLS: Final[Mapping[str, Tool]] = {
         name="critique",
         description=(
             "Read one draft's measurements against the quality thresholds and report "
-            "every bar it misses: the metric, what it measured, the target, why the "
-            "target exists, and the hint naming what would move it. These are arithmetic "
-            "over the score rather than an opinion, so they cost nothing and never vary."
+            "every bar it misses, one report per part of the piece: the metric, what it "
+            "measured, the target, why the target exists, the hint naming what would move "
+            "it, and the bars the offending events sit in. Ask for one part by name or "
+            "take all three; a part with nothing to say is reported clean rather than "
+            "left out. These are arithmetic over the score rather than an opinion, so "
+            "they cost nothing and never vary."
         ),
         parameters=_static(_CRITIQUE_PARAMETERS),
         handler=_critique,
