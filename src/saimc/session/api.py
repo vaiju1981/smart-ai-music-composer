@@ -673,15 +673,21 @@ def record_verdict(session_id: str, body: VerdictRequest, request: Request) -> S
 
     This writes a `Verdict` and takes no turn, because a like or a dislike is
     not by itself an instruction. It is not inert either: the digest carries the
-    verdicts, so the conductor's next turn reads them, and each one is a
-    `(plan_hash, verdict)` pair — the raw material of the slow loop, recorded
-    now because nothing else can recover it later. Feedback that *is* an
-    instruction goes to `/message`, where the conductor can act on it.
+    verdicts, so the conductor's next turn reads them, and the session writes the
+    `(plan_hash, delta, verdict)` rows of the preference log — the raw material
+    of the slow loop, recorded now because nothing else can recover it later.
+    Feedback that *is* an instruction goes to `/message`, where the conductor can
+    act on it.
 
     Verdicts accumulate rather than replace: a user changing their mind about a
     draft is the most informative thing they can do, and a record that kept only
     the latest would throw that away. Judging a *published* draft is allowed —
-    the piece is rendered and the opinion still counts.
+    the piece is rendered and the opinion still counts. A verdict in words alone
+    writes no log row, since words are not yet a judgement this can weigh.
+
+    The rows go into the session document rather than into this response: they
+    are read by a dataset builder over the store, not by the studio, which
+    already has the verdicts.
     """
     sessions = _storage(request)
     session = _session(request, session_id)
@@ -703,7 +709,7 @@ def record_verdict(session_id: str, body: VerdictRequest, request: Request) -> S
         # words, and nothing is not a verdict — so this translates rather than
         # restates it.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    session.verdicts.append(verdict)
+    session.record_verdict(verdict)
     sessions.save(session)
     return _serialize_session(session)
 

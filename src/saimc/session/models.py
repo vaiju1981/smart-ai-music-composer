@@ -17,7 +17,11 @@ what makes a *piece* replayable; the turn log is what makes a *session*
 one — a recorded turn names the tools it called and the arguments it
 called them with, and the deterministic tools answer the same way twice.
 
-`Verdict` is the user's, and nothing else writes it.
+`Verdict` is the user's, and nothing else writes it. `Preference` is that
+verdict read against the draft it judged — one row per request the piece was
+built from — and it is the one record here that is stored *because* the thing
+it describes may not survive: a dataset wants it after the drafts it came from
+have been pruned.
 
 Every record knows its own document form (`to_document` / `from_document`),
 the way `CompositionPlan` knows its canonical one. These documents are
@@ -51,17 +55,19 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 4
+SESSION_SCHEMA_VERSION: Final[int] = 5
 """Bump when a record in this module gains, loses or reshapes a field.
 
 Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
-and to 4 when it gained `requests_source`. Every one of those fields has a
-default, so an older document would have loaded with the field silently
-missing — which is the failure the tag exists to prevent, and the reason the
-guard compares the tag rather than tolerating what it recognises. A draft's
-lineage read as empty is a draft that claims to have been drafted from the
-brief when it was revised from another, and its source read as absent is a
-request with no record of who asked for it.
+to 4 when it gained `requests_source`, and to 5 when the session gained
+`preferences`. Every one of those fields has a default, so an older document
+would have loaded with the field silently missing — which is the failure the
+tag exists to prevent, and the reason the guard compares the tag rather than
+tolerating what it recognises. A draft's lineage read as empty is a draft that
+claims to have been drafted from the brief when it was revised from another,
+its source read as absent is a request with no record of who asked for it, and
+a preference log read as absent is every judgement the user has made thrown
+away.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
@@ -491,6 +497,108 @@ class Verdict:
         )
 
 
+@dataclass(frozen=True)
+class Preference:
+    """One accepted request, and what the listener thought of the piece it made.
+
+    The row of a preference dataset: `(plan_hash, delta, verdict)` says what was
+    asked for, in which piece, and how the result was received — and the last of
+    those is the only part a threshold cannot supply. Nothing consumes it yet,
+    and it is written now because the alternative is losing it: the chain it
+    describes lives on drafts, and drafts are what a session prunes.
+
+    `requests_source` is the *step's* reader rather than the judged draft's,
+    because one chain can be built by two of them — a slider dragged and then a
+    sentence typed — and a row labelling both with the last one would record a
+    preference the user never expressed. `None` means the step's reader was not
+    recorded, which is what it means on a draft and covers both a document
+    written before that field existed and a chain this build cannot place.
+
+    No `check()` requires the draft to exist, unlike a verdict: a row outliving
+    the piece it judges is the point of writing it down.
+    """
+
+    draft_id: str
+    at: datetime
+    plan_hash: str
+    delta: Delta
+    verdict: VerdictValue
+    requests_source: RequestSource | None = None
+
+    def __post_init__(self) -> None:
+        require_id_segment(self.draft_id, label="draft_id")
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "draft_id": self.draft_id,
+            "at": self.at.isoformat(),
+            "plan_hash": self.plan_hash,
+            "delta": delta_to_dict(self.delta),
+            "verdict": self.verdict,
+            "requests_source": self.requests_source,
+        }
+
+    @classmethod
+    def from_document(cls, payload: dict[str, Any]) -> Preference:
+        raw_source = payload.get("requests_source")
+        return cls(
+            draft_id=payload["draft_id"],
+            at=datetime.fromisoformat(payload["at"]),
+            plan_hash=payload["plan_hash"],
+            delta=delta_from_dict(payload["delta"]),
+            verdict=_one_of(payload["verdict"], _VERDICT_VALUES, field_name="preference verdict"),
+            requests_source=(
+                None
+                if raw_source is None
+                else _one_of(raw_source, _REQUEST_SOURCES, field_name="requests_source")
+            ),
+        )
+
+
+def _request_origins(
+    session: Session, draft: Draft
+) -> tuple[tuple[Delta, RequestSource | None], ...]:
+    """Every request in `draft`'s chain, paired with the step that asked for it.
+
+    A chain is its steps folded in order, so a request's step is the draft in
+    the `parent_id` walk whose own `deltas` first held it. That is what makes
+    the pairing a walk rather than a copy of something already stored — a draft
+    stores its chain and its own step's reader, and nothing else — and it is the
+    same walk `_lineage` makes in `tools.py`, in the one direction that module
+    cannot provide: it imports this one.
+
+    The walk is bounded by the drafts the session has and cycle-checked, because
+    a lineage is read off a document rather than built in memory, and a document
+    is not the writer. A record that does not line up — a parent whose chain is
+    not a prefix of the child's, which only a hand-edited file produces — has
+    the requests it cannot place paired with no source rather than with a guess:
+    inventing one would write a preference the record does not have.
+
+    A draft with no parent carries no deltas, so a piece drafted from the brief
+    has nothing to log: liking it is a judgement about the spec, and there is no
+    request to weigh. That is why the caller writes no row for one.
+    """
+    by_id = {known.draft_id: known for known in session.drafts}
+    steps: list[tuple[tuple[Delta, ...], RequestSource | None]] = []
+    current = draft
+    seen: set[str] = set()
+    while True:
+        seen.add(current.draft_id)
+        parent = None if current.parent_id is None else by_id.get(current.parent_id)
+        if (
+            parent is None
+            or parent.draft_id in seen
+            or current.deltas[: len(parent.deltas)] != parent.deltas
+        ):
+            steps.append((current.deltas, None))
+            break
+        steps.append((current.deltas[len(parent.deltas) :], current.requests_source))
+        current = parent
+    return tuple(
+        (delta, source) for step_deltas, source in reversed(steps) for delta in step_deltas
+    )
+
+
 def _read_spec(payload: dict[str, Any], *, owner: str) -> CompositionSpec:
     """Read a stored spec, refusing one written by a newer build.
 
@@ -547,6 +655,11 @@ class Session:
     published is the one thing a reader cannot recover from the log, and it
     is explicit so that finalizing twice is a decision rather than an
     accident.
+
+    `preferences` is the one collection that is not simply a log of what
+    happened: each row is a verdict read against the chain of the draft it
+    judged, and it is stored rather than derived so that it survives the drafts
+    it came from.
     """
 
     session_id: str
@@ -557,6 +670,7 @@ class Session:
     turns: list[Turn] = field(default_factory=list)
     drafts: list[Draft] = field(default_factory=list)
     verdicts: list[Verdict] = field(default_factory=list)
+    preferences: list[Preference] = field(default_factory=list)
     finalized_job_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -577,6 +691,13 @@ class Session:
         refused on load, because every read goes through this constructor.
         A store that never writes a document it could not read is worth one
         method.
+
+        `preferences` is deliberately not checked against the drafts the way
+        `verdicts` are. A verdict naming a draft this session does not have is a
+        broken record, because the judgement is *about* something that should be
+        here; a preference row is the same judgement kept after the pruning that
+        would remove that something, so refusing the row for outliving its draft
+        would refuse exactly what it is for.
         """
         draft_ids = [draft.draft_id for draft in self.drafts]
         duplicates = sorted({seen for seen in draft_ids if draft_ids.count(seen) > 1})
@@ -599,6 +720,44 @@ class Session:
             if draft.draft_id == draft_id:
                 return draft
         raise KeyError(draft_id)
+
+    def record_verdict(self, verdict: Verdict) -> None:
+        """Record the user's judgement, and the preference rows it writes.
+
+        One owner for the pair, because the rows are the verdict read against
+        the judged draft's chain and the two have to agree: a caller that
+        appended one without the other would leave a log that cannot be rebuilt
+        from what the session holds.
+
+        A verdict carrying no like and no dislike writes no row. Words are the
+        most useful thing the product gets and they are not by themselves a
+        preference — nothing here knows whether they are praise — so they are
+        recorded on the verdict for the reader that can tell, and the log keeps
+        the judgements that are already unambiguous.
+
+        The draft's own `plan_hash` is the piece every row names: a chain's
+        requests are all changes to the one piece the user heard, and the
+        requests are what tell one row from another.
+
+        Raises `KeyError` for a draft this session does not have, like every
+        other reader of a draft id — the verdict names something that has to be
+        here.
+        """
+        draft = self.draft(verdict.draft_id)
+        self.verdicts.append(verdict)
+        if verdict.value is None:
+            return
+        self.preferences.extend(
+            Preference(
+                draft_id=draft.draft_id,
+                at=verdict.at,
+                plan_hash=draft.plan_hash,
+                delta=delta,
+                verdict=verdict.value,
+                requests_source=source,
+            )
+            for delta, source in _request_origins(self, draft)
+        )
 
     def replace_draft(self, draft: Draft) -> None:
         """Put `draft` back where the draft it replaces already sits.
@@ -636,6 +795,7 @@ class Session:
             "turns": [turn.to_document() for turn in self.turns],
             "drafts": [draft.to_document() for draft in self.drafts],
             "verdicts": [verdict.to_document() for verdict in self.verdicts],
+            "preferences": [row.to_document() for row in self.preferences],
         }
 
     @classmethod
@@ -658,6 +818,7 @@ class Session:
             turns=[Turn.from_document(turn) for turn in payload.get("turns", ())],
             drafts=[Draft.from_document(draft) for draft in payload.get("drafts", ())],
             verdicts=[Verdict.from_document(v) for v in payload.get("verdicts", ())],
+            preferences=[Preference.from_document(p) for p in payload.get("preferences", ())],
             finalized_job_id=payload.get("finalized_job_id"),
         )
 
@@ -723,6 +884,7 @@ __all__ = [
     "SESSION_FORMAT_PREFIX",
     "SESSION_SCHEMA_VERSION",
     "Draft",
+    "Preference",
     "Session",
     "SketchRecord",
     "ToolInvocation",

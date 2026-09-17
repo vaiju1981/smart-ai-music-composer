@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import httpx
 import pytest
@@ -61,6 +61,13 @@ _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
 # The ids `draft` hands out are positional and therefore knowable at script
 # time, which is what lets a script name the draft it wants sketched.
 _FIRST = "draft-0"
+_SPARSE: dict[str, Any] = {"knob": "SetBassMotion", "motion": "sparse"}
+"""A request the engine can honour, and one no measured metric moves.
+
+The last part is what makes it usable as a fixture: a revision that moved a
+threshold would be at the arbiter's ratchet for a reason the tests using it are
+not about, and a `SetTempo` on a 30-second piece is swallowed by the duration
+search — which is a refusal worth its own case rather than a default."""
 
 
 class ScriptedModel:
@@ -567,6 +574,67 @@ class TestVerdict:
         assert "draft-0" in detail
         assert "draft-1" in detail
 
+    def test_a_like_on_a_revised_draft_writes_the_preference_row(
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+    ) -> None:
+        """The row a dataset is built from, written now because nothing else can.
+
+        A verdict is the one place a user says *this is good*, so it is the one
+        place the `(plan_hash, delta, verdict)` triple can be recovered — and it
+        has to be written down rather than derived later, because the drafts it
+        names are what a session prunes. The reader on the row is the *step's*,
+        not the judged draft's: `draft-2` was built by a typed request, and a
+        row labelled with the draft's own reader would say the user typed a
+        chain the conductor could have written.
+
+        Read out of the stored document rather than the response, which is the
+        other half of the decision: the log is for a dataset builder over the
+        store, and the studio already has the verdicts.
+        """
+        created = _drafts(client, model)
+        revised = client.post(
+            f"/sessions/{created['session_id']}/deltas",
+            json={"draft_id": _FIRST, "deltas": [_SPARSE], "sketch": False},
+        ).json()["draft"]
+        client.post(
+            f"/sessions/{created['session_id']}/verdict",
+            json={"draft_id": revised["draft_id"], "value": "like"},
+        )
+
+        session = SessionStorage(roots[1]).get(created["session_id"])
+        rows = [row.to_document() for row in session.preferences]
+        assert [
+            (row["draft_id"], row["delta"], row["requests_source"], row["verdict"]) for row in rows
+        ] == [(revised["draft_id"], _SPARSE, "typed", "like")]
+        assert rows[0]["plan_hash"] == revised["plan_hash"]
+        assert "preferences" not in client.get(f"/sessions/{created['session_id']}").json()
+
+    def test_a_verdict_in_words_alone_writes_no_row(
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+    ) -> None:
+        """Words are not yet a judgement this can weigh against a plan.
+
+        The verdict is still recorded — the next turn reads it, which is why
+        this is not simply a discarded request — but a row keyed on a value the
+        user never gave would be the log inventing a preference. The draft is a
+        revised one on purpose: a draft straight from the brief has no requests
+        to log either way, so only a chain with something in it can tell the two
+        readings apart.
+        """
+        created = _drafts(client, model)
+        revised = client.post(
+            f"/sessions/{created['session_id']}/deltas",
+            json={"draft_id": _FIRST, "deltas": [_SPARSE], "sketch": False},
+        ).json()["draft"]
+        client.post(
+            f"/sessions/{created['session_id']}/verdict",
+            json={"draft_id": revised["draft_id"], "feedback": "the bass is muddy"},
+        )
+
+        session = SessionStorage(roots[1]).get(created["session_id"])
+        assert [verdict.feedback for verdict in session.verdicts] == ["the bass is muddy"]
+        assert session.preferences == []
+
 
 class TestFinalize:
     def test_finalizing_a_draft_publishes_it_and_queues_the_render(
@@ -765,14 +833,6 @@ class TestDeltas:
     had.
     """
 
-    _SPARSE: ClassVar[dict[str, Any]] = {"knob": "SetBassMotion", "motion": "sparse"}
-    """A request the engine can honour, and one no measured metric moves.
-
-    The last part is what makes it usable here: a revision that moved a
-    threshold would be at the arbiter's ratchet for a reason this class is not
-    about, and a `SetTempo` on a 30-second piece is swallowed by the duration
-    search — which is a refusal worth its own case rather than the fixture."""
-
     @staticmethod
     def _deltas(client: TestClient, created: dict[str, Any], **body: Any) -> httpx.Response:
         return client.post(
@@ -787,12 +847,12 @@ class TestDeltas:
         created = _drafts(client, model)
         turns = len(created["turns"])
 
-        response = self._deltas(client, created, deltas=[self._SPARSE], sketch=False)
+        response = self._deltas(client, created, deltas=[_SPARSE], sketch=False)
         assert response.status_code == 200, response.text
         body = response.json()
 
         assert body["source"] == "typed"
-        assert body["applied"] == [self._SPARSE]
+        assert body["applied"] == [_SPARSE]
         assert body["refused"] == []
         assert body["draft"]["draft_id"] == "draft-2"
         assert body["draft"]["parent_id"] == _FIRST
@@ -815,7 +875,7 @@ class TestDeltas:
         created = _drafts(client, model)
         asked = len(model.requests)
 
-        self._deltas(client, created, deltas=[self._SPARSE], sketch=False)
+        self._deltas(client, created, deltas=[_SPARSE], sketch=False)
 
         assert len(model.requests) == asked
 
@@ -825,7 +885,7 @@ class TestDeltas:
         """A sketch by default, through the tool rather than beside it."""
         created = _drafts(client, model)
 
-        body = self._deltas(client, created, deltas=[self._SPARSE]).json()
+        body = self._deltas(client, created, deltas=[_SPARSE]).json()
 
         assert body["sketch_error"] is None
         assert body["draft"]["sketch"] is not None
@@ -840,7 +900,7 @@ class TestDeltas:
         """What a caller dragging a slider wants: the measurements, and no FluidSynth."""
         created = _drafts(client, model)
 
-        body = self._deltas(client, created, deltas=[self._SPARSE], sketch=False).json()
+        body = self._deltas(client, created, deltas=[_SPARSE], sketch=False).json()
 
         assert rendered == []
         assert body["draft"]["sketch"] is None
@@ -867,7 +927,7 @@ class TestDeltas:
         monkeypatch.setattr(tools, "render_sketch", _broken)
         created = _drafts(client, model)
 
-        response = self._deltas(client, created, deltas=[self._SPARSE])
+        response = self._deltas(client, created, deltas=[_SPARSE])
         assert response.status_code == 200, response.text
         body = response.json()
 
@@ -887,7 +947,7 @@ class TestDeltas:
         ).json()
 
         assert body["source"] == "model"
-        assert body["applied"] == [self._SPARSE]
+        assert body["applied"] == [_SPARSE]
         assert body["note"] == "Sparser bass."
         assert body["unread"] == []
 
@@ -930,7 +990,7 @@ class TestDeltas:
         body = response.json()
 
         assert body["source"] == "keywords"
-        assert body["applied"] == [self._SPARSE]
+        assert body["applied"] == [_SPARSE]
         assert "no language model is configured" in body["note"]
         assert len(model.requests) == 1
 
@@ -1073,7 +1133,7 @@ class TestDeltas:
 
     def test_an_unknown_draft_is_404(self, client: TestClient, model: ScriptedModel) -> None:
         created = _drafts(client, model)
-        response = self._deltas(client, created, draft_id="draft-9", deltas=[self._SPARSE])
+        response = self._deltas(client, created, draft_id="draft-9", deltas=[_SPARSE])
         assert response.status_code == 404
         assert "draft-9" in response.json()["detail"]
 
@@ -1084,7 +1144,7 @@ class TestDeltas:
         created = _drafts(client, model)
         client.post(f"/sessions/{created['session_id']}/finalize", json={"draft_id": _FIRST})
 
-        response = self._deltas(client, created, deltas=[self._SPARSE])
+        response = self._deltas(client, created, deltas=[_SPARSE])
 
         assert response.status_code == 409
         assert "publishing is final" in response.json()["detail"]
@@ -1095,7 +1155,7 @@ class TestDeltas:
         """Two readings of one body with no honest way to pick between them."""
         created = _drafts(client, model)
         response = self._deltas(
-            client, created, deltas=[self._SPARSE], feedback="sparse bass", sketch=False
+            client, created, deltas=[_SPARSE], feedback="sparse bass", sketch=False
         )
         assert response.status_code == 422
         assert "exactly one of" in response.text
