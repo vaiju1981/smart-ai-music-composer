@@ -15,6 +15,8 @@ Layout, mirroring `JobStorage`::
     {root}/
         {session_id}/
             session.json
+            history/
+                00000001.json
             sketches/
                 {draft_id}/
                     {draft_id}.mid
@@ -28,6 +30,14 @@ has had the same invariants applied as one built in memory — uniqueness of
 draft ids, verdicts that name a draft the session has, ids that are single
 path segments. A hand-edited or truncated document is refused there rather
 than silently loaded with a hole in it.
+
+`history/` is what `undo` reads. Each save keeps the document it replaced,
+which is the only way to make undo a mechanism rather than a convention: a
+caller that had to remember to snapshot before it mutated would be a caller
+that eventually forgets, and the mutation that forgot would be the one worth
+undoing. The step numbers are read as the maximum already there plus one
+rather than kept in a counter of their own — the directory *is* the counter,
+so there is no second value that can disagree with it.
 
 Retention is per session, and a sketch is pruned with the session that owns
 it. Sessions are kept longer than jobs are: a job is a render, which its
@@ -46,6 +56,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 
 from saimc.canonical import canonical_dumps
 from saimc.session.models import Session, require_id_segment
@@ -64,6 +75,27 @@ of the slow loop.
 """
 
 SKETCHES_DIRNAME = "sketches"
+
+HISTORY_DIRNAME = "history"
+
+UNDO_DEPTH: Final[int] = 10
+"""How many previous documents a session keeps for `undo`.
+
+Bounded because these are copies of the whole session — including its turn
+log and every draft's plan — so an unbounded history would make a long
+session's directory grow with the square of its length. Ten steps is deeper
+than a user reaches for and shallower than a cost worth measuring.
+"""
+
+
+class UndoUnavailable(Exception):
+    """Raised when a session cannot be rewound, with the reason why.
+
+    A distinct type because the two reasons are different situations with
+    different advice: "there is nothing behind you" and "you published, and
+    a render cannot be recalled". The API maps both to a refusal and neither
+    to a 500.
+    """
 
 
 class SessionStorage:
@@ -123,11 +155,48 @@ class SessionStorage:
         duplicate draft id would otherwise be written happily and then
         refused by this store's own `get`, because every read rebuilds
         through the constructors. Checking before the clock moves also means
-        a refused save leaves the in-memory record exactly as it was.
+        a refused save leaves the in-memory record exactly as it was — and,
+        for the same reason, the document on disk untouched, because the
+        rotation below happens after both checks.
         """
         session.check()
         session.updated_at = at or datetime.now(UTC)
+        self._rotate(session.session_id)
         self._write(session)
+
+    def undo(self, session_id: str) -> Session:
+        """Restore the session to the document before its most recent save.
+
+        Returns the restored session, having written it and dropped the
+        snapshot it came from. The state that was undone is *gone*: there is
+        no redo, because undo exists to take back a change the user did not
+        want, and a redo of a change they did want is a change they can ask
+        for again.
+
+        Refused once the session has published. A finalized job is already
+        queued and about to render, so there is no unwinding it — restoring
+        an earlier document would leave a session claiming it had not
+        published while the piece it published renders on, and the user's
+        next publish would start a second render of the same draft.
+        """
+        session = self.get(session_id)
+        if session.is_finalized:
+            raise UndoUnavailable(
+                f"this session published job {session.finalized_job_id}, and a render "
+                "cannot be unpublished; start a new session for a different piece"
+            )
+        steps = self._steps(session_id)
+        if not steps:
+            raise UndoUnavailable("this session has no earlier state to go back to")
+        latest = self._history_dir(session_id) / f"{steps[-1]:08d}.json"
+        restored = self._read(latest)
+        # The document is the old one but the change is happening now, so the
+        # clock moves: the SSE stream emits on `updated_at`, and an undo the
+        # workspace never hears about is an undo the user does not see.
+        restored.updated_at = datetime.now(UTC)
+        self._write(restored)
+        latest.unlink()
+        return restored
 
     def list_all(self) -> Iterator[Session]:
         """Iterate over every persisted session, oldest path first.
@@ -200,6 +269,45 @@ class SessionStorage:
     def _session_path(self, session_id: str) -> Path:
         return self._root / session_id / "session.json"
 
+    def _history_dir(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / HISTORY_DIRNAME
+
+    def _steps(self, session_id: str) -> list[int]:
+        """The undo steps a session has, oldest first.
+
+        Read from the directory rather than tracked beside it: a counter in
+        memory would not survive a restart, and one on disk would be a second
+        value that can disagree with the files it counts.
+        """
+        return sorted(
+            int(path.stem)
+            for path in self._history_dir(session_id).glob("*.json")
+            if path.stem.isdigit()
+        )
+
+    def _rotate(self, session_id: str) -> None:
+        """Keep the document a save is about to replace, up to `UNDO_DEPTH`.
+
+        A copy rather than a move. `_write` is atomic, so a crash between the
+        two can leave the session exactly as it was or a snapshot of a
+        duplicate — where moving the document aside first would leave
+        `session.json` missing, which is the one outcome `get` cannot
+        distinguish from a session that never existed.
+        """
+        path = self._session_path(session_id)
+        if not path.exists():
+            return
+        history = self._history_dir(session_id)
+        history.mkdir(parents=True, exist_ok=True)
+        steps = self._steps(session_id)
+        step = steps[-1] + 1 if steps else 1
+        snapshot = history / f"{step:08d}.json"
+        snapshot.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        # `len(steps) + 1` is what the directory holds now; whatever exceeds
+        # the depth is the far past, oldest first.
+        for stale in steps[: max(0, len(steps) + 1 - UNDO_DEPTH)]:
+            (history / f"{stale:08d}.json").unlink()
+
     def _write(self, session: Session) -> None:
         path = self._session_path(session.session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +339,10 @@ class SessionStorage:
 
 __all__ = [
     "DEFAULT_SESSIONS_DIR",
+    "HISTORY_DIRNAME",
     "SESSION_RETENTION_DAYS",
     "SKETCHES_DIRNAME",
+    "UNDO_DEPTH",
     "SessionStorage",
+    "UndoUnavailable",
 ]

@@ -33,11 +33,18 @@ from saimc.quality import score_piece
 from saimc.session.models import (
     SESSION_FORMAT,
     Draft,
+    Session,
     ToolInvocation,
     Turn,
     UnsupportedSessionVersionError,
 )
-from saimc.session.store import SESSION_RETENTION_DAYS, SessionStorage
+from saimc.session.store import (
+    HISTORY_DIRNAME,
+    SESSION_RETENTION_DAYS,
+    UNDO_DEPTH,
+    SessionStorage,
+    UndoUnavailable,
+)
 from saimc.spec import CompositionSpec, Mood
 
 _NOW = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
@@ -85,6 +92,17 @@ def _document_path(store: SessionStorage, session_id: str):
 
 def _corrupt(store: SessionStorage, session_id: str, payload: str) -> None:
     _document_path(store, session_id).write_text(payload)
+
+
+def _snapshots(store: SessionStorage, session_id: str) -> list[str]:
+    """The undo steps a session keeps, oldest first."""
+    return sorted(
+        path.name for path in (store.session_dir(session_id) / HISTORY_DIRNAME).glob("*.json")
+    )
+
+
+def _snapshot_path(store: SessionStorage, session_id: str, step: int):
+    return store.session_dir(session_id) / HISTORY_DIRNAME / f"{step:08d}.json"
 
 
 class TestCreateAndGet:
@@ -186,6 +204,209 @@ class TestSave:
             session.turns.append(_turn(f"turn {index}"))
             store.save(session)
             assert len(store.get(session.session_id).turns) == index + 1
+
+
+class TestUndo:
+    """Undo is a mechanism of the store, not a habit of its callers.
+
+    Every save keeps the document it replaced, so `undo` reaches a state
+    nothing had to remember to record. The tests below are about that
+    history: that it exists, that it is finite, that walking it does not
+    walk *forward*, and that it will not cross a publish.
+    """
+
+    def test_undo_restores_the_session_before_the_last_save(self, store: SessionStorage) -> None:
+        session = store.create("p")
+        session.turns.append(_turn("kept"))
+        store.save(session)
+        session.turns.append(_turn("undone"))
+        store.save(session)
+        restored = store.undo(session.session_id)
+        assert [turn.narration for turn in restored.turns] == ["kept"]
+        assert [turn.narration for turn in store.get(session.session_id).turns] == ["kept"]
+
+    def test_undo_walks_back_one_step_at_a_time(self, store: SessionStorage) -> None:
+        session = store.create("p")
+        for index in range(3):
+            session.turns.append(_turn(f"turn {index}"))
+            store.save(session)
+        assert [len(store.undo(session.session_id).turns) for _ in range(3)] == [2, 1, 0]
+        with pytest.raises(UndoUnavailable, match="no earlier state"):
+            store.undo(session.session_id)
+
+    def test_a_second_undo_goes_further_back_rather_than_forward(
+        self, store: SessionStorage
+    ) -> None:
+        """There is no redo, and this is what says so.
+
+        The state an undo leaves is discarded, so undoing twice is two steps
+        into the past — not a toggle that returns what it took, which is what
+        re-running the rotation would accidentally build.
+        """
+        session = store.create("p")
+        for narration in ("first", "second", "third"):
+            session.turns.append(_turn(narration))
+            store.save(session)
+        assert [turn.narration for turn in store.undo(session.session_id).turns] == [
+            "first",
+            "second",
+        ]
+        assert [turn.narration for turn in store.undo(session.session_id).turns] == ["first"]
+
+    def test_undo_is_refused_when_there_is_nothing_behind_the_session(
+        self, store: SessionStorage
+    ) -> None:
+        session = store.create("p")
+        with pytest.raises(UndoUnavailable, match="no earlier state"):
+            store.undo(session.session_id)
+
+    def test_undo_is_refused_once_the_session_has_published(self, store: SessionStorage) -> None:
+        """A queued render cannot be recalled, so the publish is not undoable.
+
+        Restoring the document from before the publish would leave a session
+        saying it had never published while the piece it published renders
+        on — and the user's next publish would start a second render of the
+        same draft. The refusal is checked against the document on disk, and
+        it changes nothing.
+        """
+        session = store.create("p")
+        session.turns.append(_turn())
+        store.save(session)
+        session.finalized_job_id = "publishedjob"
+        store.save(session)
+        with pytest.raises(UndoUnavailable, match="publishedjob"):
+            store.undo(session.session_id)
+        assert store.get(session.session_id).finalized_job_id == "publishedjob"
+
+    def test_undo_moves_the_clock_so_the_workspace_hears_about_it(
+        self, store: SessionStorage
+    ) -> None:
+        """The restored document is old; the change is now.
+
+        The SSE stream emits on `updated_at`, so an undo that left the old
+        timestamp in place would be invisible until the next unrelated save.
+
+        Both saves are pinned, and that is the whole test. An unpinned
+        snapshot carries a *recent* timestamp of its own — it was written
+        moments ago — so an assertion that the restored clock is "later than
+        some past instant" is satisfied by the snapshot rather than by the
+        bump, and stays green with the bump deleted.
+        """
+        session = store.create("p")
+        yesterday = _NOW - timedelta(days=1)
+        store.save(session, at=yesterday)
+        session.turns.append(_turn())
+        store.save(session, at=_NOW)
+        restored = store.undo(session.session_id)
+        assert restored.turns == []
+        assert restored.updated_at > _NOW
+        assert store.get(session.session_id).updated_at == restored.updated_at
+
+    def test_the_history_is_bounded_by_the_depth(self, store: SessionStorage) -> None:
+        session = store.create("p")
+        for index in range(UNDO_DEPTH + 5):
+            session.turns.append(_turn(f"turn {index}"))
+            store.save(session)
+        assert len(_snapshots(store, session.session_id)) == UNDO_DEPTH
+
+    def test_the_states_dropped_are_the_oldest_ones(self, store: SessionStorage) -> None:
+        """The bound has to keep the near past, which is the one a user
+        reaches for. A ring that dropped the *newest* would hold ten steps
+        and none of them the one just taken.
+
+        Run past the depth rather than exactly to it, which is also what
+        holds the step numbers to the maximum already on disk: a counter
+        taken as the *count* would start colliding with a kept snapshot the
+        moment pruning removed one, and the walk back would repeat a state
+        instead of descending through it.
+        """
+        session = store.create("p")
+        for index in range(UNDO_DEPTH + 3):
+            session.turns.append(_turn(f"turn {index}"))
+            store.save(session)
+        walked = [len(store.undo(session.session_id).turns) for _ in range(UNDO_DEPTH)]
+        assert walked == list(range(UNDO_DEPTH + 2, 2, -1))
+        with pytest.raises(UndoUnavailable, match="no earlier state"):
+            store.undo(session.session_id)
+
+    def test_a_save_that_dies_after_the_rotation_cannot_lose_the_session(
+        self, store: SessionStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rotation copies the document rather than moving it aside.
+
+        `_write` is atomic, so the worst a crash between the two leaves is a
+        snapshot of a duplicate. Moving `session.json` into `history/` first
+        would leave it missing — an outcome `get` cannot tell apart from a
+        session that never existed, which is the one failure this store's
+        whole write path is arranged to avoid.
+        """
+        session = store.create("p")
+        session.turns.append(_turn())
+
+        def _die(*args: object, **kwargs: object) -> None:
+            raise OSError("the disk filled up")
+
+        monkeypatch.setattr(store, "_write", _die)
+        with pytest.raises(OSError):
+            store.save(session)
+        assert store.get(session.session_id).turns == []
+
+    def test_a_snapshot_is_rebuilt_through_the_constructors(self, store: SessionStorage) -> None:
+        """Same rule as `get`: a history file is a document from disk."""
+        session = store.create("p")
+        session.turns.append(_turn())
+        store.save(session)
+        _snapshot_path(store, session.session_id, 1).write_text("{}")
+        with pytest.raises(UnsupportedSessionVersionError):
+            store.undo(session.session_id)
+
+    def test_a_refused_save_leaves_no_snapshot(self, store: SessionStorage) -> None:
+        """The rotation is after the check, for the same reason the clock is.
+
+        A save that refused after rotating would offer an undo step into a
+        state the save never reached.
+        """
+        session = store.create("p")
+        session.drafts.append(_draft("same"))
+        session.drafts.append(_draft("same"))
+        with pytest.raises(ValueError):
+            store.save(session)
+        assert _snapshots(store, session.session_id) == []
+
+    def test_saving_a_session_that_was_never_written_has_nothing_to_rotate(
+        self, store: SessionStorage
+    ) -> None:
+        """`save` takes any `Session`, including one built rather than created.
+
+        There is no document to keep, so the rotation does nothing — and it
+        must not make that a failure, which is what reading a file that is
+        not there would turn it into.
+        """
+        session = Session(
+            session_id="handbuilt01",
+            created_at=_NOW,
+            updated_at=_NOW,
+            brief="something for a rainy day",
+        )
+        store.save(session)
+        assert store.get("handbuilt01").brief == "something for a rainy day"
+        assert _snapshots(store, "handbuilt01") == []
+
+    def test_the_history_is_not_mistaken_for_a_session(self, store: SessionStorage) -> None:
+        """`list_all` globs `*/session.json`; a history file is one directory
+        deeper and must not appear as a session of its own."""
+        session = store.create("p")
+        session.turns.append(_turn())
+        store.save(session)
+        assert [seen.session_id for seen in store.list_all()] == [session.session_id]
+
+    def test_prune_takes_the_history_with_the_session(self, store: SessionStorage) -> None:
+        session = store.create("p")
+        session.turns.append(_turn())
+        store.save(session)
+        store.save(session, at=datetime.now(UTC) - timedelta(days=SESSION_RETENTION_DAYS + 1))
+        assert store.prune() == 1
+        assert not store.session_dir(session.session_id).exists()
 
 
 class TestListAll:

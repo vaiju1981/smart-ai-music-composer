@@ -491,8 +491,9 @@ async def _finalize(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         raise ToolRefusal(
             "already_finalized",
             f"this session has already published a piece as job {ctx.session.finalized_job_id}, "
-            "and publishing again is a decision rather than a side effect. Undo that finalize "
-            "first.",
+            "and publishing again is a decision rather than a side effect. A published piece "
+            "cannot be unpublished — its render is already queued — so a different piece needs "
+            "a new session.",
         )
 
     job = ctx.jobs.create(ctx.session.brief)
