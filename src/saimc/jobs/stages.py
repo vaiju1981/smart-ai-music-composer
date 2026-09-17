@@ -172,7 +172,7 @@ def parse_stage(
     )
 
 
-def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
+def _composer_for_ensemble(ensemble: Ensemble) -> Callable[..., Any]:
     """Resolve the composer for a spec's ensemble.
 
     The registry is the Phase 2 seam for dedicated engines (e.g. a
@@ -189,7 +189,7 @@ def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
     from saimc.compose.engine import compose as _phase1_compose
     from saimc.render.instruments import SUPPORTED_INSTRUMENTS
 
-    registry: dict[str, Callable[[Any], Any]] = {
+    registry: dict[str, Callable[..., Any]] = {
         # e.g. "sitar": _raga_compose — dedicated engines go here.
     }
     composer = registry.get(ensemble.melody)
@@ -206,13 +206,17 @@ def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
 def compose_stage(
     job: Job,
     storage: JobStorage,
-    engine: Callable[[Any], Any] | None = None,
+    engine: Callable[..., Any] | None = None,
 ) -> StageResult:
     """Run the `composing` stage.
 
-    `engine` is a callable `(spec) -> EngineOutput`. When `None`, the
-    composer registered for the spec's instrumentation is used
+    `engine` is a callable `(spec, *, plan=None) -> EngineOutput`. When
+    `None`, the composer registered for the spec's instrumentation is used
     (Phase 1: piano -> `saimc.compose.engine.compose`).
+
+    The job's plan is passed as written and is never resolved here: a job
+    that named no plan composes under the engine's defaults, and the plan
+    that results is the engine's to publish (it lands in the sidecar).
     """
     if job.input_spec is None:
         return StageResult(
@@ -243,7 +247,7 @@ def compose_stage(
             )
 
     try:
-        output = engine(job.input_spec)
+        output = engine(job.input_spec, plan=job.input_plan)
     except CompositionEngineError as exc:
         return StageResult(
             job=job,
@@ -268,10 +272,17 @@ def compose_stage(
     # Successful compose: attach hashes for the manifest. Rebuilt from
     # the base version each time — a retried compose overwrites the
     # previous hashes instead of growing the string on every re-run.
+    # The second one is spelled out in full because `plan_hash` was
+    # ambiguous the moment a *composition* plan existed: this is the
+    # PerformancePlan's, and a reader of a persisted job cannot be left
+    # to guess which of the two it holds.
     score_hash = output.notation_score.compute_hash()
-    plan_hash = output.performance_plan.compute_hash()
+    performance_plan_hash = output.performance_plan.compute_hash()
     base_version = job.engine_version.split(";score_hash=", 1)[0]
-    job.engine_version = f"{base_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
+    job.engine_version = (
+        f"{base_version};score_hash={score_hash[:12]}"
+        f";performance_plan_hash={performance_plan_hash[:12]}"
+    )
     # Persist the full engine output as a sidecar so later render
     # stages (audio, sheet, animation) can read it without re-running
     # the composer.

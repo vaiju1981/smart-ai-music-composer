@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from saimc.compose.duration import DurationArrangement
-from saimc.compose.engine import EngineOutput, compose
+from saimc.compose.engine import SIDECAR_FORMAT, EngineOutput, compose
 from saimc.compose.forms import ChordSlot, ChordTemplate
+from saimc.compose.plan import PLAN_FORMAT, CompositionPlan, default_plan
 from saimc.compose.score import (
     KeySignature,
     Measure,
@@ -142,8 +145,6 @@ def test_to_sidecar_does_not_include_tempo_map_inline() -> None:
 def test_sidecar_round_trips_controllers_and_pitch_bends(tmp_path: Path) -> None:
     """The expression layer survives the sidecar (S4)."""
     out = _make_engine_output()
-    from dataclasses import replace
-
     from saimc.compose.score import ControllerEvent, PitchBendEvent
 
     plan_with_expression = replace(
@@ -185,3 +186,153 @@ def test_chord_bars_round_trip(tmp_path: Path) -> None:
     write_engine_output(path, out)
     back = read_engine_output(path)
     assert back.chord_bars == out.chord_bars
+
+
+_DRUMS = [
+    {"role": "melody", "instrument": "piano"},
+    {"role": "harmony", "instrument": "strings"},
+    {"role": "bass", "instrument": "contrabass"},
+    {"role": "percussion", "instrument": "drum_set"},
+]
+"""A piece with a rhythm section, so the plan's percussion fields are not
+the defaults by accident and the round trip has them to lose."""
+
+
+def _composed() -> EngineOutput:
+    return compose(
+        CompositionSpec.model_validate(
+            {
+                "mood": "electrifying",
+                "duration_seconds": 45,
+                "seed": 9,
+                "instrumentation": _DRUMS,
+            }
+        )
+    )
+
+
+class TestTheSidecarRecordsThePlan:
+    """The plan goes into the sidecar, versioned and readable.
+
+    Without it a sidecar is a record of the notes and not of the decisions
+    that produced them: the render stages read the sidecar rather than
+    re-composing, so a plan that is not in it is a plan no later stage and
+    no reader can see.
+    """
+
+    def test_the_composed_output_carries_the_resolved_plan(self) -> None:
+        """`compose` resolves the default rather than leaving the field
+        empty, so a caller who never heard of a plan still gets the record
+        of what the piece was composed under."""
+        spec = CompositionSpec.model_validate(
+            {
+                "mood": "electrifying",
+                "duration_seconds": 45,
+                "seed": 9,
+                "instrumentation": _DRUMS,
+            }
+        )
+        out = compose(spec)
+        assert out.plan is not None
+        assert out.plan == default_plan(spec)
+        assert out.plan.format == PLAN_FORMAT
+
+    def test_a_supplied_plan_is_the_one_the_sidecar_records(self) -> None:
+        """The record is of the plan the piece was composed under, not of
+        what the defaults would have been: a reader replaying the sidecar
+        has to get the piece that was rendered."""
+        spec = CompositionSpec.model_validate(
+            {
+                "mood": "electrifying",
+                "duration_seconds": 45,
+                "seed": 9,
+                "instrumentation": _DRUMS,
+            }
+        )
+        supplied = replace(default_plan(spec), harmony_pad_velocity=42)
+        out = compose(spec, plan=supplied)
+        assert out.plan == supplied
+        assert out.plan != default_plan(spec)
+
+    def test_the_plan_survives_the_sidecar(self, tmp_path: Path) -> None:
+        out = _composed()
+        path = tmp_path / "engine_output.json"
+        write_engine_output(path, out)
+        back = read_engine_output(path)
+        assert back.plan == out.plan
+        assert back.plan is not None
+        assert back.plan.compute_hash() == out.plan.compute_hash()
+
+    def test_the_plan_in_the_sidecar_is_the_canonical_document(
+        self, tmp_path: Path
+    ) -> None:
+        """The block written is the document the plan's own hash covers, so
+        a reader can verify it rather than take it on trust."""
+        out = _composed()
+        path = tmp_path / "engine_output.json"
+        write_engine_output(path, out)
+        document = json.loads(path.read_text(encoding="utf-8"))["plan"]
+        assert document["format"] == PLAN_FORMAT
+        reloaded = CompositionPlan.from_canonical_dict(document)
+        assert reloaded == out.plan
+
+    def test_a_sidecar_without_a_plan_still_loads(self, tmp_path: Path) -> None:
+        """The backward tolerance every other sidecar field has.
+
+        A sidecar written before the plan existed has no `plan` key, and
+        the read is a `.get()` for exactly that reason. It is *not*
+        resolved from the spec: a resolved plan would describe this build's
+        defaults, not the ones the piece was composed under, and a
+        provenance record that guesses is worse than one that says nothing.
+        """
+        out = _composed()
+        payload = out.to_sidecar()
+        del payload["plan"]
+        back = EngineOutput.from_sidecar(payload)
+        assert back.plan is None
+        assert back.notation_score.compute_hash() == out.notation_score.compute_hash()
+
+    def test_no_plan_is_omitted_rather_than_nulled(self) -> None:
+        """A pre-plan output re-serialized must not invent a key that reads
+        as "a plan was considered here"."""
+        payload = _make_engine_output().to_sidecar()
+        assert payload["format"] == SIDECAR_FORMAT
+        assert "plan" not in payload
+
+    def test_the_sidecar_carries_its_own_version_tag(self, tmp_path: Path) -> None:
+        """§6's rule for a document that wraps others: the container names
+        its own shape, because each nested document names only its own."""
+        out = _composed()
+        path = tmp_path / "engine_output.json"
+        write_engine_output(path, out)
+        assert json.loads(path.read_text(encoding="utf-8"))["format"] == SIDECAR_FORMAT
+
+    @pytest.mark.parametrize("written", ["EngineOutput:2", "EngineOutput", "NotationScore:1"])
+    def test_a_sidecar_of_another_version_is_refused(
+        self, tmp_path: Path, written: str
+    ) -> None:
+        """Refused rather than coerced: a newer sidecar may carry state this
+        build would drop on the floor while still reporting success."""
+        payload = _composed().to_sidecar()
+        payload["format"] = written
+        with pytest.raises(ValueError) as exc_info:
+            EngineOutput.from_sidecar(payload)
+        assert SIDECAR_FORMAT in str(exc_info.value)
+
+    def test_a_sidecar_with_no_tag_at_all_still_loads(self) -> None:
+        """Every sidecar on disk today predates the tag, so its absence has
+        to mean "the version this tag was introduced at" — not a refusal."""
+        payload = _composed().to_sidecar()
+        del payload["format"]
+        assert EngineOutput.from_sidecar(payload).plan is not None
+
+    def test_a_future_plan_version_inside_the_sidecar_is_refused(self) -> None:
+        """The nested document is versioned too, and the refusal is the
+        plan's own — the sidecar does not get to accept what the plan type
+        would not."""
+        from saimc.compose.plan import PlanError
+
+        payload = _composed().to_sidecar()
+        payload["plan"]["format"] = "CompositionPlan:2"
+        with pytest.raises(PlanError):
+            EngineOutput.from_sidecar(payload)

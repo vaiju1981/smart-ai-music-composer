@@ -44,7 +44,9 @@ def client(storage: JobStorage, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def _stub_engine_returns(spec: CompositionSpec) -> tuple[object, object]:
+def _stub_engine_returns(
+    spec: CompositionSpec, *, plan: object | None = None
+) -> tuple[object, object]:
     """Stand-in for the slice-4 composition engine.
 
     Returns a real `EngineOutput` so downstream stages can read its

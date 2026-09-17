@@ -39,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from itertools import pairwise
-from typing import Any
+from typing import Any, Final
 
 from saimc.compose.duration import (
     DEFAULT_SECTION_ARC,
@@ -163,6 +163,23 @@ class VoiceInstrument:
     instrument: str
 
 
+SIDECAR_SCHEMA_VERSION: Final[int] = 1
+"""Bump when the sidecar's own key set or its nesting changes.
+
+It tracks this *container's* shape rather than the canonical-JSON encoding
+rules (`CANONICAL_FORMAT_VERSION`), for `PLAN_SCHEMA_VERSION`'s reason: the
+sidecar is the only canonical document that wraps others, and each wrapped
+document carries its own tag — the score's and the performance plan's are
+the encoding version, the composition plan's is its own schema. This one is
+about the sidecar alone, so a reader can tell a document written by an
+older build from one written by a newer one instead of silently taking what
+it recognises and dropping the rest.
+"""
+
+SIDECAR_FORMAT: Final[str] = f"EngineOutput:{SIDECAR_SCHEMA_VERSION}"
+"""The tag every engine-output sidecar carries, in §6's `{kind}:{version}` form."""
+
+
 @dataclass(frozen=True)
 class EngineOutput:
     """The engine's output: NotationScore + PerformancePlan + arrangement metadata.
@@ -175,6 +192,12 @@ class EngineOutput:
     way the walk wrote it. `voice_instruments` maps each engine voice to
     the instrument that renders it — the renderers' source of truth for
     per-voice programs and channels.
+
+    `plan` is the plan the engine composed under, resolved: the record
+    that makes a sidecar replayable without re-deriving anything. It is
+    `None` only for a sidecar written before the plan existed — every
+    output `compose` returns carries one, because `compose` resolves the
+    default rather than leaving the field empty.
     """
 
     notation_score: NotationScore
@@ -185,16 +208,21 @@ class EngineOutput:
     chord_bars: tuple[tuple[int, ...], ...] = ()
     bar_keys: tuple[KeySignature, ...] = ()
     voice_instruments: tuple[VoiceInstrument, ...] = ()
+    plan: CompositionPlan | None = None
 
     def to_sidecar(self) -> dict[str, Any]:
         """Serialize to a JSON-friendly dict for the sidecar file.
 
         The compose types are plain `@dataclass(frozen=True)`, not
-        Pydantic, so we use `dataclasses.asdict` for the conversion.
+        Pydantic, so we use `dataclasses.asdict` for the conversion. The
+        plan is written as its canonical document rather than as an
+        `asdict` of the dataclass, so the block in the sidecar is the same
+        document its own hash is taken over.
         """
         from dataclasses import asdict
 
-        return {
+        payload: dict[str, Any] = {
+            "format": SIDECAR_FORMAT,
             "notation_score": asdict(self.notation_score),
             "performance_plan": asdict(self.performance_plan),
             "arrangement": asdict(self.arrangement),
@@ -204,6 +232,12 @@ class EngineOutput:
             "bar_keys": [asdict(k) for k in self.bar_keys],
             "voice_instruments": [asdict(v) for v in self.voice_instruments],
         }
+        # Omitted, not nulled, when there is none: a sidecar written before
+        # the plan existed has no key either, and re-serializing one should
+        # not invent a field that reads as "a plan was considered here".
+        if self.plan is not None:
+            payload["plan"] = self.plan.to_canonical_dict()
+        return payload
 
     @classmethod
     def from_sidecar(cls, payload: dict[str, Any]) -> EngineOutput:
@@ -213,8 +247,22 @@ class EngineOutput:
         `DurationArrangement`, `KeySignature`, `ChordTemplate`,
         `Measure`, `NoteEvent`, `PerformanceNoteEvent`) are rebuilt
         with their constructors by name; `asdict` collapses them
-        into plain `dict`s, so we rehydrate each one explicitly.
+        into plain `dict`s, so we rehydrate each one explicitly. The
+        plan is the exception — it is rehydrated from its canonical
+        document, which is how it was written.
+
+        The document's own `format` tag is read with a default, because
+        sidecars written before it existed carry no tag; a tag of any
+        other version is refused rather than coerced, since a newer
+        sidecar may carry state this build would drop on the floor.
         """
+        written_format = payload.get("format")
+        if written_format is not None and written_format != SIDECAR_FORMAT:
+            raise ValueError(
+                f"engine-output sidecar names format {written_format!r}, but this build "
+                f"writes and understands {SIDECAR_FORMAT!r}; re-compose the job with a "
+                "build that matches, or delete its sidecar and job directory."
+            )
         score_payload = payload["notation_score"]
         plan_payload = payload["performance_plan"]
         arrangement_payload = payload["arrangement"]
@@ -272,6 +320,16 @@ class EngineOutput:
             # render with the legacy single-instrument fallback.
             voice_instruments=tuple(
                 VoiceInstrument(**v) for v in payload.get("voice_instruments", ())
+            ),
+            # Jobs composed before the sidecar carried the plan have none.
+            # Deliberately *not* resolved from the spec: a resolved plan
+            # would describe this build's defaults, not the ones the piece
+            # was actually composed under, and a provenance record that
+            # guesses is worse than one that says nothing.
+            plan=(
+                CompositionPlan.from_canonical_dict(plan_payload)
+                if (plan_payload := payload.get("plan")) is not None
+                else None
             ),
         )
 
@@ -361,6 +419,11 @@ def compose(
             VoiceInstrument(voice_id=voice_id, instrument=instrument)
             for voice_id, instrument in sorted(ensemble.voice_instruments().items())
         ),
+        # The resolved plan, not the argument: a caller who supplied none
+        # still gets the record of what the piece was composed under, so a
+        # sidecar replays from its own contents rather than from a default
+        # re-derived at read time (see the module docstring of `plan.py`).
+        plan=resolved,
     )
 
 

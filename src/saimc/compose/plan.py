@@ -117,6 +117,15 @@ actually tracks its shape.
 
 PLAN_FORMAT_PREFIX: Final[str] = "CompositionPlan"
 
+PLAN_FORMAT: Final[str] = f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION}"
+"""The tag every plan document carries, in §6's `{kind}:{version}` form.
+
+A constant rather than a literal in two places, because the writer and
+the reader are the pair that has to agree on it: `default_plan` stamps it
+and `from_canonical_dict` refuses anything else, so building it twice
+would be two chances to disagree.
+"""
+
 
 def _require(condition: bool, message: str) -> None:
     """Raise `PlanError` unless `condition`. Keeps `__post_init__` readable."""
@@ -523,6 +532,82 @@ class CompositionPlan:
             "section_crash_velocity": self.section_crash_velocity,
         }
 
+    @classmethod
+    def from_canonical_dict(cls, payload: Mapping[str, Any]) -> CompositionPlan:
+        """Rebuild a plan from the document `to_canonical_dict` writes.
+
+        The `format` tag is read first and refused unless it names exactly
+        the version this build writes. §6 requires an explicit version in
+        every canonical document, and a plan is the one document whose
+        version tracks its *shape*: an older one is missing fields a
+        materialized plan cannot do without, and a newer one may carry a
+        knob this engine would silently ignore — which is the failure §6
+        exists to prevent, because the plan is the artifact the
+        determinism claim is made about. Refusing exactly, rather than
+        only refusing versions newer than this build, is what makes that
+        hold in both directions.
+
+        Every other value is read as written: no field is optional and
+        none falls back to a module table. A fallback would make the
+        reloaded plan a different plan from the one that was stored,
+        which is the whole thing "materialized, never a delta" rules out.
+        """
+        document_format = str(payload.get("format", ""))
+        if document_format != PLAN_FORMAT:
+            raise PlanError(
+                f"plan document names format {document_format!r}, but this build writes "
+                f"and understands {PLAN_FORMAT!r}; a plan is stored materialized, so an "
+                "older document is missing fields this build cannot supply and a newer "
+                "one may carry values it would silently ignore"
+            )
+        return cls(
+            format=PLAN_FORMAT,
+            step_choices=tuple(payload["step_choices"]),
+            step_weights=tuple(payload["step_weights"]),
+            max_motif_span_degrees=payload["max_motif_span_degrees"],
+            leap_degrees=payload["leap_degrees"],
+            chord_tone_degrees=payload["chord_tone_degrees"],
+            motif_operation_weights=tuple(
+                (entry["operation"], entry["weight"])
+                for entry in payload["motif_operation_weights"]
+            ),
+            rhythm_weights=tuple(
+                (entry["figure"], entry["weight"]) for entry in payload["rhythm_weights"]
+            ),
+            tie_probability=payload["tie_probability"],
+            apex_position=payload["apex_position"],
+            line_band_semitones=payload["line_band_semitones"],
+            bass_figures=tuple(
+                tuple(tuple(note) for note in figure) for figure in payload["bass_figures"]
+            ),
+            cadence_degree=payload["cadence_degree"],
+            cadence_seventh=payload["cadence_seventh"],
+            modulation_offset=payload["modulation_offset"],
+            form_sizes=tuple(payload["form_sizes"]),
+            intro_bars=payload["intro_bars"],
+            max_repeats=payload["max_repeats"],
+            duration_tolerance=payload["duration_tolerance"],
+            ritardando_factor=payload["ritardando_factor"],
+            ritardando_bars=payload["ritardando_bars"],
+            arc_min_reps=payload["arc_min_reps"],
+            section_energy_opening=payload["section_energy_opening"],
+            section_energy_peak=payload["section_energy_peak"],
+            section_energy_final=payload["section_energy_final"],
+            section_energy_middle=payload["section_energy_middle"],
+            harmony_texture_cycle=tuple(payload["harmony_texture_cycle"]),
+            percussion_rest_section=payload["percussion_rest_section"],
+            harmony_broken_chord=payload["harmony_broken_chord"],
+            harmony_arpeggio_step_ticks=payload["harmony_arpeggio_step_ticks"],
+            harmony_pad_velocity=payload["harmony_pad_velocity"],
+            harmony_arpeggio_velocity=payload["harmony_arpeggio_velocity"],
+            harmony_stab_velocity=payload["harmony_stab_velocity"],
+            harmony_melody_clearance=payload["harmony_melody_clearance"],
+            drum_style_name=payload["drum_style_name"],
+            rotation_cycle=tuple(payload["rotation_cycle"]),
+            percussion_velocity_scale=payload["percussion_velocity_scale"],
+            section_crash_velocity=payload["section_crash_velocity"],
+        )
+
     def arrangement_knobs(self) -> ArrangementKnobs:
         """The arrangement layer, as the struct `duration.py` reads.
 
@@ -633,7 +718,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
     """
     mood = spec.mood.value
     return CompositionPlan(
-        format=f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION}",
+        format=PLAN_FORMAT,
         step_choices=STEP_CHOICES,
         step_weights=STEP_WEIGHTS,
         max_motif_span_degrees=MAX_MOTIF_SPAN_DEGREES,
@@ -698,6 +783,7 @@ def resolve_plan(
 
 
 __all__ = [
+    "PLAN_FORMAT",
     "PLAN_FORMAT_PREFIX",
     "PLAN_SCHEMA_VERSION",
     "CompositionPlan",

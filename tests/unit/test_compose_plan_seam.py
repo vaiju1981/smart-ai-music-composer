@@ -26,13 +26,14 @@ seam case fails rather than quietly going uncovered.
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import fields, replace
 from typing import Any
 
 import pytest
 
-from saimc.canonical import canonical_sha256
+from saimc.canonical import canonical_dumps, canonical_sha256
 from saimc.compose.duration import (
     DEFAULT_ARRANGEMENT_KNOBS,
     ArrangementKnobs,
@@ -1737,3 +1738,53 @@ class TestAPlanTheEngineCannotHonourRefuses:
         invariant was added."""
         with pytest.raises(PlanError, match="shorter than the shortest form"):
             replace(default_plan(_SPEC), form_sizes=(8,), intro_bars=16)
+
+
+class TestAStoredPlanReplaysAfterTheTablesMove:
+    """The claim the whole materialized-plan rule exists to make true.
+
+    A plan that carried overrides would make `(plan, seed) -> notes` a
+    claim about `motif.py` rather than about the artifact: edit a table and
+    every stored plan replays differently while the manifest still promised
+    reproducibility. So the plan is stored complete, and this is the test
+    that says so — the table really moves, the default path really moves
+    with it, and the stored plan does not.
+    """
+
+    def test_a_module_table_moving_does_not_touch_a_stored_plan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spec = _SPEC
+        stored = default_plan(spec)
+        # What a caller persists: the canonical document, not the object.
+        persisted = canonical_dumps(stored.to_canonical_dict())
+        before = _fingerprint(compose(spec, plan=stored))
+
+        # The mood's bass vocabulary, replaced by a pedal. Mutating the
+        # dict rather than rebinding the name because `plan.py` imports
+        # `BASS_FIGURES` by value once — the dict is the thing both sides
+        # read, which is exactly the coupling this test is about.
+        monkeypatch.setitem(BASS_FIGURES, "calming", (((0, 16, 0),),))
+
+        # The premise, asserted rather than assumed: if the move changed
+        # nothing, the rest of this test would pass for the wrong reason.
+        assert default_plan(spec) != stored, "the table move did not reach the default plan"
+
+        reloaded = CompositionPlan.from_canonical_dict(json.loads(persisted))
+        after = _fingerprint(compose(spec, plan=reloaded))
+        assert after == before, "a stored plan replays the module tables it was meant to replace"
+
+    def test_the_default_path_does_move_with_the_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other side of the same coin, and the plan's stated limit.
+
+        `default_plan` is a *description* of the current engine — it reads
+        the tables — so a caller who passes no plan is asking for whatever
+        the build does today. That is what `plan=None` is for, and it is
+        why a persisted plan has to be materialized rather than resolved.
+        """
+        spec = _SPEC
+        before = _fingerprint(compose(spec))
+        monkeypatch.setitem(BASS_FIGURES, "calming", (((0, 16, 0),),))
+        assert _fingerprint(compose(spec)) != before

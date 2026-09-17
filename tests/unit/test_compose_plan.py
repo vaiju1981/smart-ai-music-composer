@@ -42,6 +42,7 @@ from saimc.compose.duration import (
     MAX_REPEATS,
 )
 from saimc.compose.plan import (
+    PLAN_FORMAT,
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
     PlanError,
@@ -226,6 +227,98 @@ class TestTheCanonicalHashes:
         document = _base().to_canonical_dict()
         assert document["format"] == f"CompositionPlan:{PLAN_SCHEMA_VERSION}"
         assert '"format":"CompositionPlan:' in canonical_dumps(document)
+
+
+_ROUND_TRIP_SPECS = _spec_matrix()
+"""Every cell of the plan's own grid, because the reader is field-by-field.
+
+A spot check would cover the fields the cells happen to differ on, which
+is not the same set: `drum_style_name` only moves with the meter and
+`percussion_velocity_scale` only with the mood.
+"""
+
+
+class TestTheStoredPlanIsReadBack:
+    """The canonical document survives a round trip through storage.
+
+    `to_canonical_dict` is what gets written; `from_canonical_dict` is what
+    reads it back. The pair has to name the same fields, and nothing else
+    in the suite would notice if it did not — the writer's own tests only
+    look at what it writes.
+    """
+
+    @pytest.mark.parametrize(
+        "spec",
+        _ROUND_TRIP_SPECS,
+        ids=lambda s: f"{s.mood.value}-{s.duration_seconds}-{s.key}-{s.time_signature.value}",
+    )
+    def test_the_document_round_trips_to_a_plan_that_hashes_alike(
+        self, spec: CompositionSpec
+    ) -> None:
+        """Equality over every field, and equality of the digest.
+
+        Equality is what catches a field the reader forgets: the substitute
+        would be accepted by `__post_init__` and the plan would come back
+        subtly different. The hash is the form a manifest makes the
+        provenance claim in — the digest the plan was stored under is the
+        digest a reader recomputes.
+        """
+        plan = default_plan(spec)
+        reloaded = CompositionPlan.from_canonical_dict(plan.to_canonical_dict())
+        assert reloaded == plan
+        assert reloaded.compute_hash() == plan.compute_hash()
+
+    def test_the_reloaded_document_survives_a_json_round_trip(self) -> None:
+        """Not just equal in memory: the reload survives being written and
+        parsed again, which is what a sidecar and a `job.json` both do."""
+        plan = _base()
+        text = canonical_dumps(plan.to_canonical_dict())
+        reloaded = CompositionPlan.from_canonical_dict(json.loads(text))
+        assert reloaded == plan
+        assert canonical_dumps(reloaded.to_canonical_dict()) == text
+
+    @pytest.mark.parametrize(
+        "document_format",
+        ["CompositionPlan:2", "CompositionPlan:0", "CompositionPlan", "NotationScore:1", ""],
+        ids=["newer", "older", "untagged", "wrong-kind", "absent"],
+    )
+    def test_a_document_of_another_version_is_refused(self, document_format: str) -> None:
+        """Refused exactly, in both directions, rather than coerced.
+
+        An older plan is missing fields a materialized plan cannot do
+        without, and a newer one may carry a knob this build would ignore —
+        which is the failure §6's explicit version exists to prevent, since
+        the plan is the artifact the determinism claim is made about.
+        """
+        document = _base().to_canonical_dict()
+        document["format"] = document_format
+        with pytest.raises(PlanError) as exc_info:
+            CompositionPlan.from_canonical_dict(document)
+        assert PLAN_FORMAT in str(exc_info.value)
+
+    def test_the_refusal_names_the_document_it_could_not_read(self) -> None:
+        """The plan type's own rule: refused *with a reason*. A reader
+        holding a file needs to know which version it is holding."""
+        document = _base().to_canonical_dict()
+        document["format"] = "CompositionPlan:7"
+        with pytest.raises(PlanError) as exc_info:
+            CompositionPlan.from_canonical_dict(document)
+        message = str(exc_info.value)
+        assert "CompositionPlan:7" in message
+        assert PLAN_FORMAT in message
+
+    def test_a_dropped_field_is_not_replaced_by_a_default(self) -> None:
+        """The reader has no fallbacks at all, deliberately.
+
+        A fallback to a module table would make a stored plan replay as a
+        plan nobody wrote — the thing "materialized, never a delta" rules
+        out — so a document missing a field is a `KeyError`, loudly, rather
+        than a working plan with a quiet substitution.
+        """
+        document = _base().to_canonical_dict()
+        del document["harmony_pad_velocity"]
+        with pytest.raises(KeyError):
+            CompositionPlan.from_canonical_dict(document)
 
 
 class TestTheDefaultsDescribeTodaysEngine:
@@ -539,6 +632,7 @@ class TestThePlanCannotReachTheEngine:
 
     def test_plan_module_exposes_what_it_claims(self) -> None:
         assert plan_module.__all__ == [
+            "PLAN_FORMAT",
             "PLAN_FORMAT_PREFIX",
             "PLAN_SCHEMA_VERSION",
             "CompositionPlan",
