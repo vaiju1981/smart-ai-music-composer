@@ -61,8 +61,10 @@ from saimc.compose.duration import (
     SectionArc,
 )
 from saimc.compose.forms import (
+    DEFAULT_SECTION_CLOSE,
     MODULATION_OFFSET,
     PHRASE_SIZES,
+    SECTION_CLOSES,
     cadence_degree_for,
     cadence_seventh_for,
     key_pool_for,
@@ -105,7 +107,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 3
+PLAN_SCHEMA_VERSION: Final[int] = 4
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -320,6 +322,25 @@ class CompositionPlan:
     it. A value now, so `(plan, seed) -> notes` holds for the cadence as
     it does for everything else the plan carries.
     """
+    section_close: str
+    """How a section that is not the piece's last one closes.
+
+    One of `forms.SECTION_CLOSES`. Measured before it was a plan value: over
+    108 pieces the engine wrote 384 interior sections and not one closed —
+    each ended with the template's last chord sounding into the final bar,
+    so a piece had exactly one cadence, at its end. The default is `half`, a
+    ii-V that points home and resolves across the section boundary; `hold`
+    is that older behaviour, kept as a legal value; `full` gives every
+    section the plan's own final cadence.
+
+    The piece's *last* section and the coda are not governed by this: they
+    always close with `cadence_degree` and `cadence_seventh`, because a
+    piece that does not end at home is a different request than this
+    vocabulary has a name for. This field is read at one call site, the
+    interior-section branch, which is why the closed vocabulary matters —
+    a name outside it would be a section closing some third way no test
+    looks at.
+    """
     modulation_offset: int
     """Semitones the final repetition of a long piece is lifted by.
 
@@ -459,6 +480,16 @@ class CompositionPlan:
             0 <= self.cadence_degree <= 6,
             "cadence_degree is out of the scale, which runs 0..6 "
             f"({self.cadence_degree})",
+        )
+        # A closed vocabulary, refused by name: the value reaches the notes
+        # through `apply_section_close`, which raises on a name outside it —
+        # but that raise would arrive from inside a composition, where a
+        # plan is the thing that should have refused it, and the engine's
+        # four callers would each have to handle it.
+        _require(
+            self.section_close in SECTION_CLOSES,
+            f"unknown section close {self.section_close!r}; the closes are "
+            f"{', '.join(SECTION_CLOSES)}.",
         )
         _require(
             abs(self.modulation_offset) <= 12,
@@ -604,6 +635,7 @@ class CompositionPlan:
             "bass_root_motion": self.bass_root_motion,
             "cadence_degree": self.cadence_degree,
             "cadence_seventh": self.cadence_seventh,
+            "section_close": self.section_close,
             "modulation_offset": self.modulation_offset,
             "form_sizes": list(self.form_sizes),
             "intro_bars": self.intro_bars,
@@ -682,6 +714,7 @@ class CompositionPlan:
             bass_root_motion=payload["bass_root_motion"],
             cadence_degree=payload["cadence_degree"],
             cadence_seventh=payload["cadence_seventh"],
+            section_close=payload["section_close"],
             modulation_offset=payload["modulation_offset"],
             form_sizes=tuple(payload["form_sizes"]),
             intro_bars=payload["intro_bars"],
@@ -840,6 +873,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         bass_root_motion=True,
         cadence_degree=cadence_degree_for(mood),
         cadence_seventh=cadence_seventh_for(mood),
+        section_close=DEFAULT_SECTION_CLOSE,
         modulation_offset=MODULATION_OFFSET,
         form_sizes=PHRASE_SIZES,
         intro_bars=INTRO_BARS,

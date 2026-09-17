@@ -6,15 +6,20 @@ import pytest
 
 from saimc.compose.forms import (
     DEFAULT_KEY_POOL,
+    HALF_CADENCE_APPROACH_DEGREE,
+    HALF_CADENCE_TARGET_DEGREE,
     LEAP_MIN_SEMITONES,
     MOOD_KEY_POOLS,
     MOOD_PROFILES,
     PHRASE_SIZES,
+    SECTION_CLOSES,
     STEP_MAX_SEMITONES,
     TEMPO_RANGE_BPM,
     ChordSlot,
     ChordTemplate,
     apply_final_cadence,
+    apply_half_cadence,
+    apply_section_close,
     bar_scale_intervals,
     chord_root_offset,
     chord_tone_degrees,
@@ -139,6 +144,154 @@ class TestGetTemplateForForm:
             for form in PHRASE_SIZES:
                 t = get_template_for_form(mood, form)
                 assert t.bars == form
+
+    def test_a_truncation_that_lands_on_a_boundary_leaves_an_empty_slot(self) -> None:
+        """The artifact the walk's zero-length guard exists for, swept.
+
+        `_truncate_template` closes a truncation with
+        `slot._replace(bars=target_bars - consumed)`, and when the break
+        lands exactly on a slot boundary that difference is zero — so the
+        template gains a slot that occupies no bar. `_generate_bass` skips
+        such a slot (`if dur == 0: continue`), because stepping the line
+        onto a chord that never sounds is a leap on a bar that does not
+        exist. Swept rather than illustrated, and in both directions: the
+        artifact has to be *reached* or that guard is dead, and it must not
+        appear where it should not, or the guard is doing work the
+        truncation already did. The characterization is exact because the
+        base templates are uniform two-bar slots — asserted as this sweep's
+        premise rather than assumed — so an empty slot is what a whole
+        number of slots remaining leaves behind and nothing else does.
+        """
+        reached: list[str] = []
+        for mood in ("calming", "electrifying", "sleep"):
+            base = get_mood_profile(mood).templates[0]
+            assert {slot.bars for slot in base.chords} == {2}, (
+                f"{mood}'s base template is not uniform two-bar slots, so this sweep's "
+                "arithmetic no longer describes it"
+            )
+            for form in range(2, 33):
+                t = get_template_for_form(mood, form)
+                assert t.bars == form, (mood, form)
+                assert min(slot.bars for slot in t.chords) >= 0, (mood, form)
+                empty = any(slot.bars == 0 for slot in t.chords)
+                remainder = form % base.bars
+                assert empty == (remainder != 0 and remainder % 2 == 0), (mood, form)
+                if empty:
+                    reached.append(f"{mood}/{form}")
+        assert reached, "no truncation leaves an empty slot, so the walk's guard is dead"
+        assert "calming/4" in reached, reached
+        assert "calming/5" not in reached, reached
+
+
+class TestTheSectionClose:
+    """The three ways a section can end, and what each one may move.
+
+    `apply_section_close` is the one site the plan's `section_close`
+    reaches, so the three arms are pinned here rather than left to the seam
+    tests — which read the knob through a composed piece and cannot tell
+    one arm's arithmetic from another's. What every arm shares is the
+    interesting half: each preserves the bar count and leaves the body
+    before the last two bars exactly as the template wrote it. A close
+    rewrites the ending and nothing else.
+    """
+
+    def _template(self) -> ChordTemplate:
+        return get_template_for_form("calming", 8)
+
+    @staticmethod
+    def _bar_by_bar(template: ChordTemplate) -> tuple[ChordSlot, ...]:
+        """One entry per bar, so a zero-length slot contributes nothing.
+
+        The production templates have uniform slots and the truncations
+        leave an empty one behind (see the test above), so comparing slot
+        tuples would compare the truncation's arithmetic rather than the
+        chords that sound.
+        """
+        return tuple(slot._replace(bars=1) for slot in template.chords for _ in range(slot.bars))
+
+    def test_the_three_arms_are_three_different_endings(self) -> None:
+        template = self._template()
+        closes = {
+            name: apply_section_close(template, close=name, cadence_degree=4, seventh=True)
+            for name in SECTION_CLOSES
+        }
+        assert closes["hold"] is template, "hold rebuilt the template it was asked to leave alone"
+        assert closes["half"] != template, "the half close rebuilt nothing"
+        assert closes["full"] != template, "the full close rebuilt nothing"
+        assert closes["half"] != closes["full"], (
+            "the half and the full close write the same template, so the plan's choice is inert"
+        )
+        for name, closed in closes.items():
+            assert closed.bars == template.bars, name
+            assert self._bar_by_bar(closed)[:-2] == self._bar_by_bar(template)[:-2], (
+                f"the {name} close moved a bar before the last two"
+            )
+
+    def test_a_half_cadence_approaches_the_dominant_and_does_not_arrive(self) -> None:
+        """The two chords a half cadence is: root position, one bar each.
+
+        A half cadence points home and stops — a predominant, then the
+        dominant. That it does not arrive is what separates this arm from
+        the full cadence, so it is asserted rather than implied by the
+        constants: a retuning that landed either chord on the tonic would
+        quietly turn this arm into the other one.
+
+        The degrees are pinned twice, on purpose. The literals pin the pair
+        itself — nothing derives a half cadence from a table, so this is not
+        evidence the pair is right (it cannot be; that is a judgement) but
+        the ratchet that makes retuning it a declared edit, the way the
+        arbiter's metric order is pinned. And the slots pin the *wiring*: a
+        slot hardcoded to a degree the constant no longer holds would pass
+        the first assertion alone.
+        """
+        approach, target = apply_half_cadence(self._template()).chords[-2:]
+        assert (HALF_CADENCE_APPROACH_DEGREE, HALF_CADENCE_TARGET_DEGREE) == (1, 4)
+        assert (approach.degree, target.degree) == (1, 4)
+        assert (approach.bars, target.bars) == (1, 1)
+        assert approach.bass_degree == approach.degree, "the approach is not in root position"
+        assert target.bass_degree == target.degree, "the dominant is not in root position"
+
+    def test_the_full_close_writes_the_pair_the_plan_gave_it(self) -> None:
+        """`cadence_degree` and `seventh` are read only by the `full` arm.
+
+        Asserted at 3 and at `seventh=True` — not at the module's own default
+        of 4 — because a close that fell back to the default pair would agree
+        with an assertion written at the default and disagree with this one.
+        """
+        closed = apply_section_close(self._template(), close="full", cadence_degree=3, seventh=True)
+        resolution, tonic = closed.chords[-2:]
+        assert resolution.degree == 3
+        assert resolution.seventh is True
+        assert resolution.bass_degree == 3, "the cadence is not in root position"
+        assert (tonic.degree, tonic.bass_degree) == (0, 0)
+
+    def test_a_template_too_short_to_close_is_returned_untouched(self) -> None:
+        """Two bars is the shortest template the truncation can make.
+
+        A cadence needs two bars of its own, so a shorter template has no
+        body left to rewrite. Both arms return it *by identity* rather than
+        by an equal copy, which is what says no slot was rebuilt.
+        """
+        short = get_template_for_form("calming", 2)
+        assert short.bars == 2, "this test's premise is that a two-bar template exists"
+        for close in ("half", "full"):
+            closed = apply_section_close(short, close=close, cadence_degree=4, seventh=True)
+            assert closed is short, close
+
+    def test_an_unknown_close_is_refused_by_name(self) -> None:
+        """The arm a plan cannot reach, and the refusal a direct call still needs.
+
+        `CompositionPlan` refuses a `section_close` outside the vocabulary,
+        so this raise is unreachable through a plan — which is why it is
+        pinned here: a direct call is the only way to reach it, and a
+        template silently left alone would be the unnamed no-op the deltas'
+        rule forbids.
+        """
+        with pytest.raises(ValueError) as raised:
+            apply_section_close(self._template(), close="cadential", cadence_degree=4, seventh=True)
+        message = str(raised.value)
+        assert "cadential" in message
+        assert all(name in message for name in SECTION_CLOSES), message
 
 
 class TestTempoRanges:

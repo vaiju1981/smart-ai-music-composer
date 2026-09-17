@@ -61,7 +61,16 @@ from saimc.session.tools import (
 from saimc.spec import CompositionSpec, Mood, SpecError, VoiceRole
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
-_ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+_ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=16)
+"""The piece whose bed breaches while the tune and the bass do not.
+
+The critique cases need an axis that is clean beside one that is not, so the
+findings have to land on the accompaniment alone — and at seed 5 this mood's
+30-second piece misses the leap bar too, which puts a finding on the melody and
+leaves `test_every_axis_is_reported_and_a_clean_one_says_so` asserting a state
+the piece is not in. Re-found by sweeping three moods, five durations and forty
+seeds for a piece whose findings are all on one axis rather than re-pinned by
+key, which is this file's precedent for a fixture F3a's music moved."""
 _SIXTY = CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=5)
 """The one length a tempo test needs, and it is a length rather than a mood.
 
@@ -629,13 +638,13 @@ class TestCritique:
         piece — the failure `_recompose` exists to catch, and a revised draft is
         the only draft that can reach it.
 
-        The clearance is the widest this piece's ratchet accepts, and that is
-        why it is ten rather than a rounder number: a revision that measures
-        worse than its parent is refused with a reason (D1's ratchet), so a
-        fixture that asked for more would be asserting about a draft the tool
-        declined to make. What the case is for is that the *honoured* revision is
-        placed against its own plan, which the plan-hash premise below already
-        asserts.
+        The clearance is inside the run this piece's ratchet honours — three
+        through fifteen, measured rather than guessed — and that is why it is
+        ten rather than the bound itself: a revision that measures worse than
+        its parent is refused with a reason (D1's ratchet), so a fixture that
+        asked for more would be asserting about a draft the tool declined to
+        make. What the case is for is that the *honoured* revision is placed
+        against its own plan, which the plan-hash premise below already asserts.
         """
         _ready(ctx, _ELECTRIFYING)
         _drafts(ctx)
@@ -1420,8 +1429,17 @@ class TestRepair:
     that it costs the turn nothing.
     """
 
-    _BREACHING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
-    """Two bars missed, one kept request, and it is the same one every run."""
+    _BREACHING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=11)
+    """Two bars missed, one kept request, and it is the same one every run.
+
+    Both of the bed's bars, which is why one request leaves the piece clean and
+    why the search is one round of two: the table's two candidates for
+    `texture_hierarchy` are the same repair seen from two sides, so both are
+    `kept` and the order settles which. Re-found by the same sweep the class's
+    critique fixture was — seed 5's piece now misses the leap bar as well, so a
+    repair aimed at the arbiter's worst bar has three to work through and the
+    "one kept request" this case reads is not the shape it takes.
+    """
     _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=180, seed=4)
     """A piece one move cannot finish, which is what the bound needs.
 
@@ -1558,14 +1576,15 @@ class TestRepair:
         """The other empty: requests were tried and none was kept. Same code,
         opposite sentence, and the difference is what the attempts recorded.
 
-        The piece is the one a sweep of three moods, four durations and forty
-        seeds finds with this property at sixty seconds — the key pool moved
-        every mood's pieces onto their own keys and took the older fixture's
-        leap bar from unrepairable to repairable with it, so the case is
-        re-measured rather than re-pinned. What it asserts is the sentence, and
-        the sentence names the bar the attempts aimed at.
+        The piece is the one a sweep of three moods, five durations and forty
+        seeds finds with this property at sixty seconds, and there is exactly
+        one of them — the key pool moved every mood's pieces onto their own keys
+        and took the older fixture's leap bar from unrepairable to repairable
+        with it, so the case is re-measured rather than re-pinned. What it
+        asserts is the sentence, and the sentence names the bar the attempts
+        aimed at.
         """
-        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=28))
+        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=18))
         _drafts(ctx)
 
         invocation = _call(ctx, "repair", draft_id="draft-0")

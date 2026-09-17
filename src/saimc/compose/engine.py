@@ -61,6 +61,7 @@ from saimc.compose.forms import (
     ChordSlot,
     ChordTemplate,
     apply_final_cadence,
+    apply_section_close,
     bar_scale_intervals,
     chord_intervals,
     chord_root_offset,
@@ -520,6 +521,20 @@ def _build_score(
                 cadence_degree=plan.cadence_degree,
                 seventh=plan.cadence_seventh,
             )
+        else:
+            # Every earlier section closes the way the plan says, which by
+            # default is a half cadence: a phrase that stops mid-thought
+            # leaves the bar's harmony unstated, and the resolution the
+            # comment above describes had nothing to resolve. The piece's
+            # own ending is not governed by this field — a piece that does
+            # not land at home is a different request than this vocabulary
+            # has a name for.
+            section_template = apply_section_close(
+                section_template,
+                close=plan.section_close,
+                cadence_degree=plan.cadence_degree,
+                seventh=plan.cadence_seventh,
+            )
         # Long pieces lift the final repetition by the plan's offset —
         # the piece ends in the new key, so the coda (which follows it)
         # stays lifted too and the ending keeps its cadence.
@@ -759,6 +774,13 @@ def _build_score(
 # where it is still the same chord tone.
 BASS_HIGH_MIDI: int = 67
 
+# The register the walking bass lands in. Both arms of the walk — the one
+# that picks the nearest chord tone and the one a template's `bass_degree`
+# pins — keep their candidates inside it, so neither can land a bar above
+# the point where the figure has nothing left to resolve onto.
+BASS_WALK_LOW_MIDI: int = 21
+BASS_WALK_HIGH_MIDI: int = 60
+
 
 def _bass_ladder(
     anchor: int, *, chord_root: int, chord_tones: tuple[int, ...]
@@ -946,6 +968,15 @@ def _generate_section(
     for slot_index, slot in enumerate(template.chords):
         chord_root, chord_tones, dur = chords[slot_index]
 
+        # A close rewrites a template's last two bars, and `_truncate_template`
+        # leaves the chord it broke on behind at zero bars. That slot writes
+        # nothing, so it must not move the walk either: `prev_bass` is the last
+        # tone that *sounded*, and letting a phantom step set it made the next
+        # landing — the cadence's pinned root above all — jump an octave to join
+        # a note nobody heard.
+        if dur == 0:
+            continue
+
         # Walking bass: the pinned bass degree wins; otherwise the
         # chord tone nearest the previous bass (root on the first
         # chord). That tone is the bar's landing tone — the figure's
@@ -968,14 +999,22 @@ def _generate_section(
                 + chord_root_offset(slot.bass_degree, key, borrowed=slot.borrowed),
                 octaves=1,
             )
-            if prev_bass is not None:
-                previous_bass = prev_bass
-                pinned = min(
-                    (pinned - 12, pinned, pinned + 12),
-                    key=lambda p: (abs(p - previous_bass), p),
+            if prev_bass is None:
+                bass_pitch = pinned
+            else:
+                # The pin is chosen the way the walk's own landing is, and
+                # that includes whose register it may take it in: an octave
+                # above the walk's ceiling leaves the figure every rung
+                # clamped below its own anchor, and the bar loses its bass.
+                in_register = [
+                    p
+                    for p in (pinned - 12, pinned, pinned + 12)
+                    if BASS_WALK_LOW_MIDI <= p <= BASS_WALK_HIGH_MIDI
+                ]
+                last_bass = prev_bass
+                bass_pitch = min(
+                    in_register or [pinned], key=lambda p: (abs(p - last_bass), p)
                 )
-            bass_pitch = pinned
-            prev_bass = pinned
         else:
             # Which of the chord's tones the landing may choose from. The
             # plan's root motion narrows it to the root, so a chord change
@@ -992,7 +1031,9 @@ def _generate_section(
                 for tone in tones
                 for octaves in (1, 2)
             ]
-            candidates = [c for c in candidates if 21 <= c <= 60]
+            candidates = [
+                c for c in candidates if BASS_WALK_LOW_MIDI <= c <= BASS_WALK_HIGH_MIDI
+            ]
             if not candidates:
                 bass_pitch = _octave_down(chord_root, octaves=2)
             elif prev_bass is None:
@@ -1128,8 +1169,10 @@ def _generate_section(
             )
             bar_index += 1
 
-        if slot.bass_degree is None:
-            prev_bass = bass_pitch
+        # The walk steps from the tone this slot actually stated, whichever
+        # arm chose it — the pin outranks the motion policy, not the other
+        # way round, and both are the same line here.
+        prev_bass = bass_pitch
         cursor += dur * ticks_per_bar
 
     # Ties hold a repeated pitch across a bar line: when a bar's last

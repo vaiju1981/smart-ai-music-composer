@@ -130,6 +130,10 @@ _MUTATIONS: dict[str, Any] = {
     # The base is calming, whose cadence is a plain triad, so `True` is the
     # change and the electrifying V7 is the value it does not already hold.
     "cadence_seventh": True,
+    # The base is calming, whose sections close with the plan's own
+    # cadence once this field says so; `full` and the default `half` are
+    # the two closes a piece can have in every one of its sections.
+    "section_close": "full",
     "modulation_offset": 3,
     "form_sizes": (4, 8, 16, 32),
     "intro_bars": 3,
@@ -558,6 +562,12 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"key_pool": ("C", "C")}, "twice"),
             ({"key_pool": ("H",)}, "not keys"),
             ({"cadence_degree": 9}, "out of the scale"),
+            # The close reaches the notes through `apply_section_close`, so a
+            # name outside the vocabulary has to be refused here rather than
+            # raising out of a composition — and `hold` is in the vocabulary
+            # rather than beside it, which is why the case names a fifth word
+            # instead of reusing one of the three.
+            ({"section_close": "cadential"}, "unknown section close"),
             ({"modulation_offset": 13}, "cannot exceed an octave"),
             ({"modulation_offset": -13}, "cannot exceed an octave"),
             ({"form_sizes": ()}, "must not be empty"),

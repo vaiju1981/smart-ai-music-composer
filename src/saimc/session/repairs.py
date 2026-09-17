@@ -5,7 +5,8 @@ in a sentence what would move it. The hints are written for a maintainer —
 almost all of them name a source file and a constant — so a repair cannot read
 the knob off the hint. It reads it off `_REPAIRS`, and the table is *measured*
 rather than reasoned from the hints: for every piece of a 90-piece corpus
-(three moods x three durations x ten seeds), every bar it breaches, and every
+(three moods x three durations x ten seeds, every piece pinned to C so that a
+re-measurement composes the same music), every bar it breaches, and every
 Tier-2 delta at a few magnitudes, does the reading clear and does the piece
 come out clean.
 
@@ -13,21 +14,23 @@ What the measurement says, and it is the whole design:
 
 - **Four metrics breach at all, and 38 of the 90 pieces breach something.**
   `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
-  `max_leap_semitones` (10) and `leap_recovery_ratio` (3). So a repair loop is
+  `max_leap_semitones` (12) and `leap_recovery_ratio` (3). So a repair loop is
   a loop over four bars in practice, and the other seven have no entry because
   nothing asked for them by *that* corpus — not because they cannot be reached.
-  A later sweep of 2376 applied requests over 72 pieces, reached through the
-  delta vocabulary rather than through a mood and a seed, finds four of them:
-  `register_separation_semitones` (a harmony clearance wide enough to push the
-  bed under the tune), `tessitura_overlap_semitones` (a band wide enough to put
-  the tune inside the bed), and — twice each — `step_ratio` and `repeat_ratio`.
-  All four land on `unmapped`, which is the outcome the next bullet's design has
-  to be able to say out loud. `repeat_ratio` earns its place twice over: under a
-  one-semitone band it arrives with `range_semitones`, and that pair is the one
-  reachable combination on which the quality report's order and the arbiter's
-  tier order *disagree*, so it is what makes "the loop aims at the arbiter's
-  worst bar" a claim a test can fail rather than a restatement of
-  `findings()[0]`.
+  A later sweep of 2592 applied requests over 72 pieces, reached through the
+  delta vocabulary rather than through a mood and a seed, finds three of them:
+  `register_separation_semitones` (48 pieces under a 24-semitone harmony
+  clearance, 71 under 60 — the bed pushed down under the tune),
+  `tessitura_overlap_semitones` (42 under either clearance — the bed's window
+  taking the tune inside it) and `range_semitones` (64 under a 500-semitone
+  band). All three land on `unmapped`, which is the outcome the next bullet's
+  design has to be able to say out loud. `range_semitones` earns its place twice
+  over: under a *one*-semitone band it arrives in 2 pieces, each time alongside
+  `max_leap_semitones`, and that pair is one on which the quality report's order
+  and the arbiter's tier order **disagree** — the report lists
+  `range_semitones` first and the arbiter ranks `max_leap_semitones` higher — so
+  it is what makes "the loop aims at the arbiter's worst bar" a claim a test can
+  fail rather than a restatement of `findings()[0]`.
 - **The bed's two bars are one repair seen from two sides.**
   `SetHarmonyTexture(broken_chord=False)` — the knob `harmony_pad_coverage`'s
   own hint names, and the mood's texture rule the other way round — clears the
@@ -41,15 +44,15 @@ What the measurement says, and it is the whole design:
   table; what the loop does with them is the next bullet.
 - **The tune's leap bar is only partly repairable, and the honest reading of
   that is a bound rather than a knob.** `SetMelodyBand(semitones=9)` — the
-  narrowest band the range bar allows — clears `max_leap_semitones` in 5 of its
-  10 pieces and leaves a different bar missed in 4 of the other 5;
-  `SetMotifVariation(factor=0.5)` clears 3. No single move clears it reliably,
-  which is what the hint says without meaning to: it asks for a change to
-  `motif.py`'s walk, and no request in the vocabulary is that change. The loop
-  therefore keeps the best of the two and reports what is left.
+  narrowest band the range bar allows — clears `max_leap_semitones` in 11 of the
+  12 pieces that breach it, and 5 of those still miss another bar afterwards;
+  `SetMotifVariation(factor=0.5)` clears 7 of the 12. No single move clears the
+  bar *and* the piece, which is what the hint says without meaning to: it asks
+  for a change to `motif.py`'s walk, and no request in the vocabulary is that
+  change. The loop therefore keeps the best of the two and reports what is left.
 - **A trial the engine refuses is skipped, not fatal.** `compose` raises on a
-  lint failure (C4's finding 1), and the wider sweep's 2376 requests are refused
-  26 times — a five-semitone band and a four-bar arpeggio step both write
+  lint failure (C4's finding 1), and the wider sweep's 2592 requests are refused
+  24 times — a five-semitone band and a four-bar arpeggio step both write
   dissonant collisions. A repair loop that let that propagate would turn a
   candidate it cannot use into a failed turn, so `unplayable` is a recorded
   outcome. No candidate the table itself holds is refused by this corpus (see
@@ -71,11 +74,11 @@ chosen for rather than a claim about it — 52 of the 90 pieces are clean before
 it runs, 36 of the 38 breaching ones come out clean, one is improved and still
 missing a bar, and one is left as it was. Thirty-two of the repaired pieces need
 one kept request and five need two, so `maximum` never binds in practice; across
-all of the trials, 80 outcomes are `kept`, 8 are `no_gain` and none is
+all of the trials, 81 outcomes are `kept`, 7 are `no_gain` and none is
 `unplayable`.
 
-**All eight `no_gain` trials left the bar they aimed at still missed**, in all
-2376 requests swept, which is worth stating because the other reading is the one
+**All seven `no_gain` trials left the bar they aimed at still missed**, in all
+2592 requests swept, which is worth stating because the other reading is the one
 that sounds more likely: a candidate that clears its bar and still loses on the
 piece as a whole. Nothing writes a sentence about that case — not because it is
 impossible, but because two sweeps wide enough to find it did not, and a message

@@ -16,6 +16,9 @@ from saimc.compose.engine import (
     _RANK_RUBBING,
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
+    BASS_HIGH_MIDI,
+    BASS_WALK_HIGH_MIDI,
+    BASS_WALK_LOW_MIDI,
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
@@ -50,6 +53,7 @@ from saimc.compose.engine import (
 from saimc.compose.forms import (
     MODULATION_OFFSET,
     PHRASE_BARS,
+    SECTION_CLOSES,
     STEP_MAX_SEMITONES,
     ChordSlot,
     bar_diatonic_pcs,
@@ -150,25 +154,34 @@ def _chord_offsets(slot, mode: str) -> tuple[int, ...]:
 
 def _bar_degrees_and_offsets(
     out, mood: str
-) -> list[tuple[int, tuple[int, ...], int]]:
+) -> list[tuple[int, tuple[int, ...], int, bool]]:
     """Mirror the engine's per-bar chord walk.
 
-    Returns (degree, tonic-relative tones, key offset) per bar — the
-    offset carries the long-piece modulation lift, which exempts each
-    section's final two cadence bars.
+    Returns (degree, tonic-relative tones, key offset, pinned) per bar —
+    the offset carries the long-piece modulation lift, which exempts each
+    section's final two cadence bars, and `pinned` says whether the bar's
+    slot carries a `bass_degree`, which is the one thing the walk reads
+    that no other reader can see: a pinned slot's landing tone is the
+    pin's own, not the motion policy's choice.
 
-    The four values the walk decides by — the modulation offset, the arc's
-    repetition floor, and the cadence's degree and seventh — are read from
-    `out.plan`, the plan the engine actually composed under, rather than
-    from the module constants they used to be. That is the whole point of
-    an oracle: a constant here would keep agreeing with the engine for as
-    long as both read the same table, and would go on agreeing after one of
-    them stopped — which is exactly the drift this test exists to catch.
-    The mood stays a parameter because the *variant* template is still a
-    fact about the mood's progression tables and not a plan field.
+    The five values the walk decides by — the modulation offset, the arc's
+    repetition floor, the cadence's degree and seventh, and how an interior
+    section closes — are read from `out.plan`, the plan the engine actually
+    composed under, rather than from the module constants they used to be.
+    That is the whole point of an oracle: a constant here would keep agreeing
+    with the engine for as long as both read the same table, and would go on
+    agreeing after one of them stopped — which is exactly the drift this test
+    exists to catch. The mood stays a parameter because the *variant* template
+    is still a fact about the mood's progression tables and not a plan field.
+
+    This oracle is what caught F3's change: a `section_close` knob reaching the
+    notes while the mirror kept writing the template's tail failed seven cases
+    the moment the knob landed, which is the value of an independent model of
+    the engine rather than a second call to it.
     """
     from saimc.compose.forms import (
         apply_final_cadence,
+        apply_section_close,
         get_template_for_form,
     )
 
@@ -177,7 +190,7 @@ def _bar_degrees_and_offsets(
     arrangement = out.arrangement
     lifted = arrangement.repetition_count >= plan.arc_min_reps
 
-    result: list[tuple[int, tuple[int, ...], int]] = []
+    result: list[tuple[int, tuple[int, ...], int, bool]] = []
     for section in range(arrangement.repetition_count):
         template = (
             arrangement.template
@@ -195,12 +208,24 @@ def _bar_degrees_and_offsets(
                 cadence_degree=plan.cadence_degree,
                 seventh=plan.cadence_seventh,
             )
+        else:
+            template = apply_section_close(
+                template,
+                close=plan.section_close,
+                cadence_degree=plan.cadence_degree,
+                seventh=plan.cadence_seventh,
+            )
         consumed = 0
         for slot in template.chords:
             exempt = section_offset and consumed >= template.bars - 2
             bar_offset = 0 if exempt else section_offset
             result.extend(
-                (slot.degree, _chord_offsets(slot, out.key.mode), bar_offset)
+                (
+                    slot.degree,
+                    _chord_offsets(slot, out.key.mode),
+                    bar_offset,
+                    slot.bass_degree is not None,
+                )
                 for _ in range(slot.bars)
             )
             consumed += slot.bars
@@ -216,7 +241,12 @@ def _bar_degrees_and_offsets(
             exempt = coda_offset and consumed >= coda.bars - 2
             bar_offset = 0 if exempt else coda_offset
             result.extend(
-                (slot.degree, _chord_offsets(slot, out.key.mode), bar_offset)
+                (
+                    slot.degree,
+                    _chord_offsets(slot, out.key.mode),
+                    bar_offset,
+                    slot.bass_degree is not None,
+                )
                 for _ in range(slot.bars)
             )
             consumed += slot.bars
@@ -229,6 +259,53 @@ def _spec(mood: Mood, *, duration: int = 60, seed: int | None = 42, **kw) -> Com
     return CompositionSpec.model_validate(
         {"mood": mood.value, "duration_seconds": duration, "seed": seed, **kw}
     )
+
+
+_CELLS = (
+    (Mood.CALMING, 60, 0, None),
+    (Mood.CALMING, 180, 0, "drum_set"),
+    (Mood.SLEEP, 60, 0, None),
+    (Mood.SLEEP, 180, 0, None),
+    (Mood.ELECTRIFYING, 60, 0, None),
+    (Mood.ELECTRIFYING, 180, 0, "drum_set"),
+)
+"""Six pieces: three moods, two durations, and a rhythm section in two of
+them so the kit's claims have a kit to be about. Shared by every claim that
+has to be read as a rate over a matrix rather than off a single piece."""
+
+
+def _lowest_bass_by_bar(out) -> dict[int, int]:
+    """The lowest pitch the left hand sounds in each bar, indexed by bar.
+
+    The walk's register is what this reads: the tone the line actually took,
+    as heard from underneath, which is the note a leap moves.
+    """
+    ticks_per_bar = bar_ticks(out.time_signature)
+    lowest: dict[int, int] = {}
+    for note in out.notation_score.notes:
+        if note.voice_id != VOICE_BASS:
+            continue
+        bar = note.tick // ticks_per_bar
+        if bar not in lowest or note.pitch_midi < lowest[bar]:
+            lowest[bar] = note.pitch_midi
+    return lowest
+
+
+def _bass_bar_lines(out) -> dict[int, int]:
+    """The pitch the left hand states on each bar line, indexed by bar.
+
+    Rung 0 is the landing tone the walk chose and every figure puts it at the
+    bar line, so the first bass note of a bar is the walk's own decision.
+    """
+    ticks_per_bar = bar_ticks(out.time_signature)
+    first: dict[int, tuple[int, int]] = {}
+    for note in out.notation_score.notes:
+        if note.voice_id != VOICE_BASS:
+            continue
+        bar = note.tick // ticks_per_bar
+        if bar not in first or note.tick < first[bar][0]:
+            first[bar] = (note.tick, note.pitch_midi)
+    return {bar: pitch for bar, (_tick, pitch) in first.items()}
 
 
 class TestComposeHappyPath:
@@ -463,12 +540,12 @@ class TestChordToneHarmony:
             voice_notes.sort(key=lambda n: (n.tick, n.pitch_midi))
             for index, note in enumerate(voice_notes):
                 bar = note.tick // ticks_per_bar
-                _degree, offsets, key_offset = bars[bar]
+                _degree, offsets, key_offset, _pinned = bars[bar]
                 chord = {(tonic + key_offset + offset) % 12 for offset in offsets}
                 sounding = set(chord)
                 if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
                     # An anacrusis pickup anticipates the next bar's chord.
-                    _next_degree, next_offsets, next_offset = bars[bar + 1]
+                    _next_degree, next_offsets, next_offset, _next_pinned = bars[bar + 1]
                     sounding |= {
                         (tonic + next_offset + offset) % 12 for offset in next_offsets
                     }
@@ -548,36 +625,95 @@ class TestChordToneHarmony:
         )
         out = compose(_spec(Mood.CALMING, duration=60, seed=42))
         bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
-        assert any(len(offsets) == 4 for _degree, offsets, _key_offset in bars)
+        assert any(len(offsets) == 4 for _degree, offsets, _key_offset, _pinned in bars)
 
     def test_bass_walks_and_stays_on_chord_tones(self) -> None:
-        """The bass is a walking line: every note is a chord tone of its
-        bar, section starts land in root position, and consecutive chord
-        basses move by small intervals instead of jumping octaves."""
+        """The bass is a walking line: every note is a chord tone of its bar,
+        and the line moves by small intervals instead of jumping octaves.
+
+        The motion half is read over a matrix and split by what the line is
+        doing, because those are two different claims. A bar that holds its
+        chord keeps its lowest bass exactly where it was — measured at 0
+        semitones for every held bar below, and over the wider sweep this
+        bound was chosen from — and a bar whose chord changes takes the tone
+        nearest the one it was on, which reaches 10 semitones here and 11 over
+        that wider sweep. So the bound is a full octave: the walk may leap,
+        but it never leaves the register it is walking in.
+
+        It is a ratchet on the defect this test was blind to. It asserted 7
+        and passed for as long as it did only because its single spec never
+        reached one; the wider sweep reached 17, because a pinned slot could
+        land above the walk's ceiling and the line jumped an octave to join
+        it. The keyed pieces below are the smallest sample that still contains
+        that case, and the premise assertion at the end is what stops this
+        going quiet again: if nothing in the matrix exceeds 7 semitones, the
+        octave bound is dead weight and a regression to a 17-semitone leap
+        would pass.
+        """
         out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
         bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
         ticks_per_bar = out.notation_score.ppq * 4
         tonic = key_root_midi(out.key)
         bass_by_bar: dict[int, list[int]] = {}
         for note in out.notation_score.notes:
-            if note.voice_id == 0:
+            if note.voice_id == VOICE_BASS:
                 bass_by_bar.setdefault(note.tick // ticks_per_bar, []).append(note.pitch_midi)
-        for bar, (_degree, offsets, key_offset) in enumerate(bars):
+        for bar, (_degree, offsets, key_offset, _pinned) in enumerate(bars):
             sounding = {(tonic + key_offset + offset) % 12 for offset in offsets}
             for pitch in set(bass_by_bar[bar]):
                 assert pitch % 12 in sounding, (
                     f"bar {bar}: bass {pitch} not a chord tone of {sounding}"
                 )
-        # Consecutive chord-change basses stay close (the walk).
-        last_pitch: int | None = None
-        for bar in sorted(bass_by_bar):
-            downbeat = min(p for p in bass_by_bar[bar])
-            if last_pitch is not None:
-                assert abs(downbeat - last_pitch) <= 7, (
-                    f"bass jumped {abs(downbeat - last_pitch)} semitones "
-                    f"into bar {bar}"
-                )
-            last_pitch = downbeat
+
+        matrix = [(*cell, None) for cell in _CELLS] + [
+            # The keyed pieces are the smallest sample that still contains
+            # both defects this bound ratchets on: a pinned slot landing
+            # above the walk's ceiling (electrifying in B, whose close lifts
+            # the final section, reaches 17) and a zero-bar truncation slot
+            # stepping the line to a note nobody heard (calming in F#,
+            # reaches 12). An unkeyed matrix sees neither.
+            (Mood.ELECTRIFYING, 60, seed, None, "B") for seed in (0, 1, 3)
+        ] + [(Mood.CALMING, 60, seed, None, "F#") for seed in (0, 1, 3)]
+        held = changed = beyond_seven = 0
+        for policy in (True, False):
+            for mood, duration, seed, instrumentation, key in matrix:
+                for close in SECTION_CLOSES:
+                    spec = _spec(
+                        mood,
+                        duration=duration,
+                        seed=seed,
+                        instrumentation=instrumentation,
+                        key=key,
+                    )
+                    plan = replace(
+                        default_plan(spec), section_close=close, bass_root_motion=policy
+                    )
+                    piece = compose(spec, plan=plan)
+                    lowest = _lowest_bass_by_bar(piece)
+                    where = f"{mood.value} {duration}s {key or 'engine-chosen'} {close}"
+                    for previous, bar in pairwise(sorted(lowest)):
+                        if bar != previous + 1:
+                            continue
+                        leap = abs(lowest[bar] - lowest[previous])
+                        if piece.chord_bars[bar] == piece.chord_bars[previous]:
+                            held += 1
+                            assert leap == 0, (
+                                f"{where}: the lowest bass moved {leap} semitones into bar "
+                                f"{bar}, and the chord did not change"
+                            )
+                        else:
+                            changed += 1
+                            beyond_seven += leap > 7
+                            assert leap < 12, (
+                                f"{where}: the bass jumped {leap} semitones into the chord "
+                                f"change at bar {bar}, which is an octave out of the walk"
+                            )
+        assert held >= 60, f"only {held} held bars: the first half of this test asserts nothing"
+        assert changed >= 60, f"only {changed} chord changes: the second half asserts nothing"
+        assert beyond_seven > 0, (
+            "no chord change in this matrix moves more than 7 semitones, so the octave "
+            "bound is dead weight: a regression to a 17-semitone leap would pass"
+        )
 
     def test_borrowed_bVII_reaches_the_score(self) -> None:
         """The extended electrifying template's borrowed bVII (a major
@@ -611,7 +747,9 @@ class TestChordToneHarmony:
         # Diatonic major degree 6 is (11, 14, 17); the borrowed bVII
         # takes the minor-mode table, giving (10, 14, 17).
         borrowed_bars = [
-            b for b, (_degree, offsets, _key_offset) in enumerate(bars) if offsets == (10, 14, 17)
+            b
+            for b, (_degree, offsets, _key_offset, _pinned) in enumerate(bars)
+            if offsets == (10, 14, 17)
         ]
         assert borrowed_bars, "expected the bVII borrowed slot to sound"
         score = out.notation_score
@@ -683,7 +821,9 @@ class TestChordToneHarmony:
         tonic = key_root_midi(out.key)
         bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
         borrowed_bars = [
-            b for b, (_degree, offsets, _key_offset) in enumerate(bars) if offsets == (11, 14, 17)
+            b
+            for b, (_degree, offsets, _key_offset, _pinned) in enumerate(bars)
+            if offsets == (11, 14, 17)
         ]
         assert borrowed_bars, "expected the borrowed degree-6 slot to sound"
         for bar in borrowed_bars:
@@ -717,17 +857,6 @@ class TestBassRootMotion:
     a walk that landed on the root by accident is exactly what the off
     policy does, at 32% of its chord changes.
     """
-
-    CELLS = (
-        (Mood.CALMING, 60, 0, None),
-        (Mood.CALMING, 180, 0, "drum_set"),
-        (Mood.SLEEP, 60, 0, None),
-        (Mood.SLEEP, 180, 0, None),
-        (Mood.ELECTRIFYING, 60, 0, None),
-        (Mood.ELECTRIFYING, 180, 0, "drum_set"),
-    )
-    """Six pieces: three moods, two durations, and a rhythm section in two
-    of them so the kit's claims have a kit to be about."""
 
     def _pair(self, mood: Mood, duration: int, seed: int, instrumentation: str | None):
         spec = _spec(mood, duration=duration, seed=seed, instrumentation=instrumentation)
@@ -769,7 +898,7 @@ class TestBassRootMotion:
         """
         return [
             (key_root_midi(out.bar_keys[bar]) + tones[0]) % 12
-            for bar, (_degree, tones, _key_offset) in enumerate(
+            for bar, (_degree, tones, _key_offset, _pinned) in enumerate(
                 _bar_degrees_and_offsets(out, mood.value)
             )
         ]
@@ -779,15 +908,26 @@ class TestBassRootMotion:
 
         Under the default plan the landing tone is the chord's root at
         every chord change; under `bass_root_motion=False` it is the root
-        at well under half of them, because the walk is free to join the
-        line on any chord tone — and lands on a tone the two chords share
-        often enough that at 43% of changes the left hand does not move at
-        all. The second reading is what makes the first a property of the
-        policy rather than of the chords.
+        at well under half of the changes the policy *governs*, because
+        the walk is free to join the line on any chord tone — and lands on
+        a tone the two chords share often enough that the left hand does
+        not move at all. The second reading is what makes the first a
+        property of the policy rather than of the chords.
+
+        The rate is read over the changes the policy governs, because a
+        close pins `bass_degree` on its two bars and a pinned slot never
+        consults the motion policy at all. Counting those changes into the
+        off policy's rate measured the pin rather than the walk, and F3's
+        interior half cadence put one at every section's close: the rate
+        went from 43% to 53% and this test caught it. So the pin's half of
+        the claim is asserted on its own — under *either* policy a pinned
+        change lands on the root, which is what "the pin outranks the
+        policy" means.
         """
-        on_root = off_root = changes = 0
-        for mood, duration, seed, instrumentation in self.CELLS:
+        on_root = off_root = governed = pinned_changes = pinned_off_root = 0
+        for mood, duration, seed, instrumentation in _CELLS:
             on, off = self._pair(mood, duration, seed, instrumentation)
+            walk = _bar_degrees_and_offsets(on, mood.value)
             roots = self._roots(on, mood)
             # The premise: a tone I call the root really does sound in the
             # bar. Without this a root derived a semitone out would be
@@ -797,14 +937,27 @@ class TestBassRootMotion:
             for bar in range(1, len(roots)):
                 if on.chord_bars[bar] == on.chord_bars[bar - 1]:
                     continue
-                changes += 1
                 on_root += on_land[bar] == roots[bar]
-                off_root += off_land[bar] == roots[bar]
-        assert changes >= 60, f"only {changes} chord changes: too few to read a rate off"
+                if walk[bar][3]:
+                    pinned_changes += 1
+                    pinned_off_root += off_land[bar] == roots[bar]
+                else:
+                    governed += 1
+                    off_root += off_land[bar] == roots[bar]
+        changes = governed + pinned_changes
+        assert governed >= 60, f"only {governed} unpinned chord changes: too few to read a rate off"
         assert on_root == changes, f"{changes - on_root} of {changes} chord changes not on the root"
-        assert off_root * 2 < changes, (
-            f"the off policy lands on the root at {off_root}/{changes}, which is not "
-            f"far enough below the on policy's {on_root} to attribute anything to it"
+        assert pinned_changes >= len(_CELLS), (
+            f"only {pinned_changes} pinned chord changes across {len(_CELLS)} pieces: the "
+            "pin's half of this test would be asserting nothing"
+        )
+        assert pinned_off_root == pinned_changes, (
+            f"the off policy lands on the root at {pinned_off_root}/{pinned_changes} pinned changes: "
+            "a pinned slot must set the landing tone whichever policy is in force"
+        )
+        assert off_root * 2 < governed, (
+            f"the off policy lands on the root at {off_root}/{governed} of the changes it governs, "
+            f"which is not far enough below the on policy's {on_root} to attribute anything to it"
         )
 
     def test_the_policy_changes_no_part_of_the_harmony(self) -> None:
@@ -816,7 +969,7 @@ class TestBassRootMotion:
         cannot see the knob and a listener hears the change where it
         happens instead of hearing a different progression.
         """
-        for mood, duration, seed, instrumentation in self.CELLS:
+        for mood, duration, seed, instrumentation in _CELLS:
             on, off = self._pair(mood, duration, seed, instrumentation)
             assert on.chord_bars == off.chord_bars, mood
             assert on.bar_keys == off.bar_keys, mood
@@ -837,7 +990,7 @@ class TestBassRootMotion:
         moved: dict[int, int] = dict.fromkeys(
             (VOICE_BASS, VOICE_MELODY, VOICE_HARMONY, VOICE_PERCUSSION), 0
         )
-        for mood, duration, seed, instrumentation in self.CELLS:
+        for mood, duration, seed, instrumentation in _CELLS:
             on, off = self._pair(mood, duration, seed, instrumentation)
             for voice in moved:
                 written = [
@@ -851,7 +1004,7 @@ class TestBassRootMotion:
                     if n.voice_id == voice
                 ]
                 moved[voice] += written != other
-        cells = len(self.CELLS)
+        cells = len(_CELLS)
         assert moved[VOICE_BASS] == cells, f"the hand itself moved in only {moved[VOICE_BASS]}"
         assert moved[VOICE_MELODY] > 0, "no tune in this matrix moved: nothing to attribute"
         assert moved[VOICE_HARMONY] > 0, "no bed in this matrix moved: nothing to attribute"
@@ -1005,7 +1158,7 @@ class TestPhraseStructure:
         assert downbeats
         for note in downbeats:
             bar = note.tick // ticks_per_bar
-            degree, offsets, key_offset = bars[bar]
+            degree, offsets, key_offset, _pinned = bars[bar]
             chord = {(tonic + key_offset + offset) % 12 for offset in offsets}
             assert note.pitch_midi % 12 in chord, (
                 f"bar {bar}: downbeat {note.pitch_midi} is not a tone of the "
@@ -1079,6 +1232,87 @@ class TestBassFigures:
         assert _bass_figure_pitches(
             driving, anchor=60, chord_root=60, chord_tones=(0, 4, 7, 10)
         ) == ((0, 4, 60), (4, 4, 64), (8, 4, 67))
+
+    def test_a_landing_above_the_ceiling_leaves_the_bar_with_nothing(self) -> None:
+        """The precondition the helper's promise rests on, and why it is named.
+
+        Rung 0 is the anchor itself, so the drop rule cannot spare it: an
+        anchor past the ceiling takes its own octave down, lands below
+        itself, and every later rung goes the same way. A bar the walk landed
+        there has no bass at all. The walk therefore keeps its landings inside
+        `BASS_WALK_LOW_MIDI`..`BASS_WALK_HIGH_MIDI`, which sits under the
+        ceiling on purpose, and this is the case that says why it has to.
+        """
+        driving = BASS_FIGURES["electrifying"][0]
+        assert (
+            _bass_figure_pitches(
+                driving,
+                anchor=BASS_HIGH_MIDI + 1,
+                chord_root=BASS_HIGH_MIDI + 1,
+                chord_tones=(0, 4, 7, 10),
+            )
+            == ()
+        )
+        # One semitone lower and the same figure still states its downbeat,
+        # so the case is about the ceiling rather than about a high anchor.
+        assert _bass_figure_pitches(
+            driving, anchor=BASS_HIGH_MIDI, chord_root=BASS_HIGH_MIDI, chord_tones=(0, 4, 7, 10)
+        )[0] == (0, driving[0][1], BASS_HIGH_MIDI)
+
+    def test_a_walk_landing_stays_inside_its_own_register(self) -> None:
+        """Every landing the walk chooses is inside `BASS_WALK_*`.
+
+        This is the same claim at the score level: read the pitch that sounds
+        on each bar line and require it inside the window. The walk states its
+        landing on the downbeat of every bar, so the bar line pitch is the
+        walk's own choice rather than a figure's invention.
+        """
+        for mood, duration, seed, instrumentation in _CELLS:
+            for close in SECTION_CLOSES:
+                for policy in (True, False):
+                    spec = _spec(
+                        mood, duration=duration, seed=seed, instrumentation=instrumentation
+                    )
+                    piece = compose(
+                        spec,
+                        plan=replace(
+                            default_plan(spec), section_close=close, bass_root_motion=policy
+                        ),
+                    )
+                    for bar, pitch in _bass_bar_lines(piece).items():
+                        assert BASS_WALK_LOW_MIDI <= pitch <= BASS_WALK_HIGH_MIDI, (
+                            f"{mood.value} {duration}s {close} bass_root_motion={policy}: "
+                            f"bar {bar} lands on {pitch}, outside the walk's register"
+                        )
+
+    def test_the_walk_never_leaves_a_bar_without_its_bass(self) -> None:
+        """Every bar of every piece sounds a bass note.
+
+        The score-level form of the helper's promise, over both policies and
+        every close, because what broke it was a pin: a pinned slot took the
+        octave nearest the line it was joining with no register of its own, so
+        under the off policy the lifted final section's last bar had no bass
+        at all — a silent bar in the primary deliverable, which is what
+        `BASS_WALK_*` was added to stop.
+        """
+        for mood, duration, seed, instrumentation in _CELLS:
+            for close in SECTION_CLOSES:
+                for policy in (True, False):
+                    spec = _spec(
+                        mood, duration=duration, seed=seed, instrumentation=instrumentation
+                    )
+                    piece = compose(
+                        spec,
+                        plan=replace(
+                            default_plan(spec), section_close=close, bass_root_motion=policy
+                        ),
+                    )
+                    lowest = _lowest_bass_by_bar(piece)
+                    silent = [bar for bar in range(len(piece.chord_bars)) if bar not in lowest]
+                    assert not silent, (
+                        f"{mood.value} {duration}s {close} bass_root_motion={policy}: bars "
+                        f"{silent} have no bass note"
+                    )
 
     def test_every_figure_lands_on_chord_tones_never_below_its_anchor(self) -> None:
         """What the piece-level walk test reads off the score.
@@ -1857,7 +2091,7 @@ class TestArrangementArc:
         body_start = (arrangement.repetition_count - 1) * arrangement.form_bars
         lifted_heard = False
         for bar in range(body_start, body_start + arrangement.form_bars - 2):
-            _degree, offsets, key_offset = bars[bar]
+            _degree, offsets, key_offset, _pinned = bars[bar]
             assert key_offset == MODULATION_OFFSET, f"bar {bar} lost its lift"
             bass_pc = self._section_bass_pcs(out, arrangement.repetition_count - 1)[
                 bar - body_start
@@ -1901,7 +2135,7 @@ class TestArrangementArc:
         home = out.bar_keys[0]
         final_section = (arrangement.repetition_count - 1) * arrangement.form_bars
         for bar in range(final_section, final_section + arrangement.form_bars - 2):
-            _degree, _offsets, key_offset = bars[bar]
+            _degree, _offsets, key_offset, _pinned = bars[bar]
             assert key_offset == 9, f"bar {bar}: the oracle forgot the plan's lift"
             assert out.bar_keys[bar] == transposed_key(home, 9), (
                 f"bar {bar}: the engine lifted by something other than the plan's 9"
@@ -2699,13 +2933,26 @@ class TestHarmonyVoice:
         humanization off so the ghost pass cannot move them. What moved
         is the melody's pitch — from the fixed 64-84 window every
         instrument used to share to the piano's own band, 60-77 — which
-        is the whole point of the table. The pin has been re-based five
+        is the whole point of the table. The pin has been re-based six
         times now: once when the melody walk was rewritten to move in
         scale degrees, once when the bass replaced its one hard-coded
         figure with the figure library, once for the instrument table
         above, once for `bass_root_motion`, which narrowed the bass
-        walk's landing tones to the chord's root, and once for the
-        realization-stream split.
+        walk's landing tones to the chord's root, once for the
+        realization-stream split, and once for F3 — whose interior close
+        rewrites each section's last two bars, and whose two walk fixes
+        (a zero-bar truncation slot no longer stepping the line, and a
+        pinned landing kept inside the walk's register) moved the bass
+        with it.
+
+        That sixth re-basing moved the tune as well as the bass, and the
+        measurement that says so is in the sibling test below: under
+        `hold` — the close that leaves a template's own ending alone —
+        all three digests here read byte-identical to the pins they had
+        before F3, so what moved them is the close and nothing else. The
+        tune follows the bass because it refuses a candidate that would
+        rub against the bar's sounding bass, which is the same coupling
+        `bass_root_motion` is documented to carry.
 
         The fourth re-basing is why the fifth happened, and the pair is
         worth reading together. `bass_root_motion` shortened this tune by
@@ -2746,11 +2993,11 @@ class TestHarmonyVoice:
         plan = out.performance_plan
         pinned = {
             VOICE_BASS: (
-                "2ac870d3a3d66ce1ccf658a61d75fa9dd7a7e7e74e41b917065fcb5d89b1d471",
+                "a373c3fc746bf1d76da09c3c9e3ee021ea9e4a727ca6b714ed7f186ec65a83a0",
                 46,
             ),
             VOICE_MELODY: (
-                "bebd0b09428c79c958d5d2414051d9ca582b12eeb77ca5282cda6d495d6cd2db",
+                "56bb69bb61e4bb16b639aefc05b0837f33c279ff500bcfcbe1fc96780467057b",
                 83,
             ),
             VOICE_PERCUSSION: (
@@ -2763,6 +3010,52 @@ class TestHarmonyVoice:
             assert len(events) == count, (voice_id, len(events))
             payload = json.dumps(events, sort_keys=True)
             assert hashlib.sha256(payload.encode()).hexdigest() == digest, voice_id
+
+    def test_the_close_moves_the_harmony_and_the_tune_and_never_the_kit(self) -> None:
+        """Three closes, one kit: what F3's knob may and may not move.
+
+        `hold` leaves a template's own ending alone, so it reproduces the
+        music of the build before the closes existed — measured, not assumed:
+        the pins in the test above are all `hold`'s. The other two rewrite
+        each section's last two bars, and the bass and the tune move with
+        them. The kit reads neither, which is F2a's decoupling read one knob
+        over: its events are byte-identical under all three closes and under
+        either bass policy, so a close can never make the drums wrong by
+        accident. That is the assertion worth having, because a knob that can
+        move the rhythm section is a knob whose effect the critics cannot
+        attribute.
+        """
+        spec = _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set", key="C")
+
+        def digests(close: str, *, bass_root_motion: bool = True) -> dict[int, str]:
+            plan = replace(
+                default_plan(spec), section_close=close, bass_root_motion=bass_root_motion
+            )
+            out = compose(spec, plan=plan)
+            return {
+                voice: hashlib.sha256(
+                    json.dumps(
+                        [asdict(n) for n in out.performance_plan.notes if n.voice_id == voice],
+                        sort_keys=True,
+                    ).encode()
+                ).hexdigest()
+                for voice in (VOICE_BASS, VOICE_MELODY, VOICE_HARMONY, VOICE_PERCUSSION)
+            }
+
+        held = digests("hold")
+        half = digests("half")
+        full = digests("full")
+        # The premise: the two rewritten closes really do write different
+        # music, so "the kit did not move" is being read against a matrix in
+        # which something did.
+        assert held[VOICE_BASS] != half[VOICE_BASS] != full[VOICE_BASS]
+        assert held[VOICE_MELODY] != half[VOICE_MELODY] != full[VOICE_MELODY]
+        for close in ("hold", "half", "full"):
+            assert digests(close)[VOICE_PERCUSSION] == held[VOICE_PERCUSSION], close
+            assert (
+                digests(close, bass_root_motion=False)[VOICE_PERCUSSION]
+                == held[VOICE_PERCUSSION]
+            ), close
 
     def test_sidecar_round_trips_voice_instruments(self) -> None:
         out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="flute"))

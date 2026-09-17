@@ -59,6 +59,7 @@ from saimc.compose.engine import (
     compose,
 )
 from saimc.compose.ensemble import resolve_ensemble
+from saimc.compose.forms import SECTION_CLOSES
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_MELODY_SHAPE,
@@ -311,6 +312,12 @@ _HARMONY_KNOBS: dict[str, Any] = {
     # And with it a seventh on the cadence chord, which calming's plain
     # triad does not carry.
     "cadence_seventh": True,
+    # Every interior section gets the plan's own final cadence rather than
+    # the half cadence. `_SPEC` is 180 s, which arranges to more than one
+    # repetition — the premise is asserted below rather than assumed,
+    # because a piece with a single section has no interior one to close
+    # and this case would then be measuring nothing.
+    "section_close": "full",
     # A lift of a whole tone rather than the engine's minor third. Both
     # are legal (the plan refuses only beyond an octave), and the piece
     # ends in a different new key.
@@ -332,9 +339,10 @@ _HARMONY_FIELDS = frozenset(
         "cadence_seventh",
         "key_pool",
         "modulation_offset",
+        "section_close",
     }
 )
-"""The plan's `--- Harmony ---` block, which reads these five.
+"""The plan's `--- Harmony ---` block, which reads these seven.
 
 Spelled out because, unlike the arrangement, this layer has no struct to
 enumerate — the comparison below is what keeps this set honest against
@@ -486,6 +494,101 @@ class TestTheHarmonyKnobsReachTheCodaToo:
             "`_build_score` is not reading the plan's modulation_offset at the coda call"
         )
         assert output.bar_keys[start] != self._compose(modulation_offset=0).bar_keys[start]
+
+
+class TestTheCloseGovernsTheInteriorSectionsAndNotTheLastOne:
+    """`section_close` is read at one site, and which site is the claim.
+
+    The section loop has two branches, and only the interior one reads this
+    field: the last repetition must land at home, so it is written with
+    `cadence_degree` and `cadence_seventh` whatever `section_close` says.
+    The fingerprint above proves the field is live somewhere; it cannot say
+    *where*, because a loop that read it at both branches would move every
+    hash the same way. So each branch is read here through a quantity the
+    other cannot write: `chord_bars` is written from the section's template
+    rather than from the RNG, so a section's slice of it follows the plan
+    and nothing the sections before it drew.
+
+    The musical content of the half cadence is pinned at the forms level
+    (`test_compose_forms.py`), where two degrees and two bars are the whole
+    of the assertion. What is pinned here is that the field reaches the
+    notes through the branch it is supposed to.
+    """
+
+    def _sections(self, close: str) -> tuple[tuple[frozenset[int], ...], ...]:
+        output = compose(_SPEC, plan=replace(default_plan(_SPEC), section_close=close))
+        form = output.arrangement.form_bars
+        return tuple(
+            tuple(output.chord_bars[index * form : (index + 1) * form])
+            for index in range(output.arrangement.repetition_count)
+        )
+
+    def test_this_piece_has_interior_sections_to_close(self) -> None:
+        """The premise, asserted rather than assumed: a piece that arranged
+        to one repetition has no interior section, and every assertion below
+        would then be comparing the piece's own ending with itself."""
+        output = compose(_SPEC, plan=default_plan(_SPEC))
+        assert output.arrangement.repetition_count >= 2, (
+            "this spec arranges to one section, so section_close has no interior "
+            "section to reach and these tests assert nothing"
+        )
+
+    def test_an_interior_section_closes_the_way_the_plan_says(self) -> None:
+        """Held open vs closed, read off the first section's own chords.
+
+        The three closes are three different pairs of final bars, so the
+        first section's slice has to differ between them. A pre-F3 engine —
+        which is `hold`, and is why `hold` is kept as a legal value — leaves
+        the template's tail sounding into the final bar and is the case that
+        fails here.
+        """
+        held, half, full = (self._sections(close)[0] for close in SECTION_CLOSES)
+        assert held[-2:] != half[-2:], "the half cadence did not reach the interior section"
+        assert held[-2:] != full[-2:], "the plan's cadence did not reach the interior section"
+        assert half[-2:] != full[-2:], (
+            "two of the three closes write the same bars, so this field is not "
+            "the choice it is documented as"
+        )
+        for close, section in zip(SECTION_CLOSES, (held, half, full), strict=True):
+            assert section[:-2] == held[:-2], (
+                f"{close} re-wrote more than the section's last two bars, which is "
+                "the part of the template the close is defined as changing"
+            )
+
+    def test_the_last_section_closes_the_plan_cadence_whatever_this_says(self) -> None:
+        """Every close writes the same final section, and it is the cadence.
+
+        `hold` is the case that tells the two branches apart: under it the
+        interior sections are left alone, so the only thing that can close
+        the piece is the final branch — and if the loop had been given one
+        shared call reading `section_close`, `hold` would take the piece's
+        own cadence away and this comparison would fail.
+        """
+        held, full = (self._sections(close)[-1] for close in ("hold", "full"))
+        assert held == full, (
+            "the last section moved with section_close, so the field is being "
+            "read at the final-section branch as well as the interior one"
+        )
+        # And what the two agree on is the plan's cadence rather than a
+        # template tail both branches happened to leave alone: the tail moves
+        # when the cadence it is written from moves.
+        assert full[-2:] != self._final_section(cadence_degree=5)[-2:], (
+            "the last section's final bars do not follow cadence_degree, so the "
+            "agreement above is two closings that both wrote nothing"
+        )
+
+    def _final_section(self, **changes: Any) -> tuple[frozenset[int], ...]:
+        """The body's last section, under a plan mutated as given.
+
+        Sliced from `total_bars` rather than from the end of `chord_bars`,
+        because the coda is appended after the body (B3's finding) and a
+        spec that reached one would otherwise be read as the section that
+        matters here.
+        """
+        plan = replace(default_plan(_SPEC), **changes)
+        output = compose(_SPEC, plan=plan)
+        form, reps = output.arrangement.form_bars, output.arrangement.repetition_count
+        return tuple(output.chord_bars[(reps - 1) * form : reps * form])
 
 
 _SECTION_KNOBS: dict[str, Any] = {
