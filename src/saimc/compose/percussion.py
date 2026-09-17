@@ -435,16 +435,53 @@ because a plan has to be able to read it and the engine imports the plan.
 """
 
 
-def rotation_index(section_idx: int, variant_count: int) -> int:
+def rotation_index(
+    section_idx: int, variant_count: int, *, cycle: tuple[int, ...] = ROTATION_CYCLE
+) -> int:
     """The pattern variant for a section, on a longer cycle than A/B.
 
     With one variant every section plays it. With more, the cycle holds
     A for two sections, changes pace with B for one, then returns — a
     B pattern every other section would stop feeling like a change.
+
+    The cycle is an argument rather than the module constant because the
+    plan carries it, and this module is where the plan and the engine
+    both read it. An entry past the last variant wraps rather than going
+    silent — `DrumStyle.pattern` is where that is decided.
     """
     if variant_count < 2:
         return 0
-    return ROTATION_CYCLE[section_idx % len(ROTATION_CYCLE)]
+    return cycle[section_idx % len(cycle)]
+
+
+@dataclass(frozen=True)
+class DrumKit:
+    """How the kit is written for one piece, as the struct `engine.py` reads.
+
+    One-way bridge, for B2's reason: the engine's percussion pass takes no
+    plan, and a plan cannot hold a `DrumStyle` — a style is a table of bar
+    templates, and the plan is a canonical JSON document. So the plan
+    carries the style's *name* and the three values beside it, and this
+    is where the name becomes the style.
+
+    A style with no template for the piece's meter writes no drums at
+    all, which is what `style_for` does today for an exotic meter: the
+    honest skip beats a wrong pattern. The name is the one thing here the
+    plan validates — an unknown one is refused where it is written, not
+    silently resolved to silence.
+
+    `style=None` is a piece with no kit, which is the default for a
+    caller that never named one.
+    """
+
+    style: DrumStyle | None = None
+    rotation_cycle: tuple[int, ...] = ROTATION_CYCLE
+    velocity_scale: float = 1.0
+    crash_velocity: int = SECTION_CRASH_VELOCITY
+
+
+DEFAULT_DRUM_KIT: DrumKit = DrumKit()
+"""No kit: every value the module's own, and no style to write with."""
 
 # --- Mood-driven selection ---------------------------------------------------
 
@@ -521,6 +558,7 @@ __all__ = [
     "BAR_4_4",
     "BEAT",
     "BOSSA",
+    "DEFAULT_DRUM_KIT",
     "DOTTED_BEAT",
     "DOTTED_EIGHTH",
     "DRUM_CLOSED_HIHAT",
@@ -553,6 +591,7 @@ __all__ = [
     "SWING",
     "WALTZ",
     "DrumHit",
+    "DrumKit",
     "DrumStyle",
     "rotation_index",
     "style_for",

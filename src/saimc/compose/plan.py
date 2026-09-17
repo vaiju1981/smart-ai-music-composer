@@ -89,6 +89,7 @@ from saimc.compose.percussion import (
     PERCUSSION_REST_SECTION,
     ROTATION_CYCLE,
     SECTION_CRASH_VELOCITY,
+    DrumKit,
     style_name_for,
 )
 from saimc.compose.voices import (
@@ -459,7 +460,9 @@ class CompositionPlan:
             "percussion_velocity_scale must be positive",
         )
         _require(
-            self.section_crash_velocity > 0, "section_crash_velocity must be positive"
+            1 <= self.section_crash_velocity <= 127,
+            "section_crash_velocity is a MIDI velocity, so it must sit in 1..127; "
+            f"got {self.section_crash_velocity}",
         )
 
     def compute_hash(self) -> str:
@@ -591,6 +594,22 @@ class CompositionPlan:
             arpeggio_velocity=self.harmony_arpeggio_velocity,
             stab_velocity=self.harmony_stab_velocity,
             melody_clearance=self.harmony_melody_clearance,
+        )
+
+    def drum_kit(self) -> DrumKit:
+        """The percussion layer, as the struct `engine.py` reads.
+
+        The fifth one-way bridge, and the only one whose plan field is a
+        *name*: a `DrumStyle` is a table of bar templates, which no
+        canonical document can carry. So the plan stores the name the
+        meter and mood resolve to (`style_name_for`) and this is where it
+        becomes the style, with the three values beside it.
+        """
+        return DrumKit(
+            style=DRUM_STYLES.get(self.drum_style_name) if self.drum_style_name else None,
+            rotation_cycle=self.rotation_cycle,
+            velocity_scale=self.percussion_velocity_scale,
+            crash_velocity=self.section_crash_velocity,
         )
 
 

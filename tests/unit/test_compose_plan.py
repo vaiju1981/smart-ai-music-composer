@@ -469,7 +469,8 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"rotation_cycle": ()}, "must not be empty"),
             ({"rotation_cycle": (-1, 0)}, "cannot be negative"),
             ({"percussion_velocity_scale": 0.0}, "positive"),
-            ({"section_crash_velocity": 0}, "positive"),
+            ({"section_crash_velocity": 0}, "1..127"),
+            ({"section_crash_velocity": 128}, "1..127"),
             ({"format": "SomethingElse:1"}, "CompositionPlan"),
         ],
     )

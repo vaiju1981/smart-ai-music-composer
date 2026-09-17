@@ -48,6 +48,7 @@ from saimc.compose.engine import (
     _closing_tone,
     _final_closing_degree,
     _generate_harmony_section,
+    _generate_percussion,
     _melody_band_for,
     _settle_harmony_register,
     _snap_to_chord,
@@ -67,6 +68,12 @@ from saimc.compose.motif import (
     _draw_step,
     recover_leaps,
     vary_motif,
+)
+from saimc.compose.percussion import (
+    DEFAULT_DRUM_KIT,
+    DRUM_CRASH,
+    DRUM_STYLES,
+    DrumKit,
 )
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
@@ -1405,6 +1412,200 @@ class TestTheClearanceIsReadOnBothSidesOfTheTune:
         window = MelodyBand(low_midi=72, high_midi=96)
         assert _settled_pitches(clearance=3, window=window, melody_pitch=72) == (76,)
         assert _settled_pitches(clearance=6, window=window, melody_pitch=72) == (88,)
+
+
+_DRUM_KNOBS: dict[str, Any] = {
+    # Another kit entirely: a different pattern and a different level, so
+    # the note set cannot survive the swap.
+    "drum_style_name": "funk",
+    # The rock style has two 4/4 variants, so a cycle that names the
+    # second one for the second section is a section whose pace changes.
+    "rotation_cycle": (0, 1, 0, 0),
+    # Half the level, well clear of the rounding: the values are carried
+    # into MIDI velocities and rounded, and a tenth of a step can land on
+    # the same integer twice.
+    "percussion_velocity_scale": 0.5,
+    # A quieter crash under the section downbeats.
+    "section_crash_velocity": 40,
+}
+
+_DRUM_KIT_FIELDS = frozenset(
+    {
+        "drum_style_name",
+        "rotation_cycle",
+        "percussion_velocity_scale",
+        "section_crash_velocity",
+    }
+)
+"""The plan's `--- Percussion ---` block, which reads these four.
+
+`percussion_rest_section` stays in the sections group and is covered
+there, although both blocks are read by the same pass.
+"""
+
+
+class TestTheDrumKitIsLive:
+    """The style, the variant rotation, the mood's level and the crash.
+
+    Four module-table reads before B7 — `style_for(mood, …)`,
+    `ROTATION_CYCLE`, `MOOD_VELOCITY_SCALE.get(mood)` and
+    `SECTION_CRASH_VELOCITY` — and the mood no longer reaches the
+    percussion pass at all. Unlike the voices layer, every one of these
+    four is read at exactly one site, so the fingerprint class is enough
+    to prove the plan reaches the music; what the *site* does with it is
+    covered by the direct calls below.
+    """
+
+    def test_every_drum_knob_has_a_case(self) -> None:
+        assert set(_DRUM_KNOBS) == _DRUM_KIT_FIELDS
+
+    @pytest.mark.parametrize("knob", sorted(_DRUM_KNOBS))
+    def test_a_non_default_plan_moves_the_output(self, knob: str) -> None:
+        plan = replace(default_plan(_DRUM_KIT_SPEC), **{knob: _DRUM_KNOBS[knob]})
+        moved = _fingerprint(compose(_DRUM_KIT_SPEC, plan=plan)) != _fingerprint(
+            compose(_DRUM_KIT_SPEC)
+        )
+        assert moved, (
+            f"{knob} is carried by the plan but does not reach the engine: "
+            "composing under it produced the same score, performance plan and "
+            "arrangement as the default. The seam is dead for this knob."
+        )
+
+    def test_the_cases_are_not_all_one_knob_in_disguise(self) -> None:
+        base = default_plan(_DRUM_KIT_SPEC)
+        for knob, value in _DRUM_KNOBS.items():
+            assert getattr(base, knob) != value, knob
+
+    def test_the_spec_reaches_the_kit_this_class_needs(self) -> None:
+        """The premise, asserted: a spec that stopped writing drums, or a
+        style with one variant, would leave `rotation_cycle`'s case
+        asserting nothing — the cycle names the same pattern either way."""
+        base = default_plan(_DRUM_KIT_SPEC)
+        assert base.drum_style_name == "rock"
+        assert len(DRUM_STYLES[base.drum_style_name].variants["4/4"]) > 1, (
+            "the kit's rotation is unobservable with one variant"
+        )
+        notes = [
+            note
+            for note in compose(_DRUM_KIT_SPEC).notation_score.notes
+            if note.voice_id == VOICE_PERCUSSION
+        ]
+        assert notes, "the spec no longer writes a percussion voice"
+
+    def test_a_style_with_one_variant_leaves_the_cycle_unread(self) -> None:
+        """And the honest unobservability of the knob is pinned: the waltz
+        and the shuffle carry a single variant per meter, so
+        `rotation_index` returns 0 for every section and no cycle can move
+        them. A future style with a second 3/4 variant makes this fail,
+        which is the right time to notice."""
+        for style_name in ("waltz", "shuffle"):
+            style = DRUM_STYLES[style_name]
+            for meter, variants in style.variants.items():
+                assert len(variants) == 1, (style_name, meter)
+
+
+def _kit_notes(
+    kit: DrumKit, *, total_bars: int = 8, form_bars: int = 4, repetition_count: int = 2
+) -> list[NoteEvent]:
+    """Two sections of a 4/4 bar, written by the percussion pass at this kit.
+
+    Two, because the rotation only says anything from the second section
+    on, and the section before the last is where the style's fill is
+    played. The pass is called directly for the reason the voices layer's
+    cases are: a plan mutation moves the whole fingerprint whichever read
+    it reaches.
+    """
+    return _generate_percussion(
+        kit=kit,
+        time_signature="4/4",
+        form_bars=form_bars,
+        repetition_count=repetition_count,
+        total_bars=total_bars,
+        seed=7,
+    )
+
+
+def _hits(notes: list[NoteEvent]) -> list[tuple[int, int]]:
+    """Every hit but the crash, as where and which drum it is."""
+    return [
+        (note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH
+    ]
+
+
+def _crashes(notes: list[NoteEvent]) -> list[tuple[int, int]]:
+    """The section downbeats, as where the crash is and how loud."""
+    return [
+        (note.tick, note.velocity) for note in notes if note.pitch_midi == DRUM_CRASH
+    ]
+
+
+class TestTheDrumWritersReadTheirShape:
+    """One case per read, direct, so the value is attributed to its site."""
+
+    def test_the_pass_plays_the_style_it_is_handed(self) -> None:
+        """Two styles, two different bar templates — and the difference is
+        in the pattern, not only the level, which is what says the style
+        object is what writes."""
+        rock = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]))
+        march = _kit_notes(DrumKit(style=DRUM_STYLES["march"]))
+        assert rock
+        assert march
+        assert _hits(rock) != _hits(march)
+
+    def test_an_unstyled_kit_writes_no_drums(self) -> None:
+        """The honest skip, which is why the default kit carries no style:
+        a piece with no kit has no percussion voice, and inventing a
+        default pattern is the wrong pattern."""
+        assert _kit_notes(DEFAULT_DRUM_KIT) == []
+
+    def test_a_style_with_no_template_for_the_meter_writes_nothing(self) -> None:
+        """A waltz asked to play 4/4 has no bar to play. The plan can only
+        check the name is a style; whether that style covers the meter is
+        a fact about the style, so the pass skips the whole piece rather
+        than writing a wrong groove."""
+        assert _kit_notes(DrumKit(style=DRUM_STYLES["waltz"])) == []
+        assert _hits(_kit_notes(DrumKit(style=DRUM_STYLES["rock"])))
+
+    def test_the_rotation_cycle_decides_the_pattern_per_section(self) -> None:
+        """The first section reads the cycle's first entry, the second its
+        second — so a cycle that changes only the second entry moves the
+        second section's hits and leaves the first's exactly where they
+        were."""
+        default = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]))
+        rotated = _kit_notes(
+            DrumKit(style=DRUM_STYLES["rock"], rotation_cycle=(0, 1, 0, 0))
+        )
+        second = 4 * PPQ  # the fifth bar of two four-bar sections
+        assert [hit for hit in _hits(default) if hit[0] < second] == [
+            hit for hit in _hits(rotated) if hit[0] < second
+        ]
+        assert [hit for hit in _hits(default) if hit[0] >= second] != [
+            hit for hit in _hits(rotated) if hit[0] >= second
+        ]
+
+    def test_the_level_scales_every_hit(self) -> None:
+        """The mood's scaling, which multiplies the groove and the crash
+        alike: the pattern is untouched and the whole kit is quieter."""
+        loud = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]))
+        soft = _kit_notes(DrumKit(style=DRUM_STYLES["rock"], velocity_scale=0.5))
+        assert _hits(soft) == _hits(loud)
+        assert _crashes(soft) != _crashes(loud)
+        assert max(note.velocity for note in soft) < max(note.velocity for note in loud)
+
+    def test_the_crash_velocity_moves_the_crash_alone(self) -> None:
+        """The section marker's own level: every groove hit stays exactly
+        where it was, at the velocity it was, and only the downbeat
+        changes."""
+        default = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]))
+        quiet = _kit_notes(DrumKit(style=DRUM_STYLES["rock"], crash_velocity=40))
+        assert [(n.tick, n.pitch_midi, n.velocity) for n in quiet] != [
+            (n.tick, n.pitch_midi, n.velocity) for n in default
+        ]
+        assert _hits(quiet) == _hits(default)
+        assert _crashes(quiet) != _crashes(default)
+        assert min(velocity for _tick, velocity in _crashes(quiet)) < min(
+            velocity for _tick, velocity in _crashes(default)
+        )
 
 
 class TestTheCodaBranchReadsThePlan:

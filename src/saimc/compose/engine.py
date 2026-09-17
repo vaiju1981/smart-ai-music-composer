@@ -85,14 +85,13 @@ from saimc.compose.motif import (
     vary_motif,
 )
 from saimc.compose.percussion import (
+    DEFAULT_DRUM_KIT,
     DRUM_CRASH,
     DRUM_KICK,
-    MOOD_VELOCITY_SCALE,
     PERCUSSION_NOTE_TICKS,
     PERCUSSION_VELOCITY_MAX,
-    SECTION_CRASH_VELOCITY,
+    DrumKit,
     rotation_index,
-    style_for,
 )
 from saimc.compose.plan import CompositionPlan, resolve_plan
 from saimc.compose.score import (
@@ -629,7 +628,7 @@ def _build_score(
             )
         notes.extend(
             _generate_percussion(
-                mood=spec.mood.value,
+                kit=plan.drum_kit(),
                 time_signature=time_signature,
                 form_bars=arrangement.form_bars,
                 repetition_count=arrangement.repetition_count,
@@ -2979,7 +2978,7 @@ def _melody_bar(
 
 def _generate_percussion(
     *,
-    mood: str,
+    kit: DrumKit = DEFAULT_DRUM_KIT,
     time_signature: str,
     form_bars: int,
     repetition_count: int,
@@ -2990,23 +2989,23 @@ def _generate_percussion(
 ) -> list[NoteEvent]:
     """Generate the percussion voice for a drum-set piece.
 
-    The style comes from the mood + meter (`style_for`); its variants
-    rotate across sections on a longer cycle than plain A/B
-    (`percussion.rotation_index`), with the coda treated as one more
-    section. A section's last bar hands off to the next through the
-    style's fill (never on the piece's final bar, which must resolve),
-    and every section downbeat is marked with a crash cymbal — plus a
-    kick when the pattern does not already open with one. A per-bar
-    seeded jitter of a few velocity points keeps repeated bars from
-    sounding machine-stamped. Bars in `rest_bars` (the intro and one
-    mid-piece section on long pieces) are silent, and the sections
+    The style is the plan's (`percussion.style_name_for` resolved it from
+    the mood and the meter, and `CompositionPlan.drum_kit` looked it up);
+    its variants rotate across sections on a longer cycle than plain A/B,
+    with the coda treated as one more section. A section's last bar hands
+    off to the next through the style's fill (never on the piece's final
+    bar, which must resolve), and every section downbeat is marked with a
+    crash cymbal — plus a kick when the pattern does not already open with
+    one. A per-bar seeded jitter of a few velocity points keeps repeated
+    bars from sounding machine-stamped. Bars in `rest_bars` (the intro and
+    one mid-piece section on long pieces) are silent, and the sections
     that do play follow the terraced dynamic arc.
     """
-    style = style_for(mood, time_signature)
+    style = kit.style
     if style is None:
         return []
     ticks_per_bar = bar_ticks(time_signature)
-    mood_scale = MOOD_VELOCITY_SCALE.get(mood, 1.0)
+    mood_scale = kit.velocity_scale
     notes: list[NoteEvent] = []
     for bar in range(total_bars):
         if bar in rest_bars:
@@ -3022,7 +3021,12 @@ def _generate_percussion(
             pattern = None
         if pattern is None:
             pattern = style.pattern(
-                time_signature, rotation_index(section_idx, len(style.variants.get(time_signature, ())))
+                time_signature,
+                rotation_index(
+                    section_idx,
+                    len(style.variants.get(time_signature, ())),
+                    cycle=kit.rotation_cycle,
+                ),
             )
         if pattern is None:
             continue
@@ -3046,7 +3050,7 @@ def _generate_percussion(
             # The section downbeat is marked: crash always, and a kick
             # underneath it when the groove does not open with one.
             crash_velocity = round(
-                SECTION_CRASH_VELOCITY * style.velocity_scale * mood_scale * terrace
+                kit.crash_velocity * style.velocity_scale * mood_scale * terrace
             )
             notes.append(
                 NoteEvent(
