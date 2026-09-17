@@ -114,6 +114,12 @@ from saimc.compose.score import (
     TempoPoint,
     microseconds_at_tick,
 )
+from saimc.compose.voices import (
+    DEFAULT_HARMONY_VOICES,
+    HARMONY_MELODY_CLEARANCE,
+    HARMONY_STAB_INSTRUMENTS,
+    HarmonyVoices,
+)
 from saimc.instruments import (
     LINE_BAND_SEMITONES,
     BedRegisters,
@@ -392,10 +398,12 @@ def _build_score(
     # fact and the register the whole walk is quantised to would not
     # hold.
     shape = plan.melody_shape()
+    voices = plan.harmony_voices()
     band = _melody_band_for(
         melody=ensemble.melody,
         bed=ensemble.harmony,
         band_semitones=shape.line_band_semitones,
+        clearance=voices.melody_clearance,
     )
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
@@ -461,9 +469,9 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
-            mood=spec.mood.value,
             band=band,
             shape=shape,
+            voices=voices,
             figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
@@ -541,9 +549,9 @@ def _build_score(
             section_start_tick=cursor_tick,
             rng=coda_rng,
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
-            mood=spec.mood.value,
             band=band,
             shape=shape,
+            voices=voices,
             figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
@@ -591,6 +599,7 @@ def _build_score(
             melody_floor=min(melody_pitches),
             melody_ceiling=max(melody_pitches),
             registers={voice_id: bed_registers(name) for voice_id, name in harmony_voices},
+            clearance=voices.melody_clearance,
         )
         # The pass moves notes after the sections sorted them, and a moved
         # note can land under another note of its own voice at the same
@@ -743,9 +752,9 @@ def _generate_section(
     section_start_tick: int,
     rng: random.Random,
     seed_for_variation: int,
-    mood: str,
     band: MelodyBand,
     figures: tuple[BassFigure, ...],
+    voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
     shape: MelodyShape = DEFAULT_MELODY_SHAPE,
     prev_bass: int | None = None,
     prev_melody: int | None = None,
@@ -1071,7 +1080,6 @@ def _generate_section(
                 chords=chords,
                 section_start_tick=section_start_tick,
                 ticks_per_bar=ticks_per_bar,
-                mood=mood,
                 rng=rng,
                 melody_from_bar=melody_from_bar,
                 seed_for_variation=seed_for_variation,
@@ -1079,6 +1087,7 @@ def _generate_section(
                 instrument=instrument,
                 window=bed_window(instrument),
                 layer_index=voice_id - VOICE_HARMONY,
+                voices=voices,
             )
         )
 
@@ -1098,26 +1107,22 @@ def _generate_section(
     return ordered, tuple(bar_pcs), tuple(bar_keys), trailing + 1
 
 
-# The harmony voice's constants. There is no register window among them
-# any more: the bed is folded into its *instrument's* window
-# (`instruments.bed_window`, the comfortable range), because "where this
-# instrument sounds like itself" does not depend on which role it is
-# playing. Until it moved, the bed was folded into a module constant,
-# MIDI 48-84, for every pad instrument, so a celesta (lowest note C4 =
-# 60, lives 72-96) had its pad written 48-59, a twelfth below the
-# instrument — and the range gate could not see it. Which side of the
-# tune the bed settles on is decided over the finished piece by
-# `_settle_harmony_register`, against the tune's band and the room the
-# accompaniment's own instrument has for it.
+# The harmony voice's constants. The texture it states, the figure that
+# texture steps on, the level each sounds at and the clearance between
+# the bed and the tune all moved to `saimc.compose.voices`, because the
+# plan carries them and the plan cannot import this module. There is no
+# register window among this module's remaining constants: the bed is
+# folded into its *instrument's* window (`instruments.bed_window`, the
+# comfortable range), because "where this instrument sounds like itself"
+# does not depend on which role it is playing. Until it moved, the bed
+# was folded into a module constant, MIDI 48-84, for every pad
+# instrument, so a celesta (lowest note C4 = 60, lives 72-96) had its
+# pad written 48-59, a twelfth below the instrument — and the range gate
+# could not see it. Which side of the tune the bed settles on is decided
+# over the finished piece by `_settle_harmony_register`, against the
+# tune's band and the room the accompaniment's own instrument has for
+# it.
 HARMONY_CROWD_INTERVALS: frozenset[int] = frozenset({0, 1, 2, 10, 11})
-# How far under the melody the bed is held: its top sits this many
-# semitones below the lowest note the melody reaches anywhere in the
-# piece, so the two registers are disjoint and no bed note is ever
-# within the crowding window *above* of the tune's floor. Three, not
-# two, because two is a semitone count the crowd set itself calls a rub
-# — a bed held exactly that far under the tune's floor could be legal by
-# register and illegal by interval at the same time.
-HARMONY_MELODY_CLEARANCE: int = 3
 # The room the accompaniment needs underneath the tune: one octave, so
 # that every one of the twelve pitch classes has an octave of the bed's
 # own to be folded into. Narrower than this and the bed can sound some
@@ -1134,19 +1139,6 @@ BED_OCTAVE_SEMITONES: int = 12
 # settle pass reaches for the instrument's whole compass instead; see
 # `_can_clear_the_tune`.
 BED_MIN_ROOM_SEMITONES: int = BED_OCTAVE_SEMITONES // 2
-HARMONY_PAD_VELOCITY: int = 46
-HARMONY_ARPEGGIO_VELOCITY: int = 52
-HARMONY_STAB_VELOCITY: int = 58
-HARMONY_STAB_INSTRUMENTS: frozenset[str] = frozenset(
-    {
-        "brass_section",
-        "french_horn",
-        "trumpet",
-        "muted_trumpet",
-        "trombone",
-        "tuba",
-    }
-)
 
 
 def _active_harmony_voices(
@@ -1178,7 +1170,11 @@ def _active_harmony_voices(
 
 
 def _melody_band_for(
-    *, melody: str, bed: str | None, band_semitones: int = LINE_BAND_SEMITONES
+    *,
+    melody: str,
+    bed: str | None,
+    band_semitones: int = LINE_BAND_SEMITONES,
+    clearance: int = HARMONY_MELODY_CLEARANCE,
 ) -> MelodyBand:
     """The window the tune is written in, given what plays underneath it.
 
@@ -1203,12 +1199,16 @@ def _melody_band_for(
 
     With no accompaniment voice the tune sits in its instrument's own
     band, which is what a solo piece is.
+
+    The clearance is an argument for the reason the band's width is one:
+    both are the plan's, and neither is a fact about the instrument, so
+    this function is handed them rather than reaching for a table.
     """
     band = melody_band(melody, band_semitones=band_semitones)
     if bed is None:
         return band
     window = bed_window(bed)
-    floor = window.low_midi + BED_OCTAVE_SEMITONES + HARMONY_MELODY_CLEARANCE
+    floor = window.low_midi + BED_OCTAVE_SEMITONES + clearance
     if floor <= band.low_midi:
         return band
     span = range_for(melody)
@@ -1271,7 +1271,6 @@ def _generate_harmony_section(
     chords: list[tuple[int, tuple[int, ...], int]],
     section_start_tick: int,
     ticks_per_bar: int,
-    mood: str,
     rng: random.Random,
     melody_from_bar: int,
     seed_for_variation: int,
@@ -1279,13 +1278,15 @@ def _generate_harmony_section(
     instrument: str = "piano",
     window: MelodyBand,
     layer_index: int = 0,
+    voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
 ) -> list[NoteEvent]:
     """Generate the harmony voice for one section from the resolved chords.
 
-    Calm music uses a sustained pad. Energetic strings and plucked
-    instruments use a broken-chord ostinato, brass uses spacious chord
-    accents, and additional harmony colors form a quieter sustained bed.
-    Intro bars stay silent — harmony enters with the melody.
+    The plan's texture decides the shape: a sustained pad, a broken-chord
+    ostinato, or — for an instrument that does that well — spacious chord
+    accents. A broken chord is stated by the leading harmony layer only;
+    additional harmony colors form a quieter sustained bed. Intro bars
+    stay silent — harmony enters with the melody.
 
     The bed is written inside `window` — the instrument's own, from
     `saimc.instruments` — so a pad is written where the instrument that
@@ -1295,13 +1296,13 @@ def _generate_harmony_section(
     draws do not depend on what it happens to do.
     """
     notes: list[NoteEvent] = []
-    pad = mood != "electrifying" or layer_index > 0
-    stabs = mood == "electrifying" and instrument in HARMONY_STAB_INSTRUMENTS
+    pad = not voices.broken_chord or layer_index > 0
+    stabs = voices.broken_chord and instrument in HARMONY_STAB_INSTRUMENTS
     # Which chord tone sits lowest: the rotation (not the bar) decides
     # it, so the section's voicing stays stable instead of churning.
     rotation = rng.randrange(3)
-    eighth = PPQ // 2
-    arpeggio_steps = max(1, ticks_per_bar // eighth)
+    step_ticks = voices.arpeggio_step_ticks
+    arpeggio_steps = max(1, ticks_per_bar // step_ticks)
 
     cursor = 0
     bar_index = 0
@@ -1326,7 +1327,7 @@ def _generate_harmony_section(
                                 tick=bar_tick + pulse_tick,
                                 duration_ticks=pulse_duration,
                                 velocity=_shaped_velocity(
-                                    base=HARMONY_STAB_VELOCITY,
+                                    base=voices.stab_velocity,
                                     position=position,
                                     tick=bar_tick + pulse_tick,
                                     ticks_per_bar=ticks_per_bar,
@@ -1345,7 +1346,7 @@ def _generate_harmony_section(
                             tick=bar_tick,
                             duration_ticks=ticks_per_bar,
                             velocity=_shaped_velocity(
-                                base=HARMONY_PAD_VELOCITY - layer_index * 4,
+                                base=voices.pad_velocity - layer_index * 4,
                                 position=position,
                                 tick=bar_tick,
                                 ticks_per_bar=ticks_per_bar,
@@ -1360,12 +1361,12 @@ def _generate_harmony_section(
                         NoteEvent(
                             voice_id=voice_id,
                             pitch_midi=_into_harmony_register(chord_root + tone, window=window),
-                            tick=bar_tick + step * eighth,
-                            duration_ticks=eighth,
+                            tick=bar_tick + step * step_ticks,
+                            duration_ticks=step_ticks,
                             velocity=_shaped_velocity(
-                                base=HARMONY_ARPEGGIO_VELOCITY,
+                                base=voices.arpeggio_velocity,
                                 position=position,
-                                tick=bar_tick + step * eighth,
+                                tick=bar_tick + step * step_ticks,
                                 ticks_per_bar=ticks_per_bar,
                                 rng_seed=seed_for_variation + bar_tick * 101 + step,
                             ),
@@ -1397,16 +1398,17 @@ def _settle_harmony_register(
     melody_floor: int,
     melody_ceiling: int,
     registers: Mapping[int, BedRegisters],
+    clearance: int = HARMONY_MELODY_CLEARANCE,
 ) -> list[NoteEvent]:
     """Settle every harmony voice inside its instrument's window, clear of the tune.
 
     Two constraints, and the first is not negotiable: a note must be
     inside its instrument's window, because a celesta cannot sound a C3
     and the gate that used to check this was the piano's compass applied
-    to every voice. The second is that it should stay
-    `HARMONY_MELODY_CLEARANCE` clear of the tune's band — a bed note
-    inside the melody's register is what `tessitura_overlap_semitones`
-    measures and what a hot pot of instruments sounds like.
+    to every voice. The second is that it should stay `clearance` clear
+    of the tune's band — a bed note inside the melody's register is what
+    `tessitura_overlap_semitones` measures and what a hot pot of
+    instruments sounds like.
 
     Each voice is settled on *one* side of the tune, and which side is
     the voice's decision rather than each note's. Under the tune is
@@ -1453,8 +1455,8 @@ def _settle_harmony_register(
     the arpeggio's onsets, the pad's held bars and the stabs' pulses are
     all left where they were.
     """
-    below_ceiling = melody_floor - HARMONY_MELODY_CLEARANCE
-    above_floor = melody_ceiling + HARMONY_MELODY_CLEARANCE
+    below_ceiling = melody_floor - clearance
+    above_floor = melody_ceiling + clearance
     melody = [note for note in notes if note.voice_id == VOICE_MELODY]
     settled = [note for note in notes if note.voice_id not in registers]
     for voice_id, voice_registers in registers.items():

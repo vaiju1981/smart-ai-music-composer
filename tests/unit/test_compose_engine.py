@@ -14,7 +14,6 @@ from saimc.compose.engine import (
     _RANK_RUBBING,
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
-    HARMONY_MELODY_CLEARANCE,
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
@@ -71,6 +70,7 @@ from saimc.compose.score import (
     realized_duration_seconds,
     ticks_at_microsecond,
 )
+from saimc.compose.voices import HARMONY_MELODY_CLEARANCE
 from saimc.instruments import (
     LINE_BAND_SEMITONES,
     BedRegisters,

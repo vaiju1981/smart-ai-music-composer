@@ -91,6 +91,15 @@ from saimc.compose.percussion import (
     SECTION_CRASH_VELOCITY,
     style_name_for,
 )
+from saimc.compose.voices import (
+    BROKEN_CHORD_MOODS,
+    HARMONY_ARPEGGIO_STEP_TICKS,
+    HARMONY_ARPEGGIO_VELOCITY,
+    HARMONY_MELODY_CLEARANCE,
+    HARMONY_PAD_VELOCITY,
+    HARMONY_STAB_VELOCITY,
+    HarmonyVoices,
+)
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec
 
@@ -251,6 +260,39 @@ class CompositionPlan:
     percussion_rest_section: int
     """The section a long piece's kit rests for, counting from zero."""
 
+    # --- Voices: how the accompaniment under the tune is written ---------
+    harmony_broken_chord: bool
+    """Whether the leading harmony layer states a broken chord.
+
+    It was `mood == "electrifying"` inline in `_generate_harmony_section`,
+    so the texture was the mood's to decide and a critic could not ask
+    for it: this is the knob that answers `texture_hierarchy`, which
+    measures the accompaniment's note count against the melody's.
+    """
+    harmony_arpeggio_step_ticks: int
+    """The interval the broken-chord figure steps on, an eighth by default.
+
+    `PPQ // 2` inline, and the reason `texture_hierarchy` can miss: the
+    figure's onsets per bar are `ticks_per_bar // this`, so the value is
+    the accompaniment's density rather than a tempo or a note length.
+    """
+    harmony_pad_velocity: int
+    """The sustained bed's level: the quietest of the three textures."""
+    harmony_arpeggio_velocity: int
+    """The broken-chord figure's level, a notch above the pad's."""
+    harmony_stab_velocity: int
+    """A stabbed chord's level: the loudest, because it is an accent."""
+    harmony_melody_clearance: int
+    """How far under the melody the bed is held.
+
+    Read by two passes — `_melody_band_for`, which raises the tune until
+    the room exists, and `_settle_harmony_register`, which places each
+    voice against the finished tune. Below the crowding window's width
+    the two registers stop being disjoint, which is what
+    `register_separation_semitones` and `tessitura_overlap_semitones`
+    measure.
+    """
+
     # --- Percussion ------------------------------------------------------
     drum_style_name: str | None
     """The chosen kit's name, or None for a piece with no drums (every
@@ -377,6 +419,32 @@ class CompositionPlan:
         _require(self.line_band_semitones > 0, "line_band_semitones must be positive")
 
         _require(
+            self.harmony_arpeggio_step_ticks > 0,
+            "harmony_arpeggio_step_ticks is the interval the figure steps on, "
+            f"so it must be positive; got {self.harmony_arpeggio_step_ticks}",
+        )
+        for name in (
+            "harmony_pad_velocity",
+            "harmony_arpeggio_velocity",
+            "harmony_stab_velocity",
+        ):
+            velocity = getattr(self, name)
+            # A velocity is a MIDI value, so it lives in 1..127: nothing at
+            # the bottom is a note that never sounds, and nothing at the top
+            # is a number the port drops. Both are refused here rather than
+            # clamped silently later, which is the rule for a delta the
+            # engine cannot honour.
+            _require(
+                1 <= velocity <= 127,
+                f"{name} is a MIDI velocity, so it must sit in 1..127; got {velocity}",
+            )
+        _require(
+            self.harmony_melody_clearance > 0,
+            "harmony_melody_clearance is a distance between two registers, so it "
+            f"must be positive; got {self.harmony_melody_clearance}",
+        )
+
+        _require(
             self.drum_style_name is None or self.drum_style_name in DRUM_STYLES,
             f"unknown drum style {self.drum_style_name!r}; known styles are "
             f"{sorted(DRUM_STYLES)}",
@@ -440,6 +508,12 @@ class CompositionPlan:
             "section_energy_middle": self.section_energy_middle,
             "harmony_texture_cycle": list(self.harmony_texture_cycle),
             "percussion_rest_section": self.percussion_rest_section,
+            "harmony_broken_chord": self.harmony_broken_chord,
+            "harmony_arpeggio_step_ticks": self.harmony_arpeggio_step_ticks,
+            "harmony_pad_velocity": self.harmony_pad_velocity,
+            "harmony_arpeggio_velocity": self.harmony_arpeggio_velocity,
+            "harmony_stab_velocity": self.harmony_stab_velocity,
+            "harmony_melody_clearance": self.harmony_melody_clearance,
             "drum_style_name": self.drum_style_name,
             "rotation_cycle": list(self.rotation_cycle),
             "percussion_velocity_scale": self.percussion_velocity_scale,
@@ -500,6 +574,26 @@ class CompositionPlan:
         )
 
 
+    def harmony_voices(self) -> HarmonyVoices:
+        """The voices layer, as the struct `engine.py` reads.
+
+        The fourth one-way bridge, on the same terms as the other three.
+        Unlike them it is not the plan's own imports that force a struct
+        — `voices.py` is importable from here — but the call stack: two
+        of these values are read inside `_generate_harmony_section` and
+        forwarded there through `_generate_section`, both of which take
+        no plan.
+        """
+        return HarmonyVoices(
+            broken_chord=self.harmony_broken_chord,
+            arpeggio_step_ticks=self.harmony_arpeggio_step_ticks,
+            pad_velocity=self.harmony_pad_velocity,
+            arpeggio_velocity=self.harmony_arpeggio_velocity,
+            stab_velocity=self.harmony_stab_velocity,
+            melody_clearance=self.harmony_melody_clearance,
+        )
+
+
 def _named_weights(table: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
     """A mood's weight table as the ordered pairs a plan stores."""
     return tuple(table.items())
@@ -548,6 +642,12 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         section_energy_middle=SECTION_VELOCITY_MIDDLE,
         harmony_texture_cycle=HARMONY_TEXTURE_CYCLE,
         percussion_rest_section=PERCUSSION_REST_SECTION,
+        harmony_broken_chord=mood in BROKEN_CHORD_MOODS,
+        harmony_arpeggio_step_ticks=HARMONY_ARPEGGIO_STEP_TICKS,
+        harmony_pad_velocity=HARMONY_PAD_VELOCITY,
+        harmony_arpeggio_velocity=HARMONY_ARPEGGIO_VELOCITY,
+        harmony_stab_velocity=HARMONY_STAB_VELOCITY,
+        harmony_melody_clearance=HARMONY_MELODY_CLEARANCE,
         drum_style_name=style_name_for(mood, spec.time_signature.value),
         rotation_cycle=ROTATION_CYCLE,
         percussion_velocity_scale=MOOD_VELOCITY_SCALE.get(mood, 1.0),

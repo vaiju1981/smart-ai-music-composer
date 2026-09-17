@@ -47,11 +47,15 @@ from saimc.compose.engine import (
     _bent_step,
     _closing_tone,
     _final_closing_degree,
+    _generate_harmony_section,
+    _melody_band_for,
+    _settle_harmony_register,
     _snap_to_chord,
     _start_offsets,
     _walk_shape,
     compose,
 )
+from saimc.compose.ensemble import resolve_ensemble
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_MELODY_SHAPE,
@@ -76,7 +80,15 @@ from saimc.compose.score import (
     VOICE_HARMONY,
     VOICE_MELODY,
     VOICE_PERCUSSION,
+    NoteEvent,
 )
+from saimc.compose.voices import (
+    BROKEN_CHORD_MOODS,
+    DEFAULT_HARMONY_VOICES,
+    HARMONY_STAB_INSTRUMENTS,
+    HarmonyVoices,
+)
+from saimc.instruments import BedRegisters, MelodyBand, bed_window
 from saimc.spec import CompositionSpec
 
 _SPEC = CompositionSpec(mood="calming", duration_seconds=180, seed=11)
@@ -1077,6 +1089,322 @@ class TestTheMelodyVocabularyIsReadAtEachSite:
             by_field.setdefault(field, []).append(site)
         assert len(by_field["chord_tone_degrees"]) == 7
         assert len(by_field["leap_degrees"]) == 3
+
+
+_BAR = bar_ticks("4/4")
+
+_ELECTRIFYING_SPEC = CompositionSpec(mood="electrifying", duration_seconds=180, seed=11)
+"""A mood whose own default is the broken chord.
+
+`BROKEN_CHORD_MOODS` holds one mood of three, and the arpeggio and the
+stab figures only exist under one — so the two cases that read those
+figures compose at this spec rather than at `_SPEC`, whose texture is
+the sustained pad.
+"""
+
+_BRASS_HARMONY_SPEC = CompositionSpec(
+    mood="electrifying",
+    duration_seconds=180,
+    seed=11,
+    instrumentation=[
+        {"role": "melody", "instrument": "piano"},
+        {"role": "harmony", "instrument": "brass_section"},
+        {"role": "bass", "instrument": "contrabass"},
+    ],
+)
+"""A broken chord written for an instrument the stab pattern names.
+
+`_ELECTRIFYING_SPEC`'s ensemble states its harmony on strings, which is
+not in `HARMONY_STAB_INSTRUMENTS` — so its broken chord is an arpeggio
+and the stab's own velocity is unreachable there.
+"""
+
+_VOICES_KNOBS: dict[str, tuple[CompositionSpec, Any]] = {
+    # The texture itself, against the mood's own sustained default. The
+    # other five cases below are read *under* a texture, which is why
+    # this one has to be the flip.
+    "harmony_broken_chord": (_SPEC, True),
+    # Three levels, one per figure, each at the spec whose default
+    # texture reaches it.
+    "harmony_pad_velocity": (_SPEC, 60),
+    "harmony_arpeggio_velocity": (_ELECTRIFYING_SPEC, 80),
+    "harmony_stab_velocity": (_BRASS_HARMONY_SPEC, 90),
+    # How fine the arpeggio's grid is — an eighth by default, a quarter
+    # here, which halves the onsets in a bar.
+    "harmony_arpeggio_step_ticks": (_ELECTRIFYING_SPEC, 4 * PPQ),
+    # How far the bed keeps off the tune, on both sides of it.
+    "harmony_melody_clearance": (_SPEC, 6),
+}
+
+_VOICES_FIELDS = frozenset(
+    {
+        "harmony_broken_chord",
+        "harmony_arpeggio_step_ticks",
+        "harmony_pad_velocity",
+        "harmony_arpeggio_velocity",
+        "harmony_stab_velocity",
+        "harmony_melody_clearance",
+    }
+)
+"""The plan's `--- Voices ---` block, which is these six.
+
+Enumerated against `HarmonyVoices`' own fields as well, so the struct and
+the plan cannot drift apart here — and spelled out because B9's union
+check needs the layer's field set by name.
+"""
+
+_ARPEGGIO_KNOBS = frozenset(
+    {"harmony_arpeggio_step_ticks", "harmony_arpeggio_velocity", "harmony_stab_velocity"}
+)
+"""The cases whose reader only exists under a broken chord."""
+
+
+class TestTheVoicesLayerIsLive:
+    """How the accompaniment under the tune is written.
+
+    The plan's `--- Voices ---` group is the texture (`broken_chord`), the
+    figure's grid, the three levels, and the clearance the bed keeps from
+    the tune. All six were module constants or inline expressions in
+    `engine.py` before B6 — `HARMONY_*_VELOCITY`, the `PPQ // 2` step, the
+    `mood != "electrifying"` texture rule, `HARMONY_MELODY_CLEARANCE` —
+    and now live in `saimc.compose.voices`, which is where a plan and the
+    engine can both read them.
+    """
+
+    def test_every_voices_knob_has_a_case(self) -> None:
+        declared = {"harmony_" + field.name for field in fields(HarmonyVoices)}
+        assert declared == set(_VOICES_KNOBS) == set(_VOICES_FIELDS), (
+            "a voices knob has no case below, so nothing asserts the engine "
+            "actually reads it from the plan"
+        )
+
+    @pytest.mark.parametrize("knob", sorted(_VOICES_KNOBS))
+    def test_a_non_default_plan_moves_the_output(self, knob: str) -> None:
+        spec, value = _VOICES_KNOBS[knob]
+        default = compose(spec)
+        plan = replace(default_plan(spec), **{knob: value})
+        moved = _fingerprint(compose(spec, plan=plan)) != _fingerprint(default)
+        assert moved, (
+            f"{knob} is carried by the plan but does not reach the engine: "
+            "composing under it produced the same score, performance plan and "
+            "arrangement as the default. The seam is dead for this knob."
+        )
+
+    def test_each_case_is_composed_at_the_texture_its_reader_needs(self) -> None:
+        """The reason this layer needs three specs rather than one.
+
+        A figure only reads the plan where it is written at all: the
+        arpeggio's grid and level are read by a broken chord on an
+        instrument the stab pattern is not written for, and the stab's
+        level only by a broken chord on one that it is. A case run at
+        another texture would be naming a field its figure never consults
+        — a guard that cannot fail — so the texture each case needs is
+        asserted rather than left in a comment for the next spec edit.
+        """
+        for knob in _ARPEGGIO_KNOBS:
+            spec, _value = _VOICES_KNOBS[knob]
+            assert default_plan(spec).harmony_broken_chord, (
+                f"{knob}: nothing but a broken chord writes this figure"
+            )
+        assert resolve_ensemble(_BRASS_HARMONY_SPEC).harmonies[0] in HARMONY_STAB_INSTRUMENTS, (
+            "the stab case's ensemble states its harmony on an instrument "
+            "the pattern is not written for, so it arpeggiates instead"
+        )
+        pad_spec, _pad_value = _VOICES_KNOBS["harmony_pad_velocity"]
+        assert pad_spec.mood.value not in BROKEN_CHORD_MOODS, (
+            "the pad case's spec is no longer a mood outside `BROKEN_CHORD_MOODS`"
+        )
+
+    def test_the_cases_are_not_all_one_knob_in_disguise(self) -> None:
+        for knob, (spec, value) in _VOICES_KNOBS.items():
+            assert getattr(default_plan(spec), knob) != value, knob
+
+
+def _harmony_notes(
+    voices: HarmonyVoices, *, instrument: str = "strings", layer_index: int = 0
+) -> list[NoteEvent]:
+    """Two bars of one chord, written by the harmony pass at this shape.
+
+    The section is called directly rather than composed, for the reason B5
+    found: a plan mutation moves the whole fingerprint whichever of these
+    sites reads it, so only a direct call can attribute a read to a site.
+    The window is the instrument's own, as the pass is handed it.
+    """
+    return _generate_harmony_section(
+        chords=[(60, (0, 4, 7), 2)],
+        section_start_tick=0,
+        ticks_per_bar=_BAR,
+        rng=random.Random(7),
+        melody_from_bar=0,
+        seed_for_variation=0,
+        instrument=instrument,
+        window=bed_window(instrument),
+        layer_index=layer_index,
+        voices=voices,
+    )
+
+
+def _shape_of(notes: list[NoteEvent]) -> list[tuple[int, int, int]]:
+    """Where every note is — its tick, pitch and length — but not its level."""
+    return [(note.tick, note.pitch_midi, note.duration_ticks) for note in notes]
+
+
+_PAD = replace(DEFAULT_HARMONY_VOICES, broken_chord=False)
+_BROKEN = replace(DEFAULT_HARMONY_VOICES, broken_chord=True)
+
+
+class TestTheVoicesWritersReadTheirShape:
+    """One case per read inside the harmony writer.
+
+    `harmony_broken_chord` is read twice in one expression pair — once for
+    the pad, once for the stabs — and three levels and a grid are read
+    below it. The fingerprint class above proves the plan reaches the
+    music; this one proves *which read* writes it.
+    """
+
+    def test_the_leading_voice_sustains_or_arpeggiates_by_the_shape(self) -> None:
+        """The pad's read: the same instrument holds a bar under a
+        sustained shape and steps through the chord under a broken one."""
+        pad = _harmony_notes(_PAD)
+        arpeggio = _harmony_notes(_BROKEN)
+        assert {note.duration_ticks for note in pad} == {_BAR}
+        assert {note.tick for note in pad} == {0, _BAR}
+        assert {note.duration_ticks for note in arpeggio} == {
+            DEFAULT_HARMONY_VOICES.arpeggio_step_ticks
+        }
+        assert len({note.tick for note in arpeggio}) == 2 * _BAR // (
+            DEFAULT_HARMONY_VOICES.arpeggio_step_ticks
+        )
+
+    def test_a_stab_instrument_states_accents_only_under_a_broken_chord(self) -> None:
+        """The stabs' read of the same field, and the instrument is not what
+        decides it: brass under a sustained shape holds its bar like any
+        other bed, while under a broken chord it states two pulses to the
+        bar instead of eight steps."""
+        sustained = _harmony_notes(_PAD, instrument="brass_section")
+        stabs = _harmony_notes(_BROKEN, instrument="brass_section")
+        assert {note.duration_ticks for note in sustained} == {_BAR}
+        assert {note.duration_ticks for note in stabs} == {PPQ}
+        assert {note.tick for note in stabs} == {0, _BAR // 2, _BAR, _BAR + _BAR // 2}
+
+    def test_the_voices_under_the_leading_one_sustain_whatever_the_texture(self) -> None:
+        """Only the leading layer breaks its chord.
+
+        `pad` is `not broken_chord or layer_index > 0`, so the second
+        harmony voice under a broken chord must write exactly what it
+        writes under a sustained one — and that is not the leading
+        layer's notes, which are a level quieter one layer down.
+        """
+        assert _harmony_notes(_BROKEN, layer_index=1) == _harmony_notes(_PAD, layer_index=1)
+        assert _harmony_notes(_BROKEN, layer_index=1) != _harmony_notes(_PAD)
+
+    def test_the_broken_chord_steps_on_the_interval_the_shape_names(self) -> None:
+        """The grid, which the arpeggio's onsets and lengths both read."""
+        coarse = _harmony_notes(replace(_BROKEN, arpeggio_step_ticks=4 * PPQ))
+        assert {note.tick for note in coarse} == set(range(0, 2 * _BAR, 4 * PPQ))
+        assert {note.duration_ticks for note in coarse} == {4 * PPQ}
+
+    @pytest.mark.parametrize(
+        ("field", "instrument", "texture"),
+        [
+            ("pad_velocity", "strings", _PAD),
+            ("arpeggio_velocity", "strings", _BROKEN),
+            ("stab_velocity", "brass_section", _BROKEN),
+        ],
+    )
+    def test_each_figure_sounds_at_the_level_the_shape_names(
+        self, field: str, instrument: str, texture: HarmonyVoices
+    ) -> None:
+        """A level, not a note.
+
+        Every one of the three velocities moves the figure's loudness and
+        leaves its ticks, pitches and lengths exactly where they were —
+        which is both what a level knob should do and what says the read
+        being tested is the level and not the draw above it.
+        """
+        default = _harmony_notes(texture, instrument=instrument)
+        changed = _harmony_notes(replace(texture, **{field: 100}), instrument=instrument)
+        assert _shape_of(changed) == _shape_of(default)
+        assert sorted(note.velocity for note in changed) != sorted(
+            note.velocity for note in default
+        )
+
+
+def _settled_pitches(
+    *, clearance: int, window: MelodyBand, melody_pitch: int
+) -> tuple[int, ...]:
+    """Where the settle pass puts a bed written at pitch 40 against this tune.
+
+    The bed note is a chord tone two octaves under the tune's middle, so
+    every candidate the pass can fold it to is an octave of it — which is
+    what makes the two cases below land on different octaves exactly when
+    the clearance says they should.
+    """
+    melody = NoteEvent(
+        voice_id=VOICE_MELODY,
+        pitch_midi=melody_pitch,
+        tick=0,
+        duration_ticks=_BAR,
+        velocity=70,
+    )
+    settled = _settle_harmony_register(
+        [
+            NoteEvent(
+                voice_id=VOICE_HARMONY,
+                pitch_midi=40,
+                tick=0,
+                duration_ticks=_BAR,
+                velocity=46,
+            ),
+            melody,
+        ],
+        melody_floor=melody_pitch,
+        melody_ceiling=melody_pitch,
+        registers={VOICE_HARMONY: BedRegisters(comfortable=window, compass=window)},
+        clearance=clearance,
+    )
+    return tuple(note.pitch_midi for note in settled if note.voice_id == VOICE_HARMONY)
+
+
+class TestTheClearanceIsReadOnBothSidesOfTheTune:
+    """One case per side, because the parameter is read as two expressions.
+
+    `harmony_melody_clearance` is `melody_floor - clearance` below the tune
+    and `melody_ceiling + clearance` above it, and the two are chosen by the
+    window rather than both applied: a window with an octave of room under
+    the tune goes under it and reads only the first, a window whose range
+    starts above the tune — a celesta's — has no room underneath and reads
+    only the second. Neither expression can be seen by the other's case, so
+    a case apiece is the only way to attribute either.
+
+    Each case is tuned to the octave grid of the bed note, which is the
+    difference from the melody layer's threshold knobs: the candidate set is
+    every octave of the written pitch, so a clearance that moves the bound
+    without crossing an octave moves nothing, and a case that took two such
+    values would prove nothing about the read.
+    """
+
+    def test_the_melody_band_is_raised_by_the_clearance_the_shape_names(self) -> None:
+        """The first of the three reads: the room the bed needs under the
+        tune is what raises the tune's own band."""
+        narrow = _melody_band_for(melody="piano", bed="brass_section", clearance=3)
+        wide = _melody_band_for(melody="piano", bed="brass_section", clearance=6)
+        assert wide.low_midi - narrow.low_midi == 3
+        assert wide.high_midi - wide.low_midi == narrow.high_midi - narrow.low_midi, (
+            "the raise moved the band's width, and the walk needs the twelfth it holds"
+        )
+
+    def test_a_bed_under_the_tune_settles_by_the_clearance(self) -> None:
+        """The under read, taken as close under the tune as the window allows."""
+        window = MelodyBand(low_midi=48, high_midi=84)
+        assert _settled_pitches(clearance=3, window=window, melody_pitch=80) == (76,)
+        assert _settled_pitches(clearance=6, window=window, melody_pitch=80) == (64,)
+
+    def test_a_bed_over_the_tune_settles_by_the_clearance(self) -> None:
+        """The over read, in a window with no octave underneath the tune."""
+        window = MelodyBand(low_midi=72, high_midi=96)
+        assert _settled_pitches(clearance=3, window=window, melody_pitch=72) == (76,)
+        assert _settled_pitches(clearance=6, window=window, melody_pitch=72) == (88,)
 
 
 class TestTheCodaBranchReadsThePlan:

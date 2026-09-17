@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 
 from saimc.canonical import canonical_dumps
-from saimc.compose import forms, motif, percussion
+from saimc.compose import forms, motif, percussion, voices
 from saimc.compose import plan as plan_module
 from saimc.compose.duration import (
     DEFAULT_ARRANGEMENT_KNOBS,
@@ -47,6 +47,10 @@ from saimc.compose.plan import (
     PlanError,
     default_plan,
     resolve_plan,
+)
+from saimc.compose.voices import (
+    BROKEN_CHORD_MOODS,
+    DEFAULT_HARMONY_VOICES,
 )
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec
@@ -142,6 +146,16 @@ _MUTATIONS: dict[str, Any] = {
     # thinning phases swapped so the breakdown arrives second.
     "harmony_texture_cycle": ("all", "rest", "first", "all"),
     "percussion_rest_section": 2,
+    # The base is calming, whose harmony sustains, so a broken chord is the
+    # change — as it is for the plan the electrifying mood would default to.
+    "harmony_broken_chord": True,
+    # A quarter rather than the eighth note the broken-chord figure steps on
+    # by default: half the onsets per bar, which is the density itself.
+    "harmony_arpeggio_step_ticks": 480,
+    "harmony_pad_velocity": 50,
+    "harmony_arpeggio_velocity": 56,
+    "harmony_stab_velocity": 62,
+    "harmony_melody_clearance": 4,
     "line_band_semitones": 22,
     "drum_style_name": "funk",
     "rotation_cycle": (0, 1, 0),
@@ -232,6 +246,11 @@ class TestTheDefaultsDescribeTodaysEngine:
         assert plan.motif_operation_weights == motif.MOTIF_OPERATION_WEIGHTS
         assert plan.form_sizes == forms.PHRASE_SIZES
         assert plan.line_band_semitones == LINE_BAND_SEMITONES
+        assert plan.harmony_arpeggio_step_ticks == voices.HARMONY_ARPEGGIO_STEP_TICKS
+        assert plan.harmony_pad_velocity == voices.HARMONY_PAD_VELOCITY
+        assert plan.harmony_arpeggio_velocity == voices.HARMONY_ARPEGGIO_VELOCITY
+        assert plan.harmony_stab_velocity == voices.HARMONY_STAB_VELOCITY
+        assert plan.harmony_melody_clearance == voices.HARMONY_MELODY_CLEARANCE
         assert plan.rotation_cycle == percussion.ROTATION_CYCLE
         assert plan.section_crash_velocity == percussion.SECTION_CRASH_VELOCITY
         assert plan.cadence_degree == forms.cadence_degree_for("calming")
@@ -241,6 +260,7 @@ class TestTheDefaultsDescribeTodaysEngine:
         plan = default_plan(CompositionSpec(mood=mood, duration_seconds=120, seed=7))
         assert plan.rhythm_weights == tuple(motif.RHYTHM_WEIGHTS[mood].items())
         assert plan.bass_figures == motif.BASS_FIGURES[mood]
+        assert plan.harmony_broken_chord == (mood in voices.BROKEN_CHORD_MOODS)
         assert plan.percussion_velocity_scale == percussion.MOOD_VELOCITY_SCALE.get(
             mood, 1.0
         )
@@ -352,6 +372,42 @@ class TestTheLayersReadThePlanThroughBridges:
         assert arc.energy_middle == 1.05
         assert arc.texture_cycle == ("all", "rest", "first", "all")
 
+    def test_the_default_plan_bridges_to_todays_harmony_voices(self) -> None:
+        """The texture is the mood's, so the default is not one struct: a
+        plan that reached the wrong one would state the other mood's
+        accompaniment while the plan itself looked untouched."""
+        for spec in _spec_matrix():
+            expected = replace(
+                DEFAULT_HARMONY_VOICES,
+                broken_chord=spec.mood.value in BROKEN_CHORD_MOODS,
+            )
+            assert default_plan(spec).harmony_voices() == expected
+
+    def test_the_bridge_carries_every_voice_field(self) -> None:
+        """The same by-name check for `HarmonyVoices`.
+
+        `broken_chord` is the field a comparison against the default would
+        not catch, because the struct's own default is `False` — the value
+        a dropped field would leave standing for a mood that wanted a
+        broken chord.
+        """
+        plan = replace(
+            _base(),
+            harmony_broken_chord=True,
+            harmony_arpeggio_step_ticks=480,
+            harmony_pad_velocity=50,
+            harmony_arpeggio_velocity=56,
+            harmony_stab_velocity=62,
+            harmony_melody_clearance=4,
+        )
+        voices = plan.harmony_voices()
+        assert voices.broken_chord is True
+        assert voices.arpeggio_step_ticks == 480
+        assert voices.pad_velocity == 50
+        assert voices.arpeggio_velocity == 56
+        assert voices.stab_velocity == 62
+        assert voices.melody_clearance == 4
+
 
 class TestAPlanThatCannotBeHonouredIsRefused:
     """Refused with a reason, never silently downgraded.
@@ -402,6 +458,12 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"harmony_texture_cycle": ()}, "must not be empty"),
             ({"harmony_texture_cycle": ("all", "quiet")}, "unknown harmony texture"),
             ({"percussion_rest_section": -1}, "cannot be negative"),
+            ({"harmony_arpeggio_step_ticks": 0}, "must be positive"),
+            ({"harmony_pad_velocity": 0}, "1..127"),
+            ({"harmony_pad_velocity": 128}, "1..127"),
+            ({"harmony_arpeggio_velocity": 0}, "1..127"),
+            ({"harmony_stab_velocity": 200}, "1..127"),
+            ({"harmony_melody_clearance": 0}, "must be positive"),
             ({"line_band_semitones": 0}, "positive"),
             ({"drum_style_name": "theremin"}, "unknown drum style"),
             ({"rotation_cycle": ()}, "must not be empty"),
