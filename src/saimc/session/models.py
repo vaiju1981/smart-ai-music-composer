@@ -55,22 +55,25 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 6
+SESSION_SCHEMA_VERSION: Final[int] = 7
 """Bump when a record in this module gains, loses or reshapes a field.
 
 Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
 to 4 when it gained `requests_source`, to 5 when the session gained
-`preferences`, and to 6 when a draft's scorecard gained
-`harmony_pad_coverage`. Bumps 2 to 5 added fields with defaults, so an older
-document would have loaded with the field silently missing; the sixth is
-different in kind — `PieceQuality` takes no defaults and is read strictly —
-and either way the load has to *refuse*, which is the reason the guard
-compares the tag rather than tolerating what it recognises. A draft's lineage
-read as empty is a draft that claims to have been drafted from the brief when
-it was revised from another, its source read as absent is a request with no
-record of who asked for it, a preference log read as absent is every
-judgement the user has made thrown away, and a scorecard read as absent is a
-piece whose harmony was never measured where null means it had none.
+`preferences`, to 6 when a draft's scorecard gained
+`harmony_pad_coverage`, and to 7 when `RequestSource` gained `repair`. Bumps
+2 to 5 added fields with defaults, so an older document would have loaded with
+the field silently missing; the sixth and seventh are different in kind — a
+scorecard takes no defaults and is read strictly, and a closed vocabulary
+value an older build does not know is refused rather than tolerated — and
+either way the load has to *refuse*, which is the reason the guard compares
+the tag rather than tolerating what it recognises. A draft's lineage read as
+empty is a draft that claims to have been drafted from the brief when it was
+revised from another, its source read as absent is a request with no record of
+who asked for it, a preference log read as absent is every judgement the user
+has made thrown away, a scorecard read as absent is a piece whose harmony was
+never measured where null means it had none, and a source read as an
+unrecognised word is a request whose provenance nobody can name.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
@@ -102,7 +105,13 @@ sees it.
 VerdictValue = Literal["like", "dislike"]
 
 _TURN_TRIGGERS: Final[tuple[TurnTrigger, ...]] = ("brief", "message", "auto")
-_REQUEST_SOURCES: Final[tuple[RequestSource, ...]] = ("typed", "conductor", "model", "keywords")
+_REQUEST_SOURCES: Final[tuple[RequestSource, ...]] = (
+    "typed",
+    "conductor",
+    "model",
+    "keywords",
+    "repair",
+)
 _TOOL_OUTCOMES: Final[tuple[ToolOutcome, ...]] = ("ok", "refused", "error")
 _VERDICT_VALUES: Final[tuple[VerdictValue, ...]] = ("like", "dislike")
 

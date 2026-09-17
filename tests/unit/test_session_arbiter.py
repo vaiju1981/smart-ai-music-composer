@@ -622,4 +622,5 @@ def test_the_module_exports_what_it_claims() -> None:
         "musical_order",
         "rank",
         "regression",
+        "worst_finding",
     }

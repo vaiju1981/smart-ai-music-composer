@@ -264,6 +264,20 @@ def _breach(finding: QualityFinding) -> float:
     return miss / abs(finding.target) if finding.target else miss
 
 
+def worst_finding(findings: tuple[QualityFinding, ...]) -> QualityFinding | None:
+    """The highest bar in a set of misses, or `None` when the piece is clean.
+
+    The tier table decides, so this is the same rule `_tier_rank` ranks by and
+    the same one `_top_miss` names a sentence from — which is why it is the
+    owner of the comparison and both of those read it. Ties go to the first miss
+    in `findings()` order, which is the quality report's own order, so a caller
+    aiming at the worst bar aims at the same one twice.
+    """
+    if not findings:
+        return None
+    return min(findings, key=lambda finding: METRIC_TIERS.index(finding.metric))
+
+
 def _tier_rank(findings: tuple[QualityFinding, ...]) -> int:
     """How important the *most* important bar this piece missed is. Higher is worse.
 
@@ -273,16 +287,16 @@ def _tier_rank(findings: tuple[QualityFinding, ...]) -> int:
     correct — it has already won on how many bars it missed, and this element
     only ever decides between two pieces that missed the same number.
     """
-    top = min(
-        (METRIC_TIERS.index(finding.metric) for finding in findings),
-        default=len(METRIC_TIERS),
-    )
-    return len(METRIC_TIERS) - top
+    worst = worst_finding(findings)
+    if worst is None:
+        return 0
+    return len(METRIC_TIERS) - METRIC_TIERS.index(worst.metric)
 
 
 def _top_miss(findings: tuple[QualityFinding, ...]) -> str:
     """The name of the highest bar in a set of misses, for a sentence."""
-    return min((finding.metric for finding in findings), key=METRIC_TIERS.index, default="nothing")
+    worst = worst_finding(findings)
+    return worst.metric if worst is not None else "nothing"
 
 
 def _comparable_seed(seed: int | None) -> int:
@@ -312,4 +326,5 @@ __all__ = [
     "musical_order",
     "rank",
     "regression",
+    "worst_finding",
 ]

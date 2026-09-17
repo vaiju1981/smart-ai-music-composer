@@ -39,6 +39,16 @@ looking at to the draft that answers them — so a second tool that folded
 deltas without composing would let a model move the plan of a piece it never
 heard. `revise` returns the refusal an `apply_delta` would have, in the same
 words, which is what the design asks for.
+
+`repair` is the other side of that line. It is not `apply_delta` with fewer
+arguments: it chooses the requests itself, by measuring the worst bar a draft
+misses against a table of what has been measured to move it, and keeps only
+what improves the piece. A caller has no knob to name the bar or the request,
+because a caller free to name them would be choosing by taste a thing the
+measurement owns — and a conductor with an opinion has `revise` for saying so
+in the user's own terms. Both tools end in the same applier, which is what
+makes a repaired draft a draft like any other: the chain it records is the
+chain the piece was made from.
 """
 
 from __future__ import annotations
@@ -81,6 +91,7 @@ from saimc.session.models import (
     ToolInvocation,
     ToolOutcome,
 )
+from saimc.session.repairs import Attempt, Repair, repair_chain
 from saimc.session.store import SKETCHES_DIRNAME, SessionStorage
 from saimc.spec import CompositionSpec
 
@@ -128,6 +139,17 @@ that walk is how a revision finds the spec its chain folds onto. A bound is
 needed for the second reason as much as the first: a hand-edited document can
 name a parent that names a parent that names the first one, and an unbounded
 walk would not return.
+"""
+
+MAX_REPAIRS_PER_TURN: Final[int] = 4
+"""How many requests one `repair` call may keep.
+
+A repair composes each candidate it tries to measure it, so this is the loop's
+backstop in the same sense `MAX_CANDIDATES_PER_DRAFT` is the fan-out's: it
+bounds a width, and it is read by the tool rather than counted in the ledger
+because a compose is arithmetic. Four is generous — measured over a 90-piece
+corpus the widest repair any piece needed was *two* kept requests — and it is
+what keeps the worst case at four rounds of two candidates each, a second.
 """
 
 
@@ -191,6 +213,7 @@ class ToolBudget:
     max_candidates: int = MAX_CANDIDATES_PER_DRAFT
     max_deltas: int = MAX_DELTAS_PER_REVISION
     max_revisions: int = MAX_REVISIONS_PER_LINE
+    max_repairs: int = MAX_REPAIRS_PER_TURN
     max_sketches: int = MAX_SKETCHES_PER_TURN
     max_llm_calls: int = MAX_LLM_CALLS_PER_TURN
     deadline_seconds: float = TURN_DEADLINE_SECONDS
@@ -200,6 +223,7 @@ class ToolBudget:
             ("max_candidates", self.max_candidates),
             ("max_deltas", self.max_deltas),
             ("max_revisions", self.max_revisions),
+            ("max_repairs", self.max_repairs),
             ("max_sketches", self.max_sketches),
             ("max_llm_calls", self.max_llm_calls),
         ):
@@ -796,6 +820,89 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     )
 
 
+def _no_repair(parent: Draft, outcome: Repair) -> str:
+    """Why a repair kept nothing, in the words of the bar it aimed at.
+
+    Three sentences, one per way the loop can come back empty, and they differ
+    because the advice does. A clean draft has nothing to fix. A bar with no
+    entry in the repair table is a bar *nothing was tried* on, which is a
+    different answer from a bar whose requests were all tried and none kept —
+    the first is a gap in the vocabulary, the second is a measurement — and
+    conflating them would have the product claim a request does not exist while
+    holding the attempts that prove it does.
+
+    Neither sentence says "no request this build carries moves it". A request
+    can clear the bar it was aimed at and still leave the piece no better
+    overall, and a sentence denying it would be false about exactly the case the
+    recorded attempts describe. What both end with instead is the finding's own
+    hint, quoted as the finding's — which is where the maintainer's advice lives
+    — rather than as this function's conclusion.
+    """
+    if outcome.stopped_by is None:
+        return f"{parent.draft_id} misses no bar on the scorecard, so there is nothing to repair."
+    worst = outcome.stopped_by
+    requests = [
+        attempt.delta
+        for attempt in outcome.attempts
+        if attempt.metric == worst.metric and attempt.delta is not None
+    ]
+    if not requests:
+        return (
+            f"{worst.metric} is the bar {parent.draft_id} misses most, and nothing was tried for "
+            f"it: the repair table holds no request for that bar. The bar's own hint names what "
+            f"would move it: {worst.hint}"
+        )
+    tried = ", ".join(request.describe() for request in requests)
+    return (
+        f"{worst.metric} is the bar {parent.draft_id} misses most, and the requests this build "
+        f"carries for it ({tried}) were all tried and none was kept, so the draft stands as it "
+        f"is. The bar's own hint names what would move it: {worst.hint}"
+    )
+
+
+def _attempt_entry(attempt: Attempt) -> dict[str, Any]:
+    """One trial, as the model and the disclosure panel read it."""
+    return {
+        "metric": attempt.metric,
+        "request": delta_to_dict(attempt.delta) if attempt.delta is not None else None,
+        "outcome": attempt.outcome,
+        "remaining": list(attempt.remaining),
+    }
+
+
+async def _repair(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """The `repair` tool: measure the worst bar, and keep what actually moves it.
+
+    No model call and no audio. The loop composes candidates to measure them,
+    which is arithmetic — about ten milliseconds each — so this costs a turn
+    nothing it has to budget for and can be called whenever a draft is close.
+    """
+    parent = _named_draft(ctx, args)
+    root, _ = _lineage(ctx.session, parent, limit=ctx.budget.max_revisions)
+    outcome = repair_chain(
+        root.spec,
+        parent.deltas,
+        parent.quality,
+        maximum=ctx.budget.max_repairs,
+    )
+    if not outcome.added:
+        raise ToolRefusal("no_repair", _no_repair(parent, outcome))
+    revision = revise_draft(ctx, parent, outcome.added, source="repair")
+    return _render(
+        {
+            "draft_id": revision.draft.draft_id,
+            "parent_id": parent.draft_id,
+            "seed": revision.draft.spec.seed,
+            "lint_passed": revision.draft.lint.passed,
+            "quality": revision.draft.quality.entry(),
+            "applied": [delta_to_dict(delta) for delta in revision.applied],
+            "moved_on": deciding_element(revision.draft, parent),
+            "attempts": [_attempt_entry(attempt) for attempt in outcome.attempts],
+            "remaining": list(outcome.remaining),
+        }
+    )
+
+
 async def _compare(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     """Rank drafts against one another, and name what decided each step.
 
@@ -1071,6 +1178,22 @@ _COMPARE_PARAMETERS: Final[dict[str, Any]] = {
 }
 
 
+_REPAIR_PARAMETERS: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "draft_id": {
+            "type": "string",
+            "description": (
+                "The id of the draft to repair, exactly as `draft`, `revise` or a previous "
+                "`repair` returned it."
+            ),
+        },
+    },
+    "required": ["draft_id"],
+    "additionalProperties": False,
+}
+
+
 def request_schema() -> dict[str, Any]:
     """One typed request, as the JSON Schema a model authors against.
 
@@ -1221,6 +1344,20 @@ TOOLS: Final[Mapping[str, Tool]] = {
         parameters=_revise_parameters,
         handler=_revise,
     ),
+    "repair": Tool(
+        name="repair",
+        description=(
+            "Repair a draft's worst measured bar: read the highest bar it misses, measure "
+            "the requests this build has for that bar, keep only the one that measurably "
+            "improves the piece, and go again until nothing measures better. No model call "
+            "and no audio — a few compositions of arithmetic. Use it when a draft is close "
+            "and the misses are mechanical rather than a matter of taste; a repair changes "
+            "how the material is placed and never what the user asked for, and it refuses "
+            "with the bar's own hint when no request this build carries moves it."
+        ),
+        parameters=_static(_REPAIR_PARAMETERS),
+        handler=_repair,
+    ),
     "compare": Tool(
         name="compare",
         description=(
@@ -1330,6 +1467,7 @@ __all__ = [
     "MAX_CANDIDATES_PER_DRAFT",
     "MAX_DELTAS_PER_REVISION",
     "MAX_LLM_CALLS_PER_TURN",
+    "MAX_REPAIRS_PER_TURN",
     "MAX_REVISIONS_PER_LINE",
     "MAX_SKETCHES_PER_TURN",
     "TOOLS",

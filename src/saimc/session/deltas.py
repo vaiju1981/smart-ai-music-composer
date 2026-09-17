@@ -111,16 +111,18 @@ is not faster. A trade is not a bound, and the sentence a user needs is
 See `swallowed_tempo`, which is the only thing that builds one.
 """
 
-RequestSource: TypeAlias = Literal["typed", "conductor", "model", "keywords"]
+RequestSource: TypeAlias = Literal["typed", "conductor", "model", "keywords", "repair"]
 """How a revision's requests were arrived at.
 
-Four *paths* rather than four kinds of request: the same `SetTempo` can come by
+Five *paths* rather than five kinds of request: the same `SetTempo` can come by
 any of them, and what the name says is who expressed the intent and what read
 it. `typed` is a control the studio offered — the user named the change and no
 model saw it. `conductor` is the conductor's own `revise` call, where a model
 chose the deltas. `model` and `keywords` are the feedback translator's two
 readings of a sentence, the first with a model and the second from the keyword
-table.
+table. And `repair` is nobody's: the product chose the request itself, by
+measuring what a bar would take to clear, which is why it is told apart — a
+path where no one, user or model, asked for the change.
 
 It lives here rather than beside `Translation` — the only producer of the last
 two — because a `Draft` records one and `models.py` may not import the

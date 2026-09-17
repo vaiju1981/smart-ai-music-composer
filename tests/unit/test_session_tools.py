@@ -58,7 +58,7 @@ from saimc.session.tools import (
     revise_draft,
     tool_specs,
 )
-from saimc.spec import CompositionSpec, Mood, SpecError
+from saimc.spec import CompositionSpec, Mood, SpecError, VoiceRole
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
 _ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
@@ -153,12 +153,13 @@ class TestTheCatalogue:
             assert spec.parameters["additionalProperties"] is False
 
     def test_the_catalogue_names_exactly_the_tools_this_phase_wrote(self) -> None:
-        """A ratchet. D3 adds `revise` and `compare`; a later phase adding a
-        tool has to say so here rather than letting it appear.
+        """A ratchet. D3 adds `revise` and `compare`, E3 adds `repair`; a later
+        phase adding a tool has to say so here rather than letting it appear.
 
         `apply_delta` is still absent, and deliberately: C4's finding 8 left it
         out because a delta is only meaningful applied to a lineage, and `revise`
-        is that whole act. The module docstring carries the same reason.
+        is that whole act. The module docstring carries the same reason, and the
+        same one is why `repair` is not `apply_delta` either.
         """
         assert sorted(TOOLS) == [
             "compare",
@@ -166,6 +167,7 @@ class TestTheCatalogue:
             "draft",
             "finalize",
             "parse_brief",
+            "repair",
             "revise",
             "sketch",
         ]
@@ -1396,6 +1398,172 @@ class TestCompare:
         assert "draft-0" in invocation.result
 
 
+class TestRepair:
+    """`repair` chooses its own requests, and that is what its tests are about.
+
+    Every other tool's arguments are the conductor's; this one's are the
+    product's, measured off the piece. So the cases here are about the three
+    things a caller cannot see from the outside: that the request it chose is
+    the one that moved the bar, that the search is recorded rather than implied,
+    and that the three ways of coming back empty are told apart. The loop's own
+    arithmetic lives in `test_session_repairs.py`; what is tested here is the
+    tool around it — the record it writes, the budget it honours, and the fact
+    that it costs the turn nothing.
+    """
+
+    _BREACHING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+    """Two bars missed, one kept request, and it is the same one every run."""
+    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=3)
+    """A piece one move cannot finish, which is what the bound needs."""
+    _OUT_OF_TABLE = CompositionSpec.model_validate(
+        {
+            "mood": Mood.SLEEP,
+            "duration_seconds": 30,
+            "seed": 2,
+            "time_signature": "3/4",
+            "instrumentation": [
+                {"role": VoiceRole.MELODY.value, "instrument": "glockenspiel"},
+                {"role": VoiceRole.HARMONY.value, "instrument": "harp"},
+                {"role": VoiceRole.BASS.value, "instrument": "tuba"},
+            ],
+        }
+    )
+    """A bar the table holds no request for, reached by the spec alone.
+
+    Seven of the arbiter's eleven bars have no entry, because the 90-piece corpus
+    that chose the table never breached them — the table is measured rather than
+    reasoned, so a bar nothing breached is a bar with nothing to measure. One of
+    them is reachable from a spec a brief can carry: a slow waltz for a
+    glockenspiel, a harp and a tuba misses `step_ratio`, how much of the tune
+    moves by step, which no 4/4 corpus piece does.
+
+    The clearance route this case used to take does not work. Widening the
+    harmony clearance far enough to push the bed under the tune does create the
+    bar — but it makes a *clean* piece worse, so the ratchet refuses the revision
+    that would have created the draft the case repairs.
+    """
+
+    def test_it_repairs_the_worst_bar_and_names_what_moved(self, ctx: ToolContext) -> None:
+        _ready(ctx, self._BREACHING)
+        _drafts(ctx)
+
+        payload = _payload(_call(ctx, "repair", draft_id="draft-0"))
+
+        assert payload["applied"] == [
+            {"knob": "SetAccompanimentDensity", "step_ticks": 1440},
+        ]
+        assert payload["remaining"] == []
+        assert payload["draft_id"] == "draft-1"
+        assert payload["parent_id"] == "draft-0"
+        assert payload["moved_on"] in ELEMENTS
+
+    def test_the_child_records_that_the_product_chose_the_request(self, ctx: ToolContext) -> None:
+        """The vocabulary's fifth source, and the one nobody else can write: a
+        request the user did not make and the conductor did not author."""
+        _ready(ctx, self._BREACHING)
+        _drafts(ctx)
+
+        _call(ctx, "repair", draft_id="draft-0")
+
+        child = ctx.session.drafts[1]
+        assert child.requests_source == "repair"
+        assert child.parent_id == "draft-0"
+        assert child.spec.seed == self._BREACHING.seed, "the material survives the edit"
+
+    def test_the_search_is_recorded_rather_than_summarised(self, ctx: ToolContext) -> None:
+        """Every candidate, including the one not kept: a repair that reported
+        only its answer would make the piece's quality a property of the loop."""
+        _ready(ctx, self._BREACHING)
+        _drafts(ctx)
+
+        payload = _payload(_call(ctx, "repair", draft_id="draft-0"))
+
+        assert [(a["metric"], a["outcome"]) for a in payload["attempts"]] == [
+            ("texture_hierarchy", "kept"),
+            ("texture_hierarchy", "kept"),
+        ]
+        assert [a["request"]["knob"] for a in payload["attempts"]] == [
+            "SetAccompanimentDensity",
+            "SetHarmonyTexture",
+        ]
+
+    def test_it_spends_nothing_the_turn_has_to_budget_for(self, ctx: ToolContext) -> None:
+        """No model call and no audio — the loop's whole cost is arithmetic, and
+        the ledger counts what is expensive. A repair that charged a sketch
+        would make the cheap tool the one that runs out of turn."""
+        _ready(ctx, self._BREACHING)
+        _drafts(ctx)
+        before = (ctx.ledger.sketches, ctx.ledger.llm_calls)
+
+        _call(ctx, "repair", draft_id="draft-0")
+
+        assert (ctx.ledger.sketches, ctx.ledger.llm_calls) == before
+
+    def test_a_draft_that_misses_nothing_is_refused_in_words(self, ctx: ToolContext) -> None:
+        """Not a crash and not a silent success: the answer a user pressing
+        "fix it" on a piece with nothing wrong should get."""
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "repair", draft_id="draft-0")
+
+        assert invocation.error_code == "no_repair"
+        assert "nothing to repair" in invocation.result
+        assert len(ctx.session.drafts) == 1, "and nothing was recorded"
+
+    def test_a_bar_the_table_has_no_request_for_is_refused_by_name(self, ctx: ToolContext) -> None:
+        """The refusal says *nothing was tried*, rather than that everything was
+        tried and nothing worked — the distinction a reader most needs, and the
+        one this branch exists for. It names the bar and hands on the bar's own
+        hint, which is written for a maintainer and is the whole reason the table
+        is measured rather than read off the hints."""
+        _ready(ctx, self._OUT_OF_TABLE)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "repair", draft_id="draft-0")
+
+        assert invocation.error_code == "no_repair"
+        assert "step_ratio" in invocation.result
+        assert "nothing was tried" in invocation.result
+        assert "saimc/compose/motif.py" in invocation.result, "the hint, verbatim"
+
+    def test_a_bar_whose_requests_measured_no_better_is_refused_differently(
+        self, ctx: ToolContext
+    ) -> None:
+        """The other empty: requests were tried and none was kept. Same code,
+        opposite sentence, and the difference is what the attempts recorded."""
+        _ready(ctx, CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=3))
+        _drafts(ctx)
+
+        invocation = _call(ctx, "repair", draft_id="draft-0")
+
+        assert invocation.error_code == "no_repair"
+        assert "leap_recovery_ratio" in invocation.result
+        assert "were all tried and none was kept" in invocation.result
+
+    def test_the_budget_bounds_the_chain_and_says_what_is_left(self, ctx: ToolContext) -> None:
+        """A repair that cannot finish is a partial repair, not a refusal: the
+        moves it made are real and the bars it left are named. The budget is
+        what stops it, so `remaining` is the whole of the difference."""
+        _ready(ctx, self._STUBBORN)
+        ctx.budget = replace(ctx.budget, max_repairs=1)
+        _drafts(ctx)
+
+        payload = _payload(_call(ctx, "repair", draft_id="draft-0"))
+
+        assert len(payload["applied"]) == 1
+        assert "max_leap_semitones" in payload["remaining"]
+        assert payload["draft_id"] == "draft-1", "and the move that was made stands"
+
+    def test_an_unknown_draft_is_refused_the_way_every_other_tool_refuses_it(
+        self, ctx: ToolContext
+    ) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        assert _call(ctx, "repair", draft_id="draft-9").error_code == "unknown_draft"
+
+
 @pytest.fixture
 def rendered(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """A stand-in for the FluidSynth pass, writing the files it claims to.
@@ -1622,6 +1790,7 @@ class TestTheHandlersAreAllReachable:
             "MAX_CANDIDATES_PER_DRAFT",
             "MAX_DELTAS_PER_REVISION",
             "MAX_LLM_CALLS_PER_TURN",
+            "MAX_REPAIRS_PER_TURN",
             "MAX_REVISIONS_PER_LINE",
             "MAX_SKETCHES_PER_TURN",
             "TOOLS",
