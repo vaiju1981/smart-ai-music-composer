@@ -39,7 +39,7 @@ def storage(tmp_path: Path) -> JobStorage:
 def client(storage: JobStorage, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # This suite deliberately walks jobs synchronously with run_job(); do not
     # leak an RQ/Valkey dependency into tests documented as broker-free.
-    monkeypatch.setattr("saimc.jobs.api.enqueue_job", lambda _job_id: "rq:test")
+    monkeypatch.setattr("saimc.jobs.worker.enqueue_job", lambda _job_id, **_: "rq:test")
     app = create_app(jobs_root=storage.root)
     return TestClient(app)
 

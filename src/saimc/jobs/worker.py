@@ -155,6 +155,52 @@ def enqueue_job(
     return rq_job.get_id()
 
 
+class QueueUnavailable(Exception):
+    """The broker refused a job that was already persisted.
+
+    Carries the job id because the caller's next move — an HTTP status, a
+    tool refusal — has to name *which* job did not start.
+    """
+
+    def __init__(self, job_id: str, message: str) -> None:
+        super().__init__(message)
+        self.job_id = job_id
+
+
+def enqueue_or_fail(
+    job: Job, storage: JobStorage, *, valkey_url: str | None = None
+) -> str:
+    """Put `job` on the queue, or mark it failed and refuse with a reason.
+
+    The job is persisted by the caller before this runs. If the broker write
+    fails, this transitions the record to `failed` rather than leaving it in
+    `queued`: history, and any client polling the id, would otherwise wait
+    forever for a broker entry that does not exist.
+
+    The transition lives here — once — because there are two callers with
+    two different ways of reporting it, not two policies: the HTTP endpoint
+    turns `QueueUnavailable` into a 503, and the session's `finalize` tool
+    turns it into a refused tool call. Both get the same record and the same
+    reason.
+    """
+    try:
+        return enqueue_job(job.job_id, valkey_url=valkey_url)
+    except Exception as exc:
+        transition = JobStateMachine().transition(job.state, JobState.FAILED)
+        job.state = transition.state
+        job.progress = transition.progress
+        job.current_stage = transition.current_stage
+        job.error = JobError(
+            error_code="queue_unavailable",
+            message="The job broker was unavailable when this job was submitted.",
+            stage="queued",
+        )
+        storage.save(job)
+        raise QueueUnavailable(
+            job.job_id, f"job queue unavailable; job {job.job_id} was not queued"
+        ) from exc
+
+
 def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
     """RQ job function — walks a job through every stage and persists state.
 
@@ -424,7 +470,9 @@ def _redis_from_url(url: str) -> Any:
 
 __all__ = [
     "DEFAULT_QUEUE",
+    "QueueUnavailable",
     "enqueue_job",
+    "enqueue_or_fail",
     "redis_url",
     "run_job",
     "worker_entry",

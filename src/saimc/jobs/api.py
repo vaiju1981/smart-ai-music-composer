@@ -35,10 +35,9 @@ from saimc.jobs.storage import (
     DEFAULT_JOBS_DIR,
     ArtifactRecord,
     Job,
-    JobError,
     JobStorage,
 )
-from saimc.jobs.worker import DEFAULT_QUEUE, enqueue_job
+from saimc.jobs.worker import DEFAULT_QUEUE, QueueUnavailable, enqueue_or_fail
 from saimc.spec import CompositionSpec
 
 router = APIRouter()
@@ -192,27 +191,17 @@ def _local_worker_process_alive(pid: int | None) -> bool:
 def _enqueue(job: Job, storage: JobStorage) -> None:
     """Put the job on the RQ queue, surfacing broker outages as 503.
 
-    The job is persisted before enqueueing. If the broker write fails,
-    transition that record to `failed`; leaving it in `queued` would make
-    history (and any client polling the returned retry id) wait forever for
-    a broker entry that does not exist.
+    The job is persisted before enqueueing, and the outage policy — mark the
+    record `failed` rather than leave it `queued` — lives in
+    `enqueue_or_fail`, because the session's `finalize` tool has to apply the
+    same one. This is only the HTTP translation of it.
     """
     try:
-        enqueue_job(job.job_id)
-    except Exception as exc:
-        transition = _state_machine.transition(job.state, JobState.FAILED)
-        job.state = transition.state
-        job.progress = transition.progress
-        job.current_stage = transition.current_stage
-        job.error = JobError(
-            error_code="queue_unavailable",
-            message="The job broker was unavailable when this job was submitted.",
-            stage="queued",
-        )
-        storage.save(job)
+        enqueue_or_fail(job, storage)
+    except QueueUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"job queue unavailable; job {job.job_id} was not queued",
+            detail=str(exc),
         ) from exc
 
 
