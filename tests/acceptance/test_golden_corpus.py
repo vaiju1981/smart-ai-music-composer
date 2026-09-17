@@ -7,12 +7,15 @@ engine output to a value recorded earlier, which is what makes
 "byte-identical refactor" a checkable claim instead of an assertion.
 
 The corpus is the axes the engine branches on hardest — mood, duration,
-ensemble, and key — held against `tests/fixtures/golden_hashes.json`.
-Because the engine's own key choice currently collapses to one key (see
-`TestKeySelection`), that choice is not a grid axis here. Regenerate
-deliberately with `SAIMC_UPDATE_GOLDEN_HASHES=1`, and put the pieces that
-changed in the commit message: the regeneration diff is the review
-material.
+ensemble, and key — held against `tests/fixtures/golden_hashes.json`. The
+key axis names a key in every cell, because `None` is not an axis the
+corpus can hold: it is a *derived* value — the entry this seed walks to in
+the mood's pool — so a cell for it would pin one seed's arithmetic, and
+that is the weakest part of the derivation. `TestKeySelection` pins the
+derivation directly instead, and this grid holds the key arithmetic fixed
+across three named keys. Regenerate deliberately with
+`SAIMC_UPDATE_GOLDEN_HASHES=1`, and put the pieces that changed in the
+commit message: the regeneration diff is the review material.
 
 `humanization` is deliberately not an axis — it is spec-level, the engine's
 plan work does not reach it, and a wider grid is more churn to review on
@@ -31,6 +34,7 @@ import pytest
 
 from saimc.canonical import CANONICAL_FORMAT_VERSION, canonical_sha256
 from saimc.compose.engine import EngineOutput, compose
+from saimc.compose.forms import MOOD_KEY_POOLS, key_signature_from_spec_key
 from saimc.spec import (
     DURATION_SECONDS_DEFAULT,
     DURATION_SECONDS_MAX,
@@ -38,6 +42,7 @@ from saimc.spec import (
     SPEC_SCHEMA_VERSION,
     CompositionSpec,
     Mood,
+    WesternKey,
 )
 
 FIXTURE_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "golden_hashes.json"
@@ -52,11 +57,13 @@ KEYS = ("C", "Am", "G")
 """Two modes and two roots — the axes a key actually varies on.
 
 `None` (the engine's own choice) is deliberately not in the grid. It
-currently resolves to C major for every mood and seed, so as a grid value
-it would have duplicated the "C" entries three-for-one and padded the
-corpus with 27 entries measuring nothing. Its behaviour is pinned by
-`TestKeySelection` instead, where a reader can see the limitation stated
-rather than inferred from duplicate hashes.
+resolves to the entry the seed walks to in the mood's pool, so it is a
+function of a value this corpus already fixes per cell rather than an
+independent axis; every one of the 25 keys `WesternKey` admits composes
+clean, so there is no key for a cell to *reach* that a named cell does not
+already cover. `TestKeySelection` pins the derivation itself, which is
+where a reader can see what the engine picks rather than infer it from a
+hash.
 """
 
 _ENSEMBLES: dict[str, list[dict[str, str]] | None] = {
@@ -248,37 +255,76 @@ class TestGoldenHashCorpus:
 
 
 class TestKeySelection:
-    """What `key=None` does today, pinned so the day it changes is visible.
+    """What `key=None` does now: it walks the mood's pool.
 
     The engine is asked to choose a key whenever the parser leaves `key`
-    unset — which is the default — and it chooses C major every time: the
-    same key for every mood, duration, ensemble and seed. So "engine
-    chooses" names a constant rather than a choice, and a large share of
-    generated pieces are in C. It is the same shape as the percussion
-    finding that the kit was byte-identical across twenty seeds.
+    unset — which is the default — and it picks `pool[seed % len(pool)]`
+    from the mood's own pool, so consecutive seeds of a fan-out land on
+    different keys rather than on one constant. Which keys, and in what
+    order, is a taste call and is pinned as a literal in
+    `tests/unit/test_compose_forms.py`; what this class pins is that the
+    choice *is* being made, and that making it produces the same piece as
+    writing the chosen key into the spec would.
 
-    These are a regression baseline, not an endorsement. When key
-    selection becomes real they fail; the fix is to update them and
-    regenerate the corpus deliberately, not to loosen them.
+    That second claim is the one that lets the corpus get away with a
+    named key in every cell: if the unnamed path composes to exactly the
+    named path for the key it picked, then the 81 named cells hold the key
+    arithmetic and this class holds the lookup, and the two together leave
+    no part of the derivation unmeasured.
     """
 
-    def test_the_engine_chooses_c_major_for_every_seed(self) -> None:
-        chosen = set()
+    def test_the_engine_walks_the_moods_own_pool(self) -> None:
         for mood in MOODS:
-            for seed in range(64):
+            pool = MOOD_KEY_POOLS[mood.value]
+            assert len(pool) > 1, f"{mood} has one key, so nothing here is a choice"
+            for seed in range(len(pool) * 2):
                 key = compose(CompositionSpec(mood=mood, duration_seconds=60, seed=seed)).key
-                chosen.add((key.root, key.mode))
-        assert chosen == {("C", "major")}, sorted(chosen)
+                expected = key_signature_from_spec_key(WesternKey(pool[seed % len(pool)]))
+                assert (key.root, key.mode) == (expected.root, expected.mode), (mood, seed, key)
 
-    def test_an_unchosen_key_is_byte_identical_to_naming_c_major(self) -> None:
-        """Not merely in C major — the same piece.
+    def test_the_choice_is_reachable_at_every_seed_of_a_fan_out(self) -> None:
+        """The property the harness needs, stated over the seeds it uses.
 
-        The stronger claim, and the one a reader would otherwise assume
-        away when comparing two specs that differ only in this field.
+        A fan-out composes its candidates at `base + offset`, so it is the
+        first few seeds in particular that have to differ from each other;
+        a pool that only came apart at seed 30 would leave every fan-out
+        showing the user four pieces in one key.
         """
         for mood in MOODS:
-            for seed in (0, 4652, 31337):
+            chosen = {
+                compose(CompositionSpec(mood=mood, duration_seconds=60, seed=seed)).key.root
+                for seed in range(4)
+            }
+            assert len(chosen) == 4, (mood, chosen)
+
+    def test_the_moods_do_not_fall_back_to_the_same_key(self) -> None:
+        """A seedless spec takes each pool's head, and the heads differ.
+
+        Three moods that landed on C would make the pool a formality for
+        the commonest case, which is the one a caller who never thinks
+        about keys gets.
+        """
+        heads = {
+            compose(CompositionSpec(mood=mood, duration_seconds=60)).key.root for mood in MOODS
+        }
+        assert len(heads) == len(MOODS), heads
+
+    def test_an_unnamed_key_is_byte_identical_to_naming_the_key_it_picked(self) -> None:
+        """Not merely in the chosen key — the same piece.
+
+        The stronger claim, and the one a reader would otherwise assume
+        away when comparing two specs that differ only in this field. Run
+        at every seed the pool's length reaches, so it covers every entry
+        of every pool rather than whichever key one seed happens to land
+        on.
+        """
+        for mood in MOODS:
+            pool = MOOD_KEY_POOLS[mood.value]
+            for seed in range(len(pool)):
+                picked = pool[seed % len(pool)]
                 auto = compose(CompositionSpec(mood=mood, duration_seconds=60, seed=seed))
-                named = compose(CompositionSpec(mood=mood, duration_seconds=60, seed=seed, key="C"))
+                named = compose(
+                    CompositionSpec(mood=mood, duration_seconds=60, seed=seed, key=picked)
+                )
                 assert auto.notation_score.compute_hash() == named.notation_score.compute_hash()
                 assert auto.performance_plan.compute_hash() == named.performance_plan.compute_hash()

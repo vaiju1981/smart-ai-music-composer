@@ -63,11 +63,11 @@ from saimc.compose.forms import (
     apply_final_cadence,
     bar_scale_intervals,
     chord_intervals,
+    chord_root_offset,
     chord_tone_degrees,
+    chosen_key,
     get_template_for_form,
     key_root_midi,
-    key_signature_from_spec,
-    scale_pitch_offset,
     scale_walk,
     transposed_key,
 )
@@ -349,7 +349,7 @@ def compose(
     resolved = resolve_plan(spec, plan)
     knobs = resolved.arrangement_knobs()
     try:
-        key = key_signature_from_spec(spec)
+        key = chosen_key(spec.key, pool=resolved.key_pool, seed=spec.seed)
     except ValueError as exc:
         raise CompositionEngineError(
             code=EngineErrorCode.INVALID_SPEC,
@@ -914,11 +914,7 @@ def _generate_section(
         slot_offset = 0 if slot_index >= len(template.chords) - 2 else key_offset
         degree = slot.degree
         dur = slot.bars
-        root_offset = _scale_degree_to_semitones(degree, key.mode)
-        if slot.borrowed and key.mode == "major" and degree % 7 in (2, 5, 6):
-            # bIII/bVI/bVII: the borrowed roots sit a semitone below the
-            # diatonic scale degrees (Bb, not B, in C major).
-            root_offset -= 1
+        root_offset = chord_root_offset(degree, key, borrowed=slot.borrowed)
         chord_root = tonic_midi + slot_offset + root_offset
         chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
         chords.append((chord_root, chord_tones, dur))
@@ -964,7 +960,12 @@ def _generate_section(
             pinned = _octave_down(
                 tonic_midi
                 + slot_offset
-                + _scale_degree_to_semitones(slot.bass_degree, key.mode),
+                # A pinned degree belongs to the chord's own table, so a
+                # borrowed chord would pin the other mode's degree.
+                # `test_a_pinned_bass_degree_is_never_a_borrowed_chord`
+                # sweeps the tables and holds that no pin is ever borrowed —
+                # the argument is inert today and correct if that changes.
+                + chord_root_offset(slot.bass_degree, key, borrowed=slot.borrowed),
                 octaves=1,
             )
             if prev_bass is not None:
@@ -1686,15 +1687,6 @@ def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> Chor
         bars=coda_bars,
         chords=tuple(kept),
     )
-
-
-def _scale_degree_to_semitones(degree: int, mode: str) -> int:
-    """Map a 0-based scale degree to its semitone offset from the tonic.
-
-    Thin wrapper over `forms.scale_pitch_offset`, the single source of
-    truth for the diatonic scale tables.
-    """
-    return scale_pitch_offset(degree, mode)
 
 
 def _chord_intervals(

@@ -23,7 +23,7 @@ mapping.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -448,6 +448,36 @@ def chord_intervals(
     return table[degree % 7]
 
 
+def chord_root_offset(degree: int, key: KeySignature, *, borrowed: bool = False) -> int:
+    """A chord's root, in semitones above the key's tonic.
+
+    The companion to `chord_intervals`, which gives the tones *above* a
+    root this one locates. A borrowed chord is drawn from the parallel
+    mode's table, so its root is that mode's degree and not this key's:
+    the two modes disagree on exactly the three degrees the minor scale
+    flattens (2, 5 and 6), a semitone below in minor and therefore a
+    semitone above in major. Reading the root off the borrowed table is
+    the same swap `chord_intervals` makes, which is what makes the
+    invariant `bar_scale_intervals` documents an identity rather than a
+    coincidence — a bar's chord *is* the tones its own scale spells at
+    degrees 0, 2 and 4 (and 6 for a seventh).
+
+    Both directions are load-bearing. Written as an adjustment to the
+    key's own degree and applied only when the key is major, a borrowed
+    root in a minor key sat a semitone below the root of the scale the
+    line over it walks, so the melody's degree-0 tone was not the chord's
+    root and the triad was spelled off the bar's own scale. Reachable
+    through any explicitly named minor key — the extended electrifying
+    template's borrowed degree-6 slot, which the golden corpus's own A
+    minor cells already sound — and widened by the mood key pools, two of
+    whose six electrifying entries are minor.
+    """
+    mode = key.mode
+    if borrowed:
+        mode = "minor" if mode == "major" else "major"
+    return scale_pitch_offset(degree, mode)
+
+
 # Root-to-semitone mapping for major/minor keys. The key name in
 # CompositionSpec.WesternKey uses a compact form ("C", "G", "Am",
 # "F#m"); we normalize to a (root-name, mode) tuple.
@@ -470,13 +500,51 @@ _KEY_ROOTS: Mapping[str, int] = {
 }
 
 
-def key_signature_from_spec_key(spec_key: WesternKey | None) -> KeySignature:
-    """Resolve a CompositionSpec WesternKey to a KeySignature.
+# The keys a mood may be written in when the spec names none, in pool order,
+# and the pool an unlisted mood gets. **A musical judgement, stated as one.**
+# Nothing measures these: every one of the 25 keys `WesternKey` admits
+# composes clean in every mood, in every ensemble, at every duration (a
+# 225-cell sweep), so no key is the engine's to refuse and the choice is
+# taste rather than a finding. It is pinned as a literal, with a ratchet on
+# the table's shape, the way the arbiter's metric order is. Each pool varies
+# on the two axes a key varies on — the root and the mode — which is the
+# pair the golden corpus holds fixed.
+#
+# **The first entry is the key the mood falls back to**, because the engine
+# picks `pool[seed % len(pool)]` and a spec naming no seed resolves to seed
+# 0 the way the engine's other seed reads do. So the order is a decision,
+# not a formatting accident.
+MOOD_KEY_POOLS: Mapping[str, tuple[str, ...]] = {
+    # Warm and open, on the plain side of the signature: the majors a slow
+    # I-vi-IV-V idiom sits in without effort, with the two minor keys that
+    # colour a calm piece rather than darken it.
+    "calming": ("C", "F", "G", "Bb", "Am", "Dm"),
+    # The flat side, for the sparse, drone-adjacent end of the vocabulary.
+    "sleep": ("F", "Bb", "Eb", "Ab", "Dm", "Gm"),
+    # Sharp side, majors and minors alike: the keys a driving tempo and a
+    # guitar-shaped idiom live in.
+    "electrifying": ("A", "E", "D", "G", "Am", "Em"),
+}
 
-    If the spec key is None, return C major (the Phase 1 default).
+DEFAULT_KEY_POOL: tuple[str, ...] = ("C", "G", "F", "D", "Em", "Am")
+"""The pool an unlisted mood gets: the commonest keys, majors leading."""
+
+
+def key_pool_for(mood: str) -> tuple[str, ...]:
+    """The keys this mood may be written in, when the spec names none."""
+    return MOOD_KEY_POOLS.get(mood, DEFAULT_KEY_POOL)
+
+
+def key_signature_from_spec_key(spec_key: WesternKey) -> KeySignature:
+    """Resolve the key a spec names to a KeySignature.
+
+    The parameter is not optional, and that is the point of it: an unset
+    key is not this function's to answer. It used to return C major for
+    `None` — which is exactly the constant the engine's "engine chooses"
+    used to be — and `chosen_key` below is the path that makes that choice
+    now. Narrowing the type rather than keeping a `None` branch leaves no
+    call site that can quietly reinstate it.
     """
-    if spec_key is None:
-        return KeySignature(root="C", mode="major")
     value = spec_key.value
     if value.endswith("m"):
         root = value[:-1]
@@ -490,14 +558,32 @@ def key_signature_from_spec_key(spec_key: WesternKey | None) -> KeySignature:
     return KeySignature(root=root, mode=mode_lit)  # type: ignore[arg-type]
 
 
-def key_signature_from_spec(spec) -> KeySignature:  # type: ignore[no-untyped-def]
-    """Resolve a CompositionSpec's key to a KeySignature.
+def chosen_key(
+    spec_key: WesternKey | None, *, pool: Sequence[str], seed: int | None
+) -> KeySignature:
+    """The key a piece is written in: the spec's, or the seed's pick.
 
-    Convenience wrapper for `key_signature_from_spec_key` that takes
-    the whole spec. Imported only in the engine; the type is left
-    loose so this module doesn't need to import CompositionSpec.
+    A spec that names a key gets it, and the pool is dead for that piece. A
+    spec that does not gets `pool[seed % len(pool)]` — so varying the seed
+    *walks* the pool rather than rolling against it, consecutive seeds of a
+    fan-out land on different keys, and a caller that names no seed (which
+    resolves to seed 0, as the engine's other seed reads do) gets the pool's
+    first entry, which each pool declares as the mood's fallback.
+
+    The pool arrives as an argument rather than being read from
+    `MOOD_KEY_POOLS` here, because the plan is materialized: a stored piece
+    has to replay against the pool it was written under and not against this
+    build's table. `key_pool_for` is how the *default* plan finds one.
     """
-    return key_signature_from_spec_key(spec.key)
+    if spec_key is not None:
+        return key_signature_from_spec_key(spec_key)
+    if not pool:
+        # The plan refuses an empty pool, so an engine call cannot reach
+        # this; a direct call can, and a bare ZeroDivisionError is not a
+        # named refusal. Same rule, and the same shape, as an empty bass
+        # vocabulary.
+        raise ValueError("a key pool must name at least one key")
+    return key_signature_from_spec_key(WesternKey(pool[(seed or 0) % len(pool)]))
 
 
 def key_root_midi(key: KeySignature) -> int:
@@ -698,8 +784,10 @@ __all__ = [
     "CADENCE_SEVENTH",
     "DEFAULT_CADENCE_DEGREE",
     "DEFAULT_CADENCE_SEVENTH",
+    "DEFAULT_KEY_POOL",
     "LEAP_MIN_SEMITONES",
     "MODULATION_OFFSET",
+    "MOOD_KEY_POOLS",
     "MOOD_PROFILES",
     "PHRASE_BARS",
     "PHRASE_SIZES",
@@ -713,12 +801,15 @@ __all__ = [
     "bar_scale_intervals",
     "cadence_degree_for",
     "cadence_seventh_for",
+    "chord_intervals",
+    "chord_root_offset",
     "chord_tone_degrees",
+    "chosen_key",
     "get_mood_profile",
     "get_template_for_form",
+    "key_pool_for",
     "key_root_midi",
     "key_scale_pcs",
-    "key_signature_from_spec",
     "key_signature_from_spec_key",
     "scale_intervals",
     "scale_pitch_offset",

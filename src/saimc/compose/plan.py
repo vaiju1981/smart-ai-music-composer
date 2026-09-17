@@ -65,6 +65,7 @@ from saimc.compose.forms import (
     PHRASE_SIZES,
     cadence_degree_for,
     cadence_seventh_for,
+    key_pool_for,
 )
 from saimc.compose.motif import (
     BASS_FIGURES,
@@ -102,9 +103,9 @@ from saimc.compose.voices import (
     HarmonyVoices,
 )
 from saimc.instruments import LINE_BAND_SEMITONES
-from saimc.spec import CompositionSpec
+from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 2
+PLAN_SCHEMA_VERSION: Final[int] = 3
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -173,6 +174,28 @@ def _weight_pairs(name: str, pairs: tuple[tuple[str, float], ...]) -> None:
         seen.add(key)
 
 
+_KEY_NAMES: Final[frozenset[str]] = frozenset(key.value for key in WesternKey)
+"""Every key name a pool may contain, read off the type rather than listed.
+
+A pool names keys as strings so the plan document stays flat, which means
+the document can carry a name `WesternKey` does not admit — and the
+engine would then refuse it as an unknown root, at compose time, in
+whatever mood the piece happened to be in. Derived from the enum rather
+than written out, so widening the key vocabulary cannot leave this list
+behind; a second literal would be a coverage hole per new key."""
+
+
+def _key_pool(pool: tuple[str, ...]) -> None:
+    """Validate a key pool: non-empty, no repeats, every name a real key."""
+    _require(bool(pool), "key_pool must name at least one key")
+    _require(
+        len(set(pool)) == len(pool),
+        f"key_pool names a key twice, so the seed walks it unevenly ({', '.join(pool)})",
+    )
+    unknown = [name for name in pool if name not in _KEY_NAMES]
+    _require(not unknown, f"key_pool names keys that are not keys: {unknown}")
+
+
 @dataclass(frozen=True)
 class CompositionPlan:
     """A complete, materialized set of the engine's musical decisions.
@@ -230,6 +253,31 @@ class CompositionPlan:
     """
 
     # --- Harmony --------------------------------------------------------
+    key_pool: tuple[str, ...]
+    """The keys this piece may be written in, when the spec names none.
+
+    A spec that names a key gets it and this is dead. A spec that does not
+    used to get C major, at every mood, duration, ensemble and seed — the
+    parser leaves the key unset by default, so "engine chooses" named a
+    constant, and a large share of generated pieces were in C. Measured
+    over 64 seeds of each of the three moods: one answer.
+
+    **The plan carries the pool and not the key**, because the plan is
+    seed-independent by construction — the arbiter's sixth element exists
+    only because two candidates of one fan-out share a plan hash — so a
+    chosen key stored here would put the seed back into the plan and make
+    that element cover a case nothing reaches. The engine picks
+    `pool[seed % len(pool)]` at compose time instead, which is also what
+    makes a fan-out's consecutive seeds land on different keys rather than
+    rolling against the same one.
+
+    Each mood's pool is a taste call, not a finding: a 225-cell sweep
+    (every key `WesternKey` admits, against three moods and three
+    duration, ensemble and seed points) found every one of them composes
+    clean, so no key is this engine's to refuse. The pools themselves live
+    in `forms.py` beside the key arithmetic, and the plan reads one per
+    mood through `key_pool_for` the way it reads a cadence.
+    """
     bass_figures: tuple[BassFigure, ...]
     """The mood's bass vocabulary, most characteristic figure first. A
     figure belongs to a chord slot: the left hand states one for as long
@@ -403,6 +451,7 @@ class CompositionPlan:
             f"not be its final bar, so it must sit in (0, 1); got {self.apex_position}",
         )
 
+        _key_pool(self.key_pool)
         _require(bool(self.bass_figures), "bass_figures must carry at least one figure")
         for figure in self.bass_figures:
             _require(bool(figure), "a bass figure must carry at least one note")
@@ -550,6 +599,7 @@ class CompositionPlan:
             "tie_probability": self.tie_probability,
             "apex_position": self.apex_position,
             "line_band_semitones": self.line_band_semitones,
+            "key_pool": list(self.key_pool),
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
             "bass_root_motion": self.bass_root_motion,
             "cadence_degree": self.cadence_degree,
@@ -625,6 +675,7 @@ class CompositionPlan:
             tie_probability=payload["tie_probability"],
             apex_position=payload["apex_position"],
             line_band_semitones=payload["line_band_semitones"],
+            key_pool=tuple(payload["key_pool"]),
             bass_figures=tuple(
                 tuple(tuple(note) for note in figure) for figure in payload["bass_figures"]
             ),
@@ -778,6 +829,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         tie_probability=TIE_PROBABILITY.get(mood, DEFAULT_TIE_PROBABILITY),
         apex_position=DEFAULT_APEX_POSITION,
         line_band_semitones=LINE_BAND_SEMITONES,
+        key_pool=key_pool_for(mood),
         bass_figures=BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES),
         # The first plan value that is not a description of the engine as
         # it behaved before the plan existed. Every other field here was

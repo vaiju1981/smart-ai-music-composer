@@ -5,17 +5,23 @@ from __future__ import annotations
 import pytest
 
 from saimc.compose.forms import (
+    DEFAULT_KEY_POOL,
     LEAP_MIN_SEMITONES,
+    MOOD_KEY_POOLS,
     MOOD_PROFILES,
     PHRASE_SIZES,
     STEP_MAX_SEMITONES,
     TEMPO_RANGE_BPM,
     ChordSlot,
     ChordTemplate,
+    apply_final_cadence,
     bar_scale_intervals,
+    chord_root_offset,
     chord_tone_degrees,
+    chosen_key,
     get_mood_profile,
     get_template_for_form,
+    key_pool_for,
     key_root_midi,
     key_scale_pcs,
     key_signature_from_spec_key,
@@ -45,6 +51,72 @@ class TestChordTemplate:
         # section's chord map.
         with pytest.raises(ValueError, match="sum to 6"):
             ChordTemplate(name="drift", bars=8, chords=(ChordSlot(0, 2), ChordSlot(5, 4)))
+
+
+class TestTheTablesTheBassWalkIsWrittenAgainst:
+    """What the tables admit, swept rather than read.
+
+    Two claims about the chord tables are what make two lines in
+    `_generate_bass` what they are, and neither can be checked by composing a
+    piece: a pinned degree is never borrowed, and the two modes' tables are
+    the ones `chord_root_offset` swaps between. A claim about what the tables
+    cannot reach needs a sweep of the tables, so both are swept here.
+    """
+
+    def _templates(self) -> list[ChordTemplate]:
+        templates = [
+            template for profile in MOOD_PROFILES.values() for template in profile.templates
+        ]
+        assert templates, "the sweep found no templates"
+        return templates
+
+    def test_a_pinned_bass_degree_is_never_a_borrowed_chord(self) -> None:
+        """The premise `_generate_bass`'s pinned arm rests on.
+
+        That arm reads `chord_root_offset(degree, key, borrowed=slot.borrowed)`,
+        because a pinned degree belongs to the chord's own table — so a
+        *borrowed* chord would pin the other mode's degree. Nothing reaches it:
+        every pin in the tables is a cadence pin, built unborrowed by
+        `apply_final_cadence`, and no template puts a pin on a borrowed slot.
+        So the argument is correct by construction and inert on every input the
+        tables admit today, and this case is what keeps that honest — a
+        template that pins a borrowed bass degree fails here, where the wrong
+        root would otherwise arrive without a symptom. Both halves are
+        asserted: the pins exist at all (or the arm has no site to be inert
+        at), and none of them is borrowed.
+        """
+        templates = self._templates()
+        pinned = [
+            (template.name, slot)
+            for template in templates
+            for slot in apply_final_cadence(
+                template, cadence_degree=4, seventh=True
+            ).chords
+            if slot.bass_degree is not None
+        ]
+        assert pinned, "nothing pins a bass degree, so the arm this guards is dead"
+        borrowed = [entry for entry in pinned if entry[1].borrowed]
+        assert borrowed == [], borrowed
+
+    def test_the_two_modes_disagree_on_exactly_the_three_flattened_degrees(self) -> None:
+        """The whole of what `chord_root_offset`'s swap can move.
+
+        A borrowed chord's root reads off the parallel mode's table, so the two
+        tables agreeing on a degree means the swap is invisible there. Degrees
+        2, 5 and 6 are the ones the minor scale flattens, and every other degree
+        in 0..6 must agree — this is why the borrowed-root defect was reachable
+        at all (a major key's borrowed slot could only ever sit on one of the
+        three) and why the fix had to be symmetric rather than an adjustment
+        applied in one direction.
+        """
+        major = KeySignature(root="C", mode="major")
+        minor = KeySignature(root="C", mode="minor")
+        disagree = {
+            degree
+            for degree in range(7)
+            if chord_root_offset(degree, major) != chord_root_offset(degree, minor)
+        }
+        assert disagree == {2, 5, 6}
 
 
 class TestGetTemplateForForm:
@@ -81,11 +153,6 @@ class TestTempoRanges:
 
 
 class TestKeySignatureFromSpecKey:
-    def test_none_is_c_major(self) -> None:
-        k = key_signature_from_spec_key(None)
-        assert k.root == "C"
-        assert k.mode == "major"
-
     def test_major_key(self) -> None:
         k = key_signature_from_spec_key(WesternKey.G_MAJOR)
         assert k.root == "G"
@@ -95,6 +162,111 @@ class TestKeySignatureFromSpecKey:
         k = key_signature_from_spec_key(WesternKey.A_MINOR)
         assert k.root == "A"
         assert k.mode == "minor"
+
+    def test_every_key_the_type_admits_resolves(self) -> None:
+        """A key the vocabulary names but this cannot resolve is unreachable.
+
+        Not a style point: `WesternKey` is what a spec, a plan document and
+        a delta all carry, so a value in it that raises here would be a
+        request the type accepts and the engine refuses. The count is the
+        vocabulary's own distinct roots, derived rather than listed.
+        """
+        resolved = {name: key_signature_from_spec_key(name) for name in WesternKey}
+        assert all(k.mode in ("major", "minor") for k in resolved.values())
+        assert {k.root for k in resolved.values()} == {
+            name.value[:-1] if name.value.endswith("m") else name.value for name in WesternKey
+        }
+        assert all(
+            (name.value.endswith("m")) == (k.mode == "minor") for name, k in resolved.items()
+        )
+
+
+class TestKeyPools:
+    """The table a mood's default key is drawn from.
+
+    A musical judgement rather than a finding — a 225-cell sweep found every
+    key `WesternKey` admits composes clean at every mood, duration, ensemble
+    and seed — so these pin the table's *shape* and its literal contents,
+    the way the arbiter's metric order is pinned. Nothing here says the
+    pools are the right taste; it says the taste is declared.
+    """
+
+    def test_every_mood_has_a_pool_and_no_others_do(self) -> None:
+        assert set(MOOD_KEY_POOLS) == set(MOOD_PROFILES)
+
+    def test_every_pool_names_distinct_real_keys(self) -> None:
+        for mood, pool in (*MOOD_KEY_POOLS.items(), ("<default>", DEFAULT_KEY_POOL)):
+            assert pool, mood
+            assert len(set(pool)) == len(pool), (mood, pool)
+            unknown = [name for name in pool if name not in {k.value for k in WesternKey}]
+            assert not unknown, (mood, unknown)
+
+    def test_the_pools_are_the_taste_they_are_written_as(self) -> None:
+        """The literal, so re-ordering or re-picking is a declared edit.
+
+        The *order* is load-bearing: the engine picks `pool[seed % len]`, so
+        the first entry is the key a seedless spec falls back to, and the
+        test below reads that as the contract rather than as an accident.
+        """
+        assert MOOD_KEY_POOLS == {
+            "calming": ("C", "F", "G", "Bb", "Am", "Dm"),
+            "sleep": ("F", "Bb", "Eb", "Ab", "Dm", "Gm"),
+            "electrifying": ("A", "E", "D", "G", "Am", "Em"),
+        }
+        assert DEFAULT_KEY_POOL == ("C", "G", "F", "D", "Em", "Am")
+
+    def test_each_pool_varies_the_root_and_the_mode(self) -> None:
+        """The two axes a key varies on, and the pair A1's corpus holds fixed."""
+        for mood, pool in (*MOOD_KEY_POOLS.items(), ("<default>", DEFAULT_KEY_POOL)):
+            modes = {name.endswith("m") for name in pool}
+            assert modes == {False, True}, (mood, pool)
+            assert len({name.removesuffix("m") for name in pool}) >= 4, (mood, pool)
+
+    def test_an_unlisted_mood_gets_the_default_pool(self) -> None:
+        assert key_pool_for("sleepy") is DEFAULT_KEY_POOL
+        assert key_pool_for("calming") == MOOD_KEY_POOLS["calming"]
+
+
+class TestChosenKey:
+    """Which key a piece is written in: the spec's, or the seed's pick."""
+
+    _POOL = ("C", "G", "Am")
+
+    def test_a_named_key_is_the_key_and_the_pool_is_dead(self) -> None:
+        for seed in (0, 1, 2, 3, 17):
+            k = chosen_key(WesternKey.E_FLAT_MAJOR, pool=self._POOL, seed=seed)
+            assert (k.root, k.mode) == ("Eb", "major")
+
+    def test_an_unnamed_key_walks_the_pool_in_order(self) -> None:
+        """The pick is `pool[seed % len(pool)]`, so consecutive seeds differ."""
+        picked = [
+            chosen_key(None, pool=self._POOL, seed=seed).root for seed in range(len(self._POOL) * 2)
+        ]
+        assert picked == ["C", "G", "A", "C", "G", "A"]
+
+    def test_a_spec_naming_no_key_and_no_seed_gets_the_pool_head(self) -> None:
+        """Which is how each table declares its mood's fallback.
+
+        A seedless spec resolves to seed 0 here as it does at the engine's
+        other seed reads, so "the mood's fallback key" and "the pool's first
+        entry" are the same statement.
+        """
+        k = chosen_key(None, pool=self._POOL, seed=None)
+        assert k.root == self._POOL[0]
+
+    def test_a_minor_pool_entry_resolves_to_a_minor_key(self) -> None:
+        k = chosen_key(None, pool=self._POOL, seed=2)
+        assert (k.root, k.mode) == ("A", "minor")
+
+    def test_an_empty_pool_is_refused_rather_than_dividing_by_zero(self) -> None:
+        # The plan refuses an empty pool, so the engine cannot reach this; a
+        # direct call can, and a bare ZeroDivisionError is not a named refusal.
+        with pytest.raises(ValueError, match="at least one key"):
+            chosen_key(None, pool=(), seed=0)
+
+    def test_a_pool_naming_a_non_key_is_refused_by_name(self) -> None:
+        with pytest.raises(ValueError, match="H"):
+            chosen_key(None, pool=("C", "H"), seed=1)
 
 
 class TestKeyRootMidi:

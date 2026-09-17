@@ -162,6 +162,11 @@ _MUTATIONS: dict[str, Any] = {
     "harmony_stab_velocity": 62,
     "harmony_melody_clearance": 4,
     "line_band_semitones": 22,
+    # The base is calming, whose pool is six keys; this one is a different
+    # pool of a different length, so it moves the field and not only the
+    # order — the seed walks it, and a same-length swap would leave the
+    # hash moved by a value the engine still reads the same way.
+    "key_pool": ("D", "Em"),
     "drum_style_name": "funk",
     "rotation_cycle": (0, 1, 0),
     "percussion_velocity_scale": 0.8,
@@ -545,6 +550,13 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ),
             ({"bass_figures": ()}, "at least one figure"),
             ({"bass_figures": ((),)}, "at least one note"),
+            # The pool is a sequence the seed walks, so each of the three
+            # shapes it cannot be walked in is its own refusal: nothing to
+            # land on, the same key twice (which makes the walk uneven), and
+            # a name that is not a key at all.
+            ({"key_pool": ()}, "at least one key"),
+            ({"key_pool": ("C", "C")}, "twice"),
+            ({"key_pool": ("H",)}, "not keys"),
             ({"cadence_degree": 9}, "out of the scale"),
             ({"modulation_offset": 13}, "cannot exceed an octave"),
             ({"modulation_offset": -13}, "cannot exceed an octave"),

@@ -29,6 +29,15 @@ weight.
 
 The pieces are 30 to 120 seconds long and composed for real; the loop is
 arithmetic over the engine, so nothing here is faked.
+
+Every spec below names its key, and that is what keeps the constants in its
+docstring the measurement it claims to be. Each piece was found by sweeping a
+corpus, so each is a fact about one run; a spec that left `key` unset used to
+compose in C major unconditionally and now walks the mood's own pool, which
+would quietly re-point every fixture here at different music while the prose
+went on describing the old. The key is pinned for the reason the seed already
+is: this file measures the repair loop, so the pieces it measures have to stay
+the pieces it measured.
 """
 
 from __future__ import annotations
@@ -49,13 +58,13 @@ from saimc.session.deltas import (
 from saimc.session.repairs import _REPAIRS, Attempt, Repair, _Trial, _try, repair_chain
 from saimc.spec import CompositionSpec, Mood
 
-_CALM = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=0)
+_CALM = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=0, key="C")
 """Clean before anything runs — found by scanning a corpus rather than by luck."""
-_ELECTRIC_30_0 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0)
+_ELECTRIC_30_0 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0, key="C")
 """The bed's two candidates tie here, both reaching a clean piece."""
-_ELECTRIC_120_1 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=1)
+_ELECTRIC_120_1 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=1, key="C")
 """Three bars in report order, and clearing the tune's exposes the bed's."""
-_ELECTRIC_90_17 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=17)
+_ELECTRIC_90_17 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=17, key="C")
 """The engine refuses the leap bar's first request here.
 
 Found by sweeping the vocabulary's magnitudes over a grid rather than by
@@ -65,7 +74,7 @@ and a fixture that stopped raising would leave the trial above passing as
 `kept`. Band 5 still refuses that piece, which is how the sweep says the
 outcome is alive rather than that the arm is dead.
 """
-_ELECTRIC_30_16 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=16)
+_ELECTRIC_30_16 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=16, key="C")
 """The two candidates pull strictly opposite ways, which the old one no longer did.
 
 Narrowing the band moves the order from `(0, 3, 1.385, 9)` to
@@ -74,9 +83,9 @@ Narrowing the band moves the order from `(0, 3, 1.385, 9)` to
 specs found eight such pieces and this is the shortest, so the case costs
 a 30-second compose rather than a 300-second one.
 """
-_ELECTRIC_30_2 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=2)
+_ELECTRIC_30_2 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=2, key="C")
 """The piece on which the report's order and the arbiter's disagree."""
-_SLEEP_30_3 = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=3)
+_SLEEP_30_3 = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=3, key="C")
 """The refusal: both of the leap-recovery bar's requests measure no better."""
 _CLEARANCE = SetHarmonyClearance(semitones=24)
 """A prefix, because production folds the draft's own chain as one.

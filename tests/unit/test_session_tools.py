@@ -627,7 +627,16 @@ class TestCritique:
         """A revision's plan is not the one its own spec would derive, so a
         localisation that re-derived the default would recompose a different
         piece — the failure `_recompose` exists to catch, and a revised draft is
-        the only draft that can reach it."""
+        the only draft that can reach it.
+
+        The clearance is the widest this piece's ratchet accepts, and that is
+        why it is ten rather than a rounder number: a revision that measures
+        worse than its parent is refused with a reason (D1's ratchet), so a
+        fixture that asked for more would be asserting about a draft the tool
+        declined to make. What the case is for is that the *honoured* revision is
+        placed against its own plan, which the plan-hash premise below already
+        asserts.
+        """
         _ready(ctx, _ELECTRIFYING)
         _drafts(ctx)
         revised = _payload(
@@ -635,7 +644,7 @@ class TestCritique:
                 ctx,
                 "revise",
                 draft_id="draft-0",
-                deltas=[{"knob": "SetHarmonyClearance", "semitones": 12}],
+                deltas=[{"knob": "SetHarmonyClearance", "semitones": 10}],
             )
         )
         draft = ctx.session.draft(revised["draft_id"])
@@ -1413,8 +1422,24 @@ class TestRepair:
 
     _BREACHING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
     """Two bars missed, one kept request, and it is the same one every run."""
-    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=3)
-    """A piece one move cannot finish, which is what the bound needs."""
+    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=180, seed=4)
+    """A piece one move cannot finish, which is what the bound needs.
+
+    Measured over three moods, four durations and forty seeds at
+    `max_repairs=1`: this one and its counterpart at seed 27 are the two pieces
+    a single move leaves with `max_leap_semitones`, `texture_hierarchy` and
+    `harmony_pad_coverage` all still missed. The three-bar remainder is what the
+    case reads — one move applied, three bars named in `remaining` — and it is
+    three rather than one because the leap bar's own requests are partly
+    repairable at best (see `repairs.py`'s table for the reading), which is the
+    reason a bound has anything to report here at all.
+
+    The older fixture was a 30-second piece at seed 3, and the key pool moved it
+    onto a key whose leap bar one move does clear — so this one is re-measured
+    rather than re-keyed, because the *property* the case asserts is what the
+    sweep was for, and pinning a key to preserve a seed's old behaviour would
+    leave the file measuring a path the product no longer takes.
+    """
     _OUT_OF_TABLE = CompositionSpec.model_validate(
         {
             "mood": Mood.SLEEP,
@@ -1531,8 +1556,16 @@ class TestRepair:
         self, ctx: ToolContext
     ) -> None:
         """The other empty: requests were tried and none was kept. Same code,
-        opposite sentence, and the difference is what the attempts recorded."""
-        _ready(ctx, CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=3))
+        opposite sentence, and the difference is what the attempts recorded.
+
+        The piece is the one a sweep of three moods, four durations and forty
+        seeds finds with this property at sixty seconds — the key pool moved
+        every mood's pieces onto their own keys and took the older fixture's
+        leap bar from unrepairable to repairable with it, so the case is
+        re-measured rather than re-pinned. What it asserts is the sentence, and
+        the sentence names the bar the attempts aimed at.
+        """
+        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=28))
         _drafts(ctx)
 
         invocation = _call(ctx, "repair", draft_id="draft-0")
@@ -1544,7 +1577,13 @@ class TestRepair:
     def test_the_budget_bounds_the_chain_and_says_what_is_left(self, ctx: ToolContext) -> None:
         """A repair that cannot finish is a partial repair, not a refusal: the
         moves it made are real and the bars it left are named. The budget is
-        what stops it, so `remaining` is the whole of the difference."""
+        what stops it, so `remaining` is the whole of the difference.
+
+        `_STUBBORN`'s docstring is where the piece is accounted for; this case
+        reads its `remaining` because it is the one place the two halves of a
+        bounded repair — what was applied and what was not — are visible
+        together.
+        """
         _ready(ctx, self._STUBBORN)
         ctx.budget = replace(ctx.budget, max_repairs=1)
         _drafts(ctx)

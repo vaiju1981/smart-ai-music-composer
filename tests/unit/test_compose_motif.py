@@ -569,7 +569,25 @@ class TestMotifMelody:
                 assert report.distinct_durations >= 3, (mood, seed, report)
 
         def mean(metric: str) -> float:
-            return sum(getattr(report, metric) for report in reports) / len(reports)
+            """The metric's mean over the pieces it is defined for.
+
+            `leap_recovery_ratio` is `None` on a line with no leap in it —
+            "nothing to recover from" — which is the metric declining to
+            give a reading rather than a reading of zero, so those pieces
+            leave the mean instead of counting as a line that recovered
+            nothing. Two of the ninety-nine are that case, both `sleep`
+            seeds that landed on F and Eb under the mood's own key pool;
+            the mean is over the other ninety-seven. The premise is
+            asserted rather than assumed: a metric undefined everywhere
+            would make this a mean of nothing.
+            """
+            defined = [
+                reading
+                for reading in (getattr(report, metric) for report in reports)
+                if reading is not None
+            ]
+            assert defined, f"no piece defines {metric}, so its mean says nothing"
+            return sum(defined) / len(defined)
 
         assert mean("leap_recovery_ratio") >= 0.60
         assert mean("max_leap_semitones") <= 12

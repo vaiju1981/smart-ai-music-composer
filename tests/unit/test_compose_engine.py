@@ -41,7 +41,6 @@ from saimc.compose.engine import (
     _opening_step,
     _place_bar,
     _realization_stream,
-    _scale_degree_to_semitones,
     _settle_harmony_register,
     _snap_to_chord,
     _start_offsets,
@@ -54,6 +53,7 @@ from saimc.compose.forms import (
     STEP_MAX_SEMITONES,
     ChordSlot,
     bar_diatonic_pcs,
+    chord_root_offset,
     key_root_midi,
     scale_intervals,
     transposed_key,
@@ -502,6 +502,14 @@ class TestChordToneHarmony:
         root, and the chord's intervals rise from there onto the oracle's
         own tones.
 
+        Both borrowed directions are covered, and they are the half that
+        was missing: with only the diatonic case asserted, the engine read
+        a borrowed root off the key's own table and hand-adjusted the
+        three degrees the modes disagree on, and that adjustment was
+        written for a major key alone. In a minor key the borrowed root
+        then sat a semitone below the root the oracle spells, which is the
+        one place the two could differ without this test noticing.
+
         Without it, a drift in the shared scale table would show up as the
         chord-tone tests failing on notes the engine got right.
         """
@@ -511,16 +519,22 @@ class TestChordToneHarmony:
         ):
             for degree in range(7):
                 for seventh in (False, True):
-                    slot = ChordSlot(degree=degree, bars=1, seventh=seventh)
-                    tones = _chord_offsets(slot, mode)
-                    root = _scale_degree_to_semitones(degree, mode)
-                    assert root == tones[0], (mode, degree, seventh)
-                    intervals = _chord_intervals(degree, key, seventh=seventh)
-                    assert tuple(root + interval for interval in intervals) == tones, (
-                        mode,
-                        degree,
-                        seventh,
-                    )
+                    for borrowed in (False, True):
+                        slot = ChordSlot(
+                            degree=degree, bars=1, seventh=seventh, borrowed=borrowed
+                        )
+                        tones = _chord_offsets(slot, mode)
+                        root = chord_root_offset(degree, key, borrowed=borrowed)
+                        assert root == tones[0], (mode, degree, seventh, borrowed)
+                        intervals = _chord_intervals(
+                            degree, key, seventh=seventh, borrowed=borrowed
+                        )
+                        assert tuple(root + interval for interval in intervals) == tones, (
+                            mode,
+                            degree,
+                            seventh,
+                            borrowed,
+                        )
 
     def test_seventh_chords_reach_the_score(self) -> None:
         """Templates with 7th slots play their 4th tone, and it is a
@@ -582,8 +596,15 @@ class TestChordToneHarmony:
         the old assertion stays (via the licence, which admits no
         non-chord tone on a downbeat), and the stepwise tones are checked
         against the licence instead of being forbidden.
+
+        The key is named because this is a claim about one direction of
+        the borrowed swap. A spec that leaves `key` unset now walks the
+        mood's pool, and electrifying's pool reaches a minor key at four
+        seeds in six — under which degree 6 borrows the other way and this
+        test would be asserting a chord the template never wrote. The
+        minor direction has its own case below.
         """
-        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5))
+        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5, key="C"))
         assert out.key.mode == "major"
         tonic = key_root_midi(out.key)
         bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
@@ -639,6 +660,38 @@ class TestChordToneHarmony:
                         f"{note.tick} is neither a tone of the borrowed bVII "
                         f"{sorted(sounding)} nor a licensed stepwise tone"
                     )
+
+    def test_a_minor_key_borrows_the_other_way_round(self) -> None:
+        """The mirror of the case above, and the one that used to be wrong.
+
+        A borrowed slot draws a chord from the parallel mode's table, so
+        in a minor key the chord comes from *major* — and its root is
+        major's degree, not this key's. The root used to be taken from the
+        key's own table and adjusted by hand for a major key alone, which
+        left every borrowed root in a minor key a semitone below the root
+        of the scale the line over it walks. The bar still sounded a
+        chord; it was simply not the chord its own scale spelled, and the
+        melody's degree-0 tone was not its root.
+
+        Degree 6 of the extended electrifying template is the reachable
+        case. In A minor it has to sound C#-E#-G#-alike — the major
+        table's half-diminished degree 6 — and not the diatonic A minor
+        VII (G-B-D) the degree alone would spell.
+        """
+        out = compose(_spec(Mood.ELECTRIFYING, duration=300, seed=5, key="Am"))
+        assert out.key.mode == "minor"
+        tonic = key_root_midi(out.key)
+        bars = _bar_degrees_and_offsets(out, Mood.ELECTRIFYING.value)
+        borrowed_bars = [
+            b for b, (_degree, offsets, _key_offset) in enumerate(bars) if offsets == (11, 14, 17)
+        ]
+        assert borrowed_bars, "expected the borrowed degree-6 slot to sound"
+        for bar in borrowed_bars:
+            sounding = {(tonic + offset) % 12 for offset in (11, 14, 17)}
+            assert set(out.chord_bars[bar]) == sounding, (
+                f"bar {bar}: the score sounds {sorted(out.chord_bars[bar])}, "
+                f"not the borrowed degree-6 triad {sorted(sounding)}"
+            )
 
     def test_cadence_bass_is_root_position(self) -> None:
         """The cadence's pinned bass_degree lands the final tonic's root
@@ -825,13 +878,21 @@ class TestSharpMinorKeys:
 
     def test_unknown_key_surfaces_as_invalid_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A key that cannot resolve raises the typed engine error, not
-        a raw ValueError escaping compose()."""
+        a raw ValueError escaping compose().
+
+        The knob under test is `chosen_key`, which is where the spec's key
+        is resolved whether it was named or walked: the named path is the
+        one that can raise, and the walked path reads the same table, so
+        one seam covers both. `key_signature_from_spec` is what
+        `chosen_key` calls, and patching it there would leave the walk's
+        own lookup live.
+        """
         import saimc.compose.engine as engine_mod
 
-        def boom(spec: object) -> KeySignature:
+        def boom(*args: object, **kwargs: object) -> KeySignature:
             raise ValueError("Unknown key root: 'X'")
 
-        monkeypatch.setattr(engine_mod, "key_signature_from_spec", boom)
+        monkeypatch.setattr(engine_mod, "chosen_key", boom)
         with pytest.raises(CompositionEngineError) as exc_info:
             compose(_spec(Mood.CALMING, duration=60))
         assert exc_info.value.code == EngineErrorCode.INVALID_SPEC
@@ -2662,9 +2723,25 @@ class TestHarmonyVoice:
         in the same order: the split moves the kit and only the kit. This
         pin is the record of the new music; `TestRealizationStreams` is what
         holds the decoupling itself.
+
+        The key is named, and that is what keeps the six pins above
+        meaning what they say. They were earned at C major, and the claim
+        they make is that the *instrument table* moved the melody's
+        register and nothing else — so every voice but the melody has to
+        read byte-identical to the layout that predates it. A spec that
+        leaves `key` unset now walks the mood's pool, and electrifying's
+        head is A, under which the bass moves too: the pin would still
+        pass a re-basing, but the comparison it is a comparison *of* would
+        be gone. So the key is pinned here the way the seed already is,
+        for the same reason — this file measures one knob at a time.
         """
         out = compose(
-            _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
+            _spec(
+                Mood.ELECTRIFYING,
+                duration=30,
+                instrumentation="drum_set",
+                key="C",
+            )
         )
         plan = out.performance_plan
         pinned = {

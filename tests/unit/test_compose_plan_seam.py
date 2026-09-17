@@ -315,6 +315,13 @@ _HARMONY_KNOBS: dict[str, Any] = {
     # are legal (the plan refuses only beyond an octave), and the piece
     # ends in a different new key.
     "modulation_offset": 3,
+    # Another pool for the seed to walk. `_SPEC` names no key, which is the
+    # only case this field is read in, and it is read once — `chosen_key`
+    # picks `pool[seed % len(pool)]` — so a pool of a different length
+    # moves the piece to a different root *and* mode and the change is
+    # attributable to the field alone. The base is calming's six keys and
+    # seed 11 lands on Dm; this two-key pool lands the same seed on Em.
+    "key_pool": ("G", "Em"),
 }
 
 _HARMONY_FIELDS = frozenset(
@@ -323,6 +330,7 @@ _HARMONY_FIELDS = frozenset(
         "bass_root_motion",
         "cadence_degree",
         "cadence_seventh",
+        "key_pool",
         "modulation_offset",
     }
 )

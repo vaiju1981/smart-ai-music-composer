@@ -170,7 +170,15 @@ def _pair_for(element: str) -> tuple[Draft, Draft]:
             _draft(1, quality=_quality(max_leap_semitones=24)),
         )
     if element == "plan_hash":
-        return _draft(1), _draft_of(_ELECTRIFYING, "draft-1b")
+        # Which of the two reads first is a property of their hashes, and a
+        # hash moves whenever any plan field moves — so the pair is *ordered*
+        # by the keys rather than posed, the way `_rehash_above` searches for
+        # its child rather than choosing one. What the case is for is that a
+        # pair differing in nothing else is decided on the plan hash at all;
+        # which of the two plans sorts first was never a claim about the piece.
+        first, second = _draft(1), _draft_of(_ELECTRIFYING, "draft-1b")
+        assert first.plan_hash != second.plan_hash, "one plan, so this names no element"
+        return (first, second) if draft_key(first) < draft_key(second) else (second, first)
     if element == "seed":
         return _draft(1), _draft(2)
     raise AssertionError(f"no case is written for the element {element!r}")

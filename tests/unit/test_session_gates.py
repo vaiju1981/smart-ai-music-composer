@@ -39,11 +39,18 @@ _SLEEP = CompositionSpec(mood=Mood.SLEEP, duration_seconds=60, seed=0)
 """A spec whose four-wide fan-out is mixed: one seed misses, three are clean.
 
 Measured rather than assumed — a sweep of twelve seeds at each mood and each
-of 30/60/120 s puts `sleep`'s sixty-second pieces at `.X....X..X..`, and the
+of 30/60/120 s puts `sleep`'s sixty-second pieces at `X....X.X.X..`, and the
 fan-out composes `spec.seed + offset`, so the candidates here are seeds 0
-through 3. The gate's two branches need a session that holds both a clean
-candidate and an unclean one, and this is the smallest fixture that really
-does.
+through 3 and it is **the first** of them that misses. The gate's two branches
+need a session that holds both a clean candidate and an unclean one, and this
+is the smallest fixture that really does.
+
+The breach profile is a fact about the keys these seeds land on, which is the
+mood's own pool rather than a constant — `sleep`'s sixty-second pieces were
+`.X....X..X..` under the old C-major resolution and the missing seed moved with
+the key. So the ids below are the measured ones and the sweep above is
+re-derived whenever they are re-read, rather than the fixture pinning a key to
+keep an older reading standing.
 """
 
 _ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0)
@@ -90,7 +97,7 @@ class TestTheGateJudgesAPublication:
         assert "has not published" in result.detail
 
     def test_a_published_clean_piece_passes(self, ctx: ToolContext) -> None:
-        _draft_and_publish(ctx, _SLEEP, chosen="draft-0")
+        _draft_and_publish(ctx, _SLEEP, chosen="draft-1")
         result = gate_session_publication(ctx.session)
         assert result.passed is True
         assert f"clears all {len(QUALITY_THRESHOLDS)} thresholds" in result.detail
@@ -98,17 +105,17 @@ class TestTheGateJudgesAPublication:
     def test_the_detail_reports_the_fan_out_and_not_only_the_winner(self, ctx: ToolContext) -> None:
         """The number the engine-side gate cannot produce.
 
-        Three of these four candidates are clean — seed 1 misses — so a gate
+        Three of these four candidates are clean — seed 0 misses — so a gate
         that reported the published draft alone would say the same thing about
         a session that searched four times and one that searched once. The
         premise is asserted rather than trusted: if the fixture's fan-out
         stopped being mixed, this test would be asserting a rate that a
         winner-only gate could also have written.
         """
-        _draft_and_publish(ctx, _SLEEP, chosen="draft-0")
+        _draft_and_publish(ctx, _SLEEP, chosen="draft-1")
         assert [len(draft.quality.findings()) > 0 for draft in ctx.session.drafts] == [
-            False,
             True,
+            False,
             False,
             False,
         ]
@@ -122,10 +129,10 @@ class TestAFailingPublication:
         """`QualityFinding.message()` carries the measured value, the bar and
         the hint — so the gate's detail is something a critic could act on,
         where a count of missed thresholds is not."""
-        _draft_and_publish(ctx, _SLEEP, chosen="draft-1")
+        _draft_and_publish(ctx, _SLEEP, chosen="draft-0")
         result = gate_session_publication(ctx.session)
         assert result.passed is False
-        published = ctx.session.draft("draft-1")
+        published = ctx.session.draft("draft-0")
         for finding in published.quality.findings():
             assert finding.message() in result.detail
 
@@ -134,9 +141,9 @@ class TestAFailingPublication:
     ) -> None:
         """The search made visible: the session holds a draft that clears
         every bar and published one that does not, and the report says so."""
-        _draft_and_publish(ctx, _SLEEP, chosen="draft-1")
+        _draft_and_publish(ctx, _SLEEP, chosen="draft-0")
         detail = gate_session_publication(ctx.session).detail
-        assert "including 'draft-0', which was not published" in detail
+        assert "including 'draft-1', which was not published" in detail
 
     def test_no_alternative_is_named_when_no_candidate_cleared_it(self, ctx: ToolContext) -> None:
         """Every candidate here misses, so there is no sibling to name — and
@@ -154,7 +161,7 @@ class TestAFailingPublication:
         """First in the session's own order — the order the candidates were
         drafted in — so two reports of one session cannot disagree about which
         draft they are pointing at."""
-        _draft_and_publish(ctx, _SLEEP, chosen="draft-1")
+        _draft_and_publish(ctx, _SLEEP, chosen="draft-0")
         assert gate_session_publication(ctx.session).detail == (
             gate_session_publication(ctx.session).detail
         )
