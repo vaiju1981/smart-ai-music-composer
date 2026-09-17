@@ -426,6 +426,14 @@ SECTION_CRASH_VELOCITY: int = 90
 
 ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
 
+PERCUSSION_REST_SECTION: int = 1
+"""The mid-piece section a long piece's kit rests for.
+
+A hole in the texture before it refills, per §10 #10's demand that repeats
+differ. It lives here rather than in `engine.py`, where it was declared,
+because a plan has to be able to read it and the engine imports the plan.
+"""
+
 
 def rotation_index(section_idx: int, variant_count: int) -> int:
     """The pattern variant for a section, on a longer cycle than A/B.
@@ -535,6 +543,7 @@ __all__ = [
     "MOOD_STYLES_4_4",
     "MOOD_VELOCITY_SCALE",
     "PERCUSSION_NOTE_TICKS",
+    "PERCUSSION_REST_SECTION",
     "PERCUSSION_VELOCITY_MAX",
     "ROCK",
     "ROTATION_CYCLE",

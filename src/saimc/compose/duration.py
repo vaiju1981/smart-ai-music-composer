@@ -171,6 +171,75 @@ DEFAULT_ARRANGEMENT_KNOBS: Final[ArrangementKnobs] = ArrangementKnobs()
 """Today's values, as the object every default reads through."""
 
 
+SECTION_VELOCITY_OPENING: Final[float] = 0.82
+"""The first section sits back: the arc has somewhere to rise to."""
+
+SECTION_VELOCITY_PEAK: Final[float] = 1.12
+"""The penultimate section is the piece's loudest."""
+
+SECTION_VELOCITY_FINAL: Final[float] = 0.95
+"""The last section settles slightly, so the cadence lands rather than shouts."""
+
+SECTION_VELOCITY_MIDDLE: Final[float] = 1.0
+"""Every other section: the piece's own dynamic, neither lifted nor held back."""
+
+HARMONY_TEXTURE_FIRST: Final[str] = "first"
+"""The leading harmony voice alone — the opening's thinner colour."""
+
+HARMONY_TEXTURE_REST: Final[str] = "rest"
+"""Every harmony voice but the leading one — the breakdown's contrasting colour."""
+
+HARMONY_TEXTURE_ALL: Final[str] = "all"
+"""The full section, as the ensemble states it."""
+
+HARMONY_TEXTURE_GROUPS: Final[frozenset[str]] = frozenset(
+    {HARMONY_TEXTURE_FIRST, HARMONY_TEXTURE_REST, HARMONY_TEXTURE_ALL}
+)
+"""The vocabulary a texture cycle is written in."""
+
+HARMONY_TEXTURE_CYCLE: Final[tuple[str, ...]] = (
+    HARMONY_TEXTURE_FIRST,
+    HARMONY_TEXTURE_ALL,
+    HARMONY_TEXTURE_REST,
+    HARMONY_TEXTURE_ALL,
+)
+"""Which harmony voices sound in each phase of the long-piece arc.
+
+The cycle repeats every four sections, so a four-section arc re-states
+itself: the opening presents the leading voice, the third section becomes
+the breakdown, and the sections between them combine. A single harmony
+voice has no grouping to do and sounds in every section.
+"""
+
+
+@dataclass(frozen=True)
+class SectionArc:
+    """What the sections layer reads from a plan.
+
+    The same one-way bridge `ArrangementKnobs` is, for the same reason:
+    `plan.py` imports this module for its defaults, so the dependency
+    cannot also run the other way. Four named energies rather than a tuple
+    because they are positional in the music — opening, peak, final, and
+    everything else — and a tuple would make a reader count.
+
+    `texture_cycle` is expressed as *groups* of voices rather than as
+    indices into them: the ensemble decides how many harmony voices a
+    piece has, and "the leading one" and "every voice but the leading one"
+    mean the same thing whether there are two or five. An index list could
+    only name a fixed number.
+    """
+
+    energy_opening: float = SECTION_VELOCITY_OPENING
+    energy_peak: float = SECTION_VELOCITY_PEAK
+    energy_final: float = SECTION_VELOCITY_FINAL
+    energy_middle: float = SECTION_VELOCITY_MIDDLE
+    texture_cycle: tuple[str, ...] = HARMONY_TEXTURE_CYCLE
+
+
+DEFAULT_SECTION_ARC: Final[SectionArc] = SectionArc()
+"""Today's values, as the object every default reads through."""
+
+
 def arrange_for_duration(
     *,
     mood: str,
@@ -471,15 +540,26 @@ __all__ = [
     "ARRANGEMENT_ARC_MIN_REPS",
     "BAR_DURATIONS_TICKS",
     "DEFAULT_ARRANGEMENT_KNOBS",
+    "DEFAULT_SECTION_ARC",
     "DURATION_TOLERANCE",
+    "HARMONY_TEXTURE_ALL",
+    "HARMONY_TEXTURE_CYCLE",
+    "HARMONY_TEXTURE_FIRST",
+    "HARMONY_TEXTURE_GROUPS",
+    "HARMONY_TEXTURE_REST",
     "INTRO_BARS",
     "MAX_REPEATS",
     "PPQ",
     "RITARDANDO_BARS",
     "RITARDANDO_FACTOR",
+    "SECTION_VELOCITY_FINAL",
+    "SECTION_VELOCITY_MIDDLE",
+    "SECTION_VELOCITY_OPENING",
+    "SECTION_VELOCITY_PEAK",
     "ArrangementKnobs",
     "DurationArrangement",
     "DurationUnfulfillableError",
+    "SectionArc",
     "arrange_for_duration",
     "bar_ticks",
     "section_seed",

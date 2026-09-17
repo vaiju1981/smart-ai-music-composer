@@ -179,8 +179,7 @@ class TestFillsAndDownbeats:
 
     def test_every_sounding_section_downbeat_has_a_crash(self) -> None:
         from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS
-        from saimc.compose.engine import PERCUSSION_REST_SECTION
-        from saimc.compose.percussion import DRUM_CRASH
+        from saimc.compose.percussion import DRUM_CRASH, PERCUSSION_REST_SECTION
 
         out = compose(_drum_spec(duration_seconds=120))
         arr = out.arrangement
@@ -200,8 +199,7 @@ class TestFillsAndDownbeats:
 
     def test_long_pieces_rest_the_kit_then_it_returns_with_a_crash(self) -> None:
         from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS
-        from saimc.compose.engine import PERCUSSION_REST_SECTION
-        from saimc.compose.percussion import DRUM_CRASH
+        from saimc.compose.percussion import DRUM_CRASH, PERCUSSION_REST_SECTION
 
         out = compose(_drum_spec(duration_seconds=120))
         arr = out.arrangement

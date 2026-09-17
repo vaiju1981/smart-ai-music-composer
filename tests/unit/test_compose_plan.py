@@ -36,7 +36,11 @@ import pytest
 from saimc.canonical import canonical_dumps
 from saimc.compose import forms, motif, percussion
 from saimc.compose import plan as plan_module
-from saimc.compose.duration import DEFAULT_ARRANGEMENT_KNOBS, MAX_REPEATS
+from saimc.compose.duration import (
+    DEFAULT_ARRANGEMENT_KNOBS,
+    DEFAULT_SECTION_ARC,
+    MAX_REPEATS,
+)
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
@@ -123,6 +127,15 @@ _MUTATIONS: dict[str, Any] = {
     "ritardando_factor": 0.80,
     "ritardando_bars": 3,
     "arc_min_reps": 4,
+    "section_energy_opening": 0.70,
+    "section_energy_peak": 1.20,
+    "section_energy_final": 0.90,
+    "section_energy_middle": 1.05,
+    # The cycle has to keep the arc's own shape to be a mutation of it
+    # rather than a differently-lengthed one: four phases, with the two
+    # thinning phases swapped so the breakdown arrives second.
+    "harmony_texture_cycle": ("all", "rest", "first", "all"),
+    "percussion_rest_section": 2,
     "line_band_semitones": 22,
     "drum_style_name": "funk",
     "rotation_cycle": (0, 1, 0),
@@ -306,6 +319,33 @@ class TestTheLayersReadThePlanThroughBridges:
         assert knobs.ritardando_factor == 0.7
         assert knobs.ritardando_bars == 1
 
+    def test_the_default_plan_bridges_to_todays_section_arc(self) -> None:
+        for spec in _spec_matrix():
+            assert default_plan(spec).section_arc() == DEFAULT_SECTION_ARC
+
+    def test_the_bridge_carries_every_section_field(self) -> None:
+        """The same by-name check for `SectionArc`.
+
+        Its three velocity fields are checked as the defaults *are* today,
+        because `energy_middle` is 1.0 — the one value whose absence from
+        the bridge a comparison against the default would not catch, since
+        a dropped field would leave the struct's own default standing.
+        """
+        plan = replace(
+            _base(),
+            section_energy_opening=0.7,
+            section_energy_peak=1.2,
+            section_energy_final=0.9,
+            section_energy_middle=1.05,
+            harmony_texture_cycle=("all", "rest", "first", "all"),
+        )
+        arc = plan.section_arc()
+        assert arc.energy_opening == 0.7
+        assert arc.energy_peak == 1.2
+        assert arc.energy_final == 0.9
+        assert arc.energy_middle == 1.05
+        assert arc.texture_cycle == ("all", "rest", "first", "all")
+
 
 class TestAPlanThatCannotBeHonouredIsRefused:
     """Refused with a reason, never silently downgraded.
@@ -347,6 +387,11 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"ritardando_factor": 1.5}, r"\(0, 1\]"),
             ({"ritardando_bars": -1}, "not be negative"),
             ({"arc_min_reps": 0}, "at least one repeat"),
+            ({"section_energy_opening": 0.0}, "must be positive"),
+            ({"section_energy_peak": -0.1}, "must be positive"),
+            ({"harmony_texture_cycle": ()}, "must not be empty"),
+            ({"harmony_texture_cycle": ("all", "quiet")}, "unknown harmony texture"),
+            ({"percussion_rest_section": -1}, "cannot be negative"),
             ({"line_band_semitones": 0}, "positive"),
             ({"drum_style_name": "theremin"}, "unknown drum style"),
             ({"rotation_cycle": ()}, "must not be empty"),

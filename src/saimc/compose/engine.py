@@ -42,8 +42,13 @@ from itertools import pairwise
 from typing import Any
 
 from saimc.compose.duration import (
+    DEFAULT_SECTION_ARC,
+    HARMONY_TEXTURE_CYCLE,
+    HARMONY_TEXTURE_FIRST,
+    HARMONY_TEXTURE_REST,
     DurationArrangement,
     DurationUnfulfillableError,
+    SectionArc,
     arrange_for_duration,
     bar_ticks,
     section_seed,
@@ -336,6 +341,7 @@ def compose(
         humanization=spec.humanization,
         seed=spec.seed,
         arrangement=arrangement,
+        arc=resolved.section_arc(),
         drum_set_legacy=drum_set_legacy,
     )
     return EngineOutput(
@@ -405,6 +411,7 @@ def _build_score(
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
     knobs = plan.arrangement_knobs()
+    arc = plan.section_arc()
     long_piece = arrangement.repetition_count >= knobs.arc_min_reps
     bass_figures = plan.bass_figures
     harmony_voices = tuple(
@@ -463,6 +470,7 @@ def _build_score(
                 harmony_voices,
                 section_index=section_idx,
                 long_piece=long_piece,
+                cycle=arc.texture_cycle,
             ),
         )
         section_notes, section_chord_bars, section_bar_keys, bars_since_breath = section_result
@@ -470,7 +478,9 @@ def _build_score(
         bar_keys.extend(section_bar_keys)
         # Terraced dynamics: the section's whole dynamic sits at its
         # step of the arc rather than drifting continuously.
-        velocity_scale = _section_velocity_scale(section_idx, arrangement.repetition_count)
+        velocity_scale = _section_velocity_scale(
+            section_idx, arrangement.repetition_count, arc
+        )
         if velocity_scale != 1.0:
             section_notes = [
                 replace(
@@ -545,7 +555,7 @@ def _build_score(
         chord_bars.extend(coda_chord_bars)
         bar_keys.extend(coda_bar_keys)
         velocity_scale = _section_velocity_scale(
-            arrangement.repetition_count, arrangement.repetition_count
+            arrangement.repetition_count, arrangement.repetition_count, arc
         )
         if velocity_scale != 1.0:
             coda_notes = [
@@ -597,8 +607,8 @@ def _build_score(
             rest_bars.update(range(arrangement.intro_bars))
             rest_bars.update(
                 range(
-                    PERCUSSION_REST_SECTION * arrangement.form_bars,
-                    (PERCUSSION_REST_SECTION + 1) * arrangement.form_bars,
+                    plan.percussion_rest_section * arrangement.form_bars,
+                    (plan.percussion_rest_section + 1) * arrangement.form_bars,
                 )
             )
         notes.extend(
@@ -610,6 +620,7 @@ def _build_score(
                 total_bars=arrangement.total_bars_with_coda,
                 seed=rng_base_seed,
                 rest_bars=frozenset(rest_bars),
+                arc=arc,
             )
         )
 
@@ -1135,19 +1146,25 @@ def _active_harmony_voices(
     *,
     section_index: int,
     long_piece: bool,
+    cycle: tuple[str, ...] = HARMONY_TEXTURE_CYCLE,
 ) -> tuple[tuple[int, str], ...]:
     """Shape long-form density instead of looping one wall of sound.
 
-    With two harmony colors the opening presents the first, the third
-    section becomes a contrasting breakdown led by the second, and the
-    intervening sections combine them. The four-section arc then repeats.
+    The cycle names a group of voices per phase of the arc, repeating
+    every four sections: with two harmony colors the opening presents the
+    first, the third section becomes a contrasting breakdown led by the
+    second, and the intervening sections combine them.
+
+    A group, not an index list, because how many harmony voices a piece
+    has is the ensemble's decision — "the leading one" and "every voice
+    but it" mean the same thing at two voices and at five.
     """
     if not long_piece or len(voices) < 2:
         return voices
-    phase = section_index % 4
-    if phase == 0:
+    group = cycle[section_index % len(cycle)]
+    if group == HARMONY_TEXTURE_FIRST:
         return voices[:1]
-    if phase == 2:
+    if group == HARMONY_TEXTURE_REST:
         return voices[1:]
     return voices
 
@@ -2909,6 +2926,7 @@ def _generate_percussion(
     total_bars: int,
     seed: int,
     rest_bars: frozenset[int] = frozenset(),
+    arc: SectionArc = DEFAULT_SECTION_ARC,
 ) -> list[NoteEvent]:
     """Generate the percussion voice for a drum-set piece.
 
@@ -2937,7 +2955,7 @@ def _generate_percussion(
         section_idx = bar // form_bars if in_body else repetition_count
         section_start = bar % form_bars == 0
         is_final_bar = bar == total_bars - 1
-        terrace = _section_velocity_scale(section_idx, repetition_count)
+        terrace = _section_velocity_scale(section_idx, repetition_count, arc)
         if bar % form_bars == form_bars - 1 and not is_final_bar:
             pattern = style.fill(time_signature, section_idx)
         else:
@@ -3057,28 +3075,34 @@ TIE_PROBABILITY: dict[str, float] = {
 # Arrangement arc (S8): long pieces lift their final repetition a whole
 # step (the piece ends in the new key — the lift IS the ending), drop
 # the drums for one mid-piece section to give the texture a hole, and
-# step the dynamics per section instead of arching continuously. The
-# offset itself lives in `forms.py` with the key arithmetic it feeds, and
-# reaches the engine through the plan.
-PERCUSSION_REST_SECTION: int = 1
+# step the dynamics per section instead of arching continuously. All
+# three decisions now arrive through the plan: the offset and the terraces
+# live in `duration.py` with the arrangement they belong to, and the rest
+# section in `percussion.py`, which is the module that owns the kit.
 
 
-def _section_velocity_scale(section_idx: int, repetition_count: int) -> float:
+def _section_velocity_scale(
+    section_idx: int,
+    repetition_count: int,
+    arc: SectionArc = DEFAULT_SECTION_ARC,
+) -> float:
     """Terraced dynamics: the arc is stepped per section, not continuous.
 
     The opening sits back, the penultimate section peaks, and the
     final one settles slightly for the cadence home. A single-section
-    piece has nowhere to move and plays at full.
+    piece has nowhere to move and plays at full. The four terraces are
+    the plan's, so a critic can move a section's weight without moving
+    the piece's overall level.
     """
     if repetition_count < 2:
         return 1.0
     if section_idx == 0:
-        return 0.82
+        return arc.energy_opening
     if section_idx == repetition_count - 1:
-        return 0.95
+        return arc.energy_final
     if section_idx == repetition_count - 2:
-        return 1.12
-    return 1.0
+        return arc.energy_peak
+    return arc.energy_middle
 
 
 def _phrase_swell(position_in_phrase: float) -> float:
@@ -3140,6 +3164,7 @@ def _build_performance_plan(
     humanization: str,
     seed: int | None,
     arrangement: DurationArrangement,
+    arc: SectionArc = DEFAULT_SECTION_ARC,
     drum_set_legacy: bool = False,
 ) -> PerformancePlan:
     """Lay the expression layer on the notated surface, per voice.
@@ -3257,7 +3282,9 @@ def _build_performance_plan(
                     EXPRESSION_BASE
                     * _velocity_arc(position)
                     * _phrase_swell(phrase_position)
-                    * _section_velocity_scale(section_idx, arrangement.repetition_count)
+                    * _section_velocity_scale(
+                        section_idx, arrangement.repetition_count, arc
+                    )
                 ),
             )
             for voice in swell_voices:

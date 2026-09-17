@@ -46,11 +46,18 @@ from saimc.canonical import canonical_sha256
 from saimc.compose.duration import (
     ARRANGEMENT_ARC_MIN_REPS,
     DURATION_TOLERANCE,
+    HARMONY_TEXTURE_CYCLE,
+    HARMONY_TEXTURE_GROUPS,
     INTRO_BARS,
     MAX_REPEATS,
     RITARDANDO_BARS,
     RITARDANDO_FACTOR,
+    SECTION_VELOCITY_FINAL,
+    SECTION_VELOCITY_MIDDLE,
+    SECTION_VELOCITY_OPENING,
+    SECTION_VELOCITY_PEAK,
     ArrangementKnobs,
+    SectionArc,
 )
 from saimc.compose.forms import (
     MODULATION_OFFSET,
@@ -74,6 +81,7 @@ from saimc.compose.motif import (
 from saimc.compose.percussion import (
     DRUM_STYLES,
     MOOD_VELOCITY_SCALE,
+    PERCUSSION_REST_SECTION,
     ROTATION_CYCLE,
     SECTION_CRASH_VELOCITY,
     style_name_for,
@@ -194,6 +202,25 @@ class CompositionPlan:
     """Repeats from which a piece counts as long, and gets an intro, a
     ritardando and a modulation."""
 
+    # --- Sections -------------------------------------------------------
+    section_energy_opening: float
+    """The first section's dynamic, as a fraction of the piece's own."""
+    section_energy_peak: float
+    """The penultimate section's dynamic — the piece's loudest step."""
+    section_energy_final: float
+    """The last section's dynamic, which settles so the cadence lands."""
+    section_energy_middle: float
+    """Every other section's dynamic. The piece plays at its own level."""
+    harmony_texture_cycle: tuple[str, ...]
+    """Which harmony voices sound in each phase of the long-piece arc.
+
+    One of `first`, `rest` or `all`: the leading voice alone, every voice
+    but it, or the full section. Groups rather than voice indices, because
+    how many harmony voices a piece has is the ensemble's to decide.
+    """
+    percussion_rest_section: int
+    """The section a long piece's kit rests for, counting from zero."""
+
     # --- Voices ---------------------------------------------------------
     line_band_semitones: int
     """The register window a melody line is written inside. Wide enough to
@@ -285,6 +312,28 @@ class CompositionPlan:
         _require(self.ritardando_bars >= 0, "ritardando_bars must not be negative")
         _require(self.arc_min_reps >= 1, "arc_min_reps must allow at least one repeat")
 
+        for name in (
+            "section_energy_opening",
+            "section_energy_peak",
+            "section_energy_final",
+            "section_energy_middle",
+        ):
+            _require(getattr(self, name) > 0.0, f"{name} is a dynamic, so it must be positive")
+        _require(bool(self.harmony_texture_cycle), "harmony_texture_cycle must not be empty")
+        for group in self.harmony_texture_cycle:
+            _require(
+                group in HARMONY_TEXTURE_GROUPS,
+                f"unknown harmony texture {group!r}; the groups are "
+                f"{sorted(HARMONY_TEXTURE_GROUPS)}",
+            )
+        # The rest is a section index. A value past the piece's last section
+        # rests nothing rather than misplacing the rest, so the plan only has
+        # to refuse the one that cannot mean anything.
+        _require(
+            self.percussion_rest_section >= 0,
+            "percussion_rest_section is a section index, so it cannot be negative",
+        )
+
         _require(self.line_band_semitones > 0, "line_band_semitones must be positive")
 
         _require(
@@ -342,6 +391,12 @@ class CompositionPlan:
             "ritardando_factor": self.ritardando_factor,
             "ritardando_bars": self.ritardando_bars,
             "arc_min_reps": self.arc_min_reps,
+            "section_energy_opening": self.section_energy_opening,
+            "section_energy_peak": self.section_energy_peak,
+            "section_energy_final": self.section_energy_final,
+            "section_energy_middle": self.section_energy_middle,
+            "harmony_texture_cycle": list(self.harmony_texture_cycle),
+            "percussion_rest_section": self.percussion_rest_section,
             "line_band_semitones": self.line_band_semitones,
             "drum_style_name": self.drum_style_name,
             "rotation_cycle": list(self.rotation_cycle),
@@ -365,6 +420,19 @@ class CompositionPlan:
             intro_bars=self.intro_bars,
             ritardando_factor=self.ritardando_factor,
             ritardando_bars=self.ritardando_bars,
+        )
+
+    def section_arc(self) -> SectionArc:
+        """The sections layer, as the struct `engine.py` reads.
+
+        The second one-way bridge, on the same terms as `arrangement_knobs`.
+        """
+        return SectionArc(
+            energy_opening=self.section_energy_opening,
+            energy_peak=self.section_energy_peak,
+            energy_final=self.section_energy_final,
+            energy_middle=self.section_energy_middle,
+            texture_cycle=self.harmony_texture_cycle,
         )
 
 
@@ -407,6 +475,12 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         ritardando_factor=RITARDANDO_FACTOR,
         ritardando_bars=RITARDANDO_BARS,
         arc_min_reps=ARRANGEMENT_ARC_MIN_REPS,
+        section_energy_opening=SECTION_VELOCITY_OPENING,
+        section_energy_peak=SECTION_VELOCITY_PEAK,
+        section_energy_final=SECTION_VELOCITY_FINAL,
+        section_energy_middle=SECTION_VELOCITY_MIDDLE,
+        harmony_texture_cycle=HARMONY_TEXTURE_CYCLE,
+        percussion_rest_section=PERCUSSION_REST_SECTION,
         line_band_semitones=LINE_BAND_SEMITONES,
         drum_style_name=style_name_for(mood, spec.time_signature.value),
         rotation_cycle=ROTATION_CYCLE,

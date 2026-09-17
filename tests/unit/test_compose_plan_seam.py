@@ -45,7 +45,7 @@ from saimc.compose.plan import (
     PlanError,
     default_plan,
 )
-from saimc.compose.score import VOICE_BASS
+from saimc.compose.score import VOICE_BASS, VOICE_HARMONY, VOICE_MELODY, VOICE_PERCUSSION
 from saimc.spec import CompositionSpec
 
 _SPEC = CompositionSpec(mood="calming", duration_seconds=180, seed=11)
@@ -72,6 +72,60 @@ def _fingerprint(output: EngineOutput) -> tuple[str, str, str]:
 
 
 _DEFAULT_FINGERPRINT = _fingerprint(compose(_SPEC))
+
+_CODA_SPEC = CompositionSpec(mood="calming", duration_seconds=41, seed=3)
+"""The shortest spec that reaches the coda arm of the duration search.
+
+It needs the plan for the reason B2 found: no default arrangement has both
+a coda and `repetition_count >= arc_min_reps`, because a coda is only
+reached where few repetitions fit — so the long-piece branches inside the
+coda arm are reachable only through a lowered `arc_min_reps`. Forty-one
+seconds of `calming` arranges to eight bars once plus a four-bar coda, so
+the coda is the piece's final four bars.
+"""
+
+_LONG_WITH_CODA = replace(default_plan(_CODA_SPEC), arc_min_reps=1)
+
+_TWO_HARMONY_VOICES_SPEC = CompositionSpec(
+    mood="calming",
+    duration_seconds=180,
+    seed=11,
+    instrumentation=[
+        {"role": "melody", "instrument": "piano"},
+        {"role": "harmony", "instrument": "strings"},
+        {"role": "harmony", "instrument": "choir"},
+        {"role": "bass", "instrument": "cello"},
+    ],
+)
+"""Two harmony voices, which is what the texture cycle needs to say anything.
+
+`_SPEC`'s ensemble has one, and `_active_harmony_voices` returns the voices
+untouched when there is only one to choose between — see
+`test_a_single_harmony_voice_leaves_the_cycle_unread`.
+"""
+
+_DRUM_KIT_SPEC = CompositionSpec(
+    mood="electrifying", duration_seconds=180, seed=11, instrumentation="drum_set"
+)
+"""A kit and a long piece, which is what the drum rest needs to say anything.
+
+The rest section is only consulted `if long_piece`, and there is no
+percussion voice at all without `drum_set` — so a spec missing either
+would leave `percussion_rest_section` unobservable.
+"""
+
+_PINNED_TEMPO_CODA_SPEC = CompositionSpec(
+    mood="calming", duration_seconds=59, seed=3, tempo_bpm=80
+)
+"""A coda over a repeated form, which a free tempo does not reach.
+
+With the tempo free, the search only enters its coda arm in the one gap its
+repetition ladder leaves before the second repetition — and the coda's own
+ladder covers that gap at one repetition, so every such coda has exactly
+one. A pinned tempo makes the fit a point instead of a window, and the coda
+then lands over a form repeated twice — 59 s of `calming` at 80 BPM — and
+the terrace reads the plan rather than returning 1.0.
+"""
 
 
 _ARRANGEMENT_KNOBS: dict[str, Any] = {
@@ -267,16 +321,13 @@ class TestTheHarmonyKnobsReachTheCodaToo:
     no default arrangement has both a coda and
     `repetition_count >= arc_min_reps`, because a coda is only reached
     where few repetitions fit. So the long-piece branches inside the coda
-    arm are reachable only through a lowered `arc_min_reps` — here 41 s of
-    `calming`, which arranges to eight bars once plus a four-bar coda, so
-    the coda is the piece's final four bars.
+    arm are reachable only through a lowered `arc_min_reps` — see
+    `_CODA_SPEC`, whose 41 s arranges to eight bars once plus a four-bar
+    coda, so the coda is the piece's final four bars.
     """
 
-    _CODA_SPEC = CompositionSpec(mood="calming", duration_seconds=41, seed=3)
-    _LONG_WITH_CODA = replace(default_plan(_CODA_SPEC), arc_min_reps=1)
-
     def _compose(self, **changes: Any) -> EngineOutput:
-        return compose(self._CODA_SPEC, plan=replace(self._LONG_WITH_CODA, **changes))
+        return compose(_CODA_SPEC, plan=replace(_LONG_WITH_CODA, **changes))
 
     def _coda_start(self, output: EngineOutput) -> int:
         """The first bar the coda writes.
@@ -294,7 +345,7 @@ class TestTheHarmonyKnobsReachTheCodaToo:
         output = self._compose()
         arrangement = output.arrangement
         assert arrangement.coda_bars > 0, "the coda arm was not reached"
-        assert arrangement.repetition_count >= self._LONG_WITH_CODA.arc_min_reps, (
+        assert arrangement.repetition_count >= _LONG_WITH_CODA.arc_min_reps, (
             "the piece is not long, so the coda's long-piece branches are not taken"
         )
         assert len(output.bar_keys) == arrangement.total_bars + arrangement.coda_bars, (
@@ -325,7 +376,7 @@ class TestTheHarmonyKnobsReachTheCodaToo:
         states any pitch, so the coda's onset positions follow the
         vocabulary and nothing else.
         """
-        ticks = bar_ticks(self._CODA_SPEC.time_signature.value)
+        ticks = bar_ticks(_CODA_SPEC.time_signature.value)
 
         def onsets(output: EngineOutput) -> tuple[int, ...]:
             start = self._coda_start(output) * ticks
@@ -360,6 +411,320 @@ class TestTheHarmonyKnobsReachTheCodaToo:
             "`_build_score` is not reading the plan's modulation_offset at the coda call"
         )
         assert output.bar_keys[start] != self._compose(modulation_offset=0).bar_keys[start]
+
+
+_SECTION_KNOBS: dict[str, Any] = {
+    # Every terrace pushed well clear of its default, because the value is
+    # carried into a MIDI velocity and rounded: a tenth of a step can land
+    # on the same integer twice and prove nothing.
+    "section_energy_opening": 0.5,
+    "section_energy_peak": 1.4,
+    "section_energy_final": 0.6,
+    "section_energy_middle": 1.3,
+    # The arc's own shape with the two thinning phases swapped, so the
+    # breakdown arrives second instead of third. Four phases, still: a
+    # shorter cycle would be a differently-shaped arc rather than a
+    # mutation of this one.
+    "harmony_texture_cycle": ("all", "rest", "first", "all"),
+    # The kit rests late instead of early, which moves the hole in the
+    # texture rather than removing it.
+    "percussion_rest_section": 2,
+}
+
+_SECTION_FIELDS = frozenset(
+    {
+        "section_energy_opening",
+        "section_energy_peak",
+        "section_energy_final",
+        "section_energy_middle",
+        "harmony_texture_cycle",
+        "percussion_rest_section",
+    }
+)
+"""The plan's `--- Sections ---` block, which reads these six."""
+
+_SECTION_SPECS: dict[str, CompositionSpec] = {
+    # The four energies are readable on any long piece: `_SPEC` arranges to
+    # five repetitions, so opening, peak, final and middle are four
+    # different sections of it.
+    "section_energy_opening": _SPEC,
+    "section_energy_peak": _SPEC,
+    "section_energy_final": _SPEC,
+    "section_energy_middle": _SPEC,
+    # The other two need an ensemble. A texture cycle chooses between
+    # harmony voices, so a piece with one has nothing for it to choose; a
+    # drum rest is only consulted when there is a kit.
+    "harmony_texture_cycle": _TWO_HARMONY_VOICES_SPEC,
+    "percussion_rest_section": _DRUM_KIT_SPEC,
+}
+"""The spec each knob needs to be observable at all — see the note above."""
+
+_ENERGY_KNOBS = tuple(sorted(name for name in _SECTION_KNOBS if name.startswith("section_energy")))
+"""The four terraces, in the order `_section_velocity_scale` reads them."""
+
+
+class TestTheSectionsLayerIsLive:
+    """The arc, the texture and the kit's rest.
+
+    Unlike B2's and B3's layers these six do not share one spec: the
+    texture cycle is unobservable without a second harmony voice and the
+    drum rest without a kit, so each knob is composed under the ensemble
+    that can show it. A layer this thin would otherwise be "covered" by a
+    case that could not have failed.
+    """
+
+    def test_every_section_knob_has_a_case(self) -> None:
+        assert set(_SECTION_KNOBS) == _SECTION_FIELDS
+
+    @pytest.mark.parametrize("knob", sorted(_SECTION_KNOBS))
+    def test_a_non_default_plan_moves_the_output(self, knob: str) -> None:
+        spec = _SECTION_SPECS[knob]
+        base = default_plan(spec)
+        before = _fingerprint(compose(spec, plan=base))
+        after = _fingerprint(compose(spec, plan=replace(base, **{knob: _SECTION_KNOBS[knob]})))
+        assert after != before, (
+            f"{knob} is carried by the plan but does not reach the engine: "
+            f"composing {spec.duration_seconds}s of {spec.mood.value} under it "
+            "produced the same score, performance plan and arrangement as the "
+            "default. The seam is dead for this knob."
+        )
+
+    def test_the_cases_are_not_all_one_knob_in_disguise(self) -> None:
+        for knob, value in _SECTION_KNOBS.items():
+            assert getattr(default_plan(_SECTION_SPECS[knob]), knob) != value, knob
+
+
+class TestTheVelocityTerracesAreReadAtEveryCallSite:
+    """`_section_velocity_scale` is read four times, and one read hides another.
+
+    B3's lesson one level down. The parametrised case above passes
+    whichever call site is reading the plan — a mutation of any terrace
+    moves the whole fingerprint — and three of the four are further
+    masked from each other, because a `_SPEC` that had no kit would leave
+    the percussion site unexercised and a kit piece would move for the
+    kit whether or not the body read anything. So each site is read here
+    through a quantity only that site writes: the melodic notes'
+    velocities for the body, the percussion voice's own velocities for the
+    kit, the CC11 lane for the controller, and the coda's own notes for
+    the coda. A site that stopped reading the plan leaves its quantity
+    exactly where it was.
+    """
+
+    @staticmethod
+    def _melodic_velocities(output: EngineOutput) -> tuple[tuple[int, int, int, int], ...]:
+        return tuple(
+            (note.tick, note.voice_id, note.pitch_midi, note.velocity)
+            for note in output.notation_score.notes
+            if note.voice_id != VOICE_PERCUSSION
+            and note.voice_id in {VOICE_BASS, VOICE_MELODY, VOICE_HARMONY}
+        )
+
+    @staticmethod
+    def _kit_velocities(output: EngineOutput) -> tuple[tuple[int, int, int], ...]:
+        return tuple(
+            (note.tick, note.pitch_midi, note.velocity)
+            for note in output.notation_score.notes
+            if note.voice_id == VOICE_PERCUSSION
+        )
+
+    @staticmethod
+    def _expression_values(output: EngineOutput) -> tuple[int, ...]:
+        """The CC11 lane, which only the controller site writes."""
+        return tuple(c.value for c in output.performance_plan.controllers if c.control == 11)
+
+    @pytest.mark.parametrize("knob", _ENERGY_KNOBS)
+    def test_the_body_notes_follow_the_plan(self, knob: str) -> None:
+        base = default_plan(_SPEC)
+        changed = replace(base, **{knob: _SECTION_KNOBS[knob]})
+        assert self._melodic_velocities(compose(_SPEC, plan=changed)) != self._melodic_velocities(
+            compose(_SPEC, plan=base)
+        ), (
+            f"{knob} does not reach the note velocities: the body's terrace in "
+            "`_build_score` is not reading the plan's arc"
+        )
+
+    @pytest.mark.parametrize("knob", _ENERGY_KNOBS)
+    def test_the_kits_own_notes_follow_the_plan(self, knob: str) -> None:
+        """The kit's terrace, read from the percussion voice alone.
+
+        It has to be read from there: `_generate_percussion` writes voice 2
+        and nothing else does, so these velocities cannot move because some
+        other site read the plan.
+        """
+        plan = default_plan(_DRUM_KIT_SPEC)
+        changed = replace(plan, **{knob: _SECTION_KNOBS[knob]})
+        before, after = (
+            self._kit_velocities(compose(_DRUM_KIT_SPEC, plan=p)) for p in (plan, changed)
+        )
+        assert before, "the premise: this spec composes with a kit at all"
+        assert after != before, (
+            f"{knob} does not reach the kit's velocities: the terrace in "
+            "`_generate_percussion` is not reading the plan's arc"
+        )
+
+    @pytest.mark.parametrize("knob", _ENERGY_KNOBS)
+    def test_the_expression_controller_follows_the_plan(self, knob: str) -> None:
+        base = default_plan(_SPEC)
+        changed = replace(base, **{knob: _SECTION_KNOBS[knob]})
+        before = self._expression_values(compose(_SPEC, plan=base))
+        assert before, "the premise: this spec composes with an expression lane"
+        assert self._expression_values(compose(_SPEC, plan=changed)) != before, (
+            f"{knob} does not reach the CC11 lane: the controller site in "
+            "`_build_performance_plan` is not reading the plan's arc"
+        )
+
+    def test_the_coda_follows_the_plans_middle_terrace(self) -> None:
+        """The fourth site, and the one whose index falls through.
+
+        `_build_score` calls `_section_velocity_scale` a fourth time for the
+        coda, passing `repetition_count` as both the section index and the
+        count. That index is never 0, so the opening arm is out; it is never
+        `repetition_count - 1`, so the final arm is out; and it is never
+        `repetition_count - 2`, so the peak is out. The coda's whole dynamic
+        is therefore the plan's *middle* terrace — which is why the test
+        asserts both directions: the middle moves the coda and the other
+        three cannot. A site ignored by `_build_score` would leave the
+        middle's mutation without an effect.
+
+        The spec has to be the pinned-tempo one. With the tempo free the
+        coda always has a single repetition, and `_section_velocity_scale`
+        returns 1.0 below two — so the loop is skipped and the site is inert.
+        """
+        plan = default_plan(_PINNED_TEMPO_CODA_SPEC)
+        arrangement = compose(_PINNED_TEMPO_CODA_SPEC, plan=plan).arrangement
+        assert arrangement.coda_bars > 0, "the premise: a coda was reached"
+        assert arrangement.repetition_count >= 2, (
+            "the premise: with one repetition the coda's terrace returns 1.0 "
+            "and this site is inert, which is what a free tempo always gives"
+        )
+        ticks = bar_ticks(_PINNED_TEMPO_CODA_SPEC.time_signature.value)
+        coda_start = arrangement.total_bars * ticks
+
+        def coda_velocities(**changes: Any) -> tuple[int, ...]:
+            return tuple(
+                note.velocity
+                for note in compose(
+                    _PINNED_TEMPO_CODA_SPEC, plan=replace(plan, **changes)
+                ).notation_score.notes
+                if note.tick >= coda_start and note.voice_id != VOICE_PERCUSSION
+            )
+
+        baseline = coda_velocities()
+        assert baseline, "the premise: the coda writes notes with velocities"
+        assert coda_velocities(section_energy_middle=_SECTION_KNOBS["section_energy_middle"]) != (
+            baseline
+        ), (
+            "section_energy_middle does not reach the coda's velocities: the terrace "
+            "at the coda's call to `_generate_section` is not reading the plan"
+        )
+        for knob in ("section_energy_opening", "section_energy_peak", "section_energy_final"):
+            assert coda_velocities(**{knob: _SECTION_KNOBS[knob]}) == baseline, (
+                f"{knob} moved the coda's velocities, so the coda's terrace is not "
+                "indexed by `repetition_count` the way this test assumes"
+            )
+
+
+class TestTheTextureCycleNeedsVoicesToChoose:
+    """A texture cycle says which harmony voices play, so it needs two.
+
+    `_active_harmony_voices` returns the voices untouched with fewer than
+    two, or on a piece too short to have an arc. That is why `_SPEC` does
+    not cover this knob above, and the second test here pins it: the cycle
+    is not ignored, it has nothing to decide.
+    """
+
+    def test_the_two_voice_spec_is_what_the_cycle_needs(self) -> None:
+        """The premise, asserted rather than assumed."""
+        arrangement = compose(_TWO_HARMONY_VOICES_SPEC).arrangement
+        assert arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps, (
+            "the piece is not long, so `_active_harmony_voices` would return the "
+            "voices untouched whatever the cycle said"
+        )
+        harmony = {
+            note.voice_id
+            for note in compose(_TWO_HARMONY_VOICES_SPEC).notation_score.notes
+            if note.voice_id >= VOICE_HARMONY
+        }
+        assert len(harmony) >= 2, "the premise: this spec writes two harmony voices"
+
+    def test_the_cycle_moves_the_output(self) -> None:
+        base = default_plan(_TWO_HARMONY_VOICES_SPEC)
+        changed = replace(base, harmony_texture_cycle=_SECTION_KNOBS["harmony_texture_cycle"])
+        assert _fingerprint(compose(_TWO_HARMONY_VOICES_SPEC, plan=changed)) != _fingerprint(
+            compose(_TWO_HARMONY_VOICES_SPEC, plan=base)
+        ), (
+            "harmony_texture_cycle does not reach the engine: `_active_harmony_voices` "
+            "is not reading the plan's cycle"
+        )
+
+    def test_a_single_harmony_voice_leaves_the_cycle_unread(self) -> None:
+        """Not a dead seam — an empty choice.
+
+        With one harmony voice every group names the same set, so the
+        engine's own guard returns the voices before the cycle is
+        consulted. Byte-identical, which is the honest behaviour: a plan
+        that names a cycle for a piece with nothing to cycle is describing
+        an arc of one colour.
+        """
+        changed = replace(
+            default_plan(_SPEC), harmony_texture_cycle=_SECTION_KNOBS["harmony_texture_cycle"]
+        )
+        assert _fingerprint(compose(_SPEC, plan=changed)) == _DEFAULT_FINGERPRINT
+
+
+class TestTheDrumRestFollowsThePlan:
+    """The hole in the texture is a section of the plan's choosing.
+
+    `_generate_percussion` takes a set of silent bars, and on a long piece
+    that set is the intro plus section `percussion_rest_section`. The
+    second test reads the silence back out of the score rather than the
+    plan, so a rest window computed from a constant would be caught.
+    """
+
+    def test_the_kit_spec_is_what_the_rest_needs(self) -> None:
+        """The premise: a kit, and a piece long enough for the rest arm."""
+        output = compose(_DRUM_KIT_SPEC)
+        arrangement = output.arrangement
+        assert arrangement.repetition_count >= default_plan(_DRUM_KIT_SPEC).arc_min_reps, (
+            "the piece is not long, so no rest is scheduled at all"
+        )
+        ticks = bar_ticks(_DRUM_KIT_SPEC.time_signature.value)
+        assert {
+            note.tick // ticks
+            for note in output.notation_score.notes
+            if note.voice_id == VOICE_PERCUSSION
+        }, "the premise: this spec composes with a kit at all"
+
+    def _silent_bars(self, **changes: Any) -> tuple[int, ...]:
+        plan = replace(default_plan(_DRUM_KIT_SPEC), **changes)
+        output = compose(_DRUM_KIT_SPEC, plan=plan)
+        ticks = bar_ticks(_DRUM_KIT_SPEC.time_signature.value)
+        played = {
+            note.tick // ticks
+            for note in output.notation_score.notes
+            if note.voice_id == VOICE_PERCUSSION
+        }
+        return tuple(
+            bar for bar in range(output.arrangement.total_bars_with_coda) if bar not in played
+        )
+
+    def test_the_rest_window_is_the_plans_section(self) -> None:
+        form_bars = compose(_DRUM_KIT_SPEC).arrangement.form_bars
+        rest = _SECTION_KNOBS["percussion_rest_section"]
+
+        def window(section: int) -> range:
+            return range(section * form_bars, (section + 1) * form_bars)
+
+        silent = self._silent_bars()
+        assert set(window(1)) <= set(silent), "the default's rest section does not rest"
+        assert not set(window(rest)) & set(silent), "the plan's section was rested anyway"
+
+        moved = self._silent_bars(percussion_rest_section=rest)
+        assert set(window(rest)) <= set(moved), (
+            "percussion_rest_section does not reach `_generate_percussion`: the "
+            "rest window is not the section the plan names"
+        )
+        assert not set(window(1)) & set(moved), "the default's section was rested anyway"
 
 
 class TestTheWidestLiftIsOneTheEngineCanHonour:
