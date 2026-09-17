@@ -16,7 +16,8 @@ The layering below it is one-directional:
   any of this: a sketch is not a job, and a finalized piece becomes one.
 
 What lives here: `models` (the records), `store` (their persistence),
-`arbiter` (one order over drafts, and the revision ratchet), `conductor`
+`arbiter` (one order over drafts, and the revision ratchet), `deltas` (the
+typed requests a user or an agent may make, and the applier), `conductor`
 (the loop), `tools` (what the conductor may call), `api` (the HTTP surface).
 """
 

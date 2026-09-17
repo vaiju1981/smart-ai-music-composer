@@ -380,7 +380,8 @@ class CompositionPlan:
             _require(bool(figure), "a bass figure must carry at least one note")
         _require(
             0 <= self.cadence_degree <= 6,
-            f"cadence_degree is out of the scale ({self.cadence_degree})",
+            "cadence_degree is out of the scale, which runs 0..6 "
+            f"({self.cadence_degree})",
         )
         _require(
             abs(self.modulation_offset) <= 12,

@@ -22,6 +22,7 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from enum import StrEnum
 
 from saimc.compose.score import PPQ
 from saimc.instruments import LINE_BAND_SEMITONES
@@ -34,6 +35,7 @@ __all__ = [
     "DEFAULT_MELODY_SHAPE",
     "DEFAULT_RHYTHM_WEIGHTS",
     "DEFAULT_TIE_PROBABILITY",
+    "FIGURES_BY_MOTION",
     "LEAP_DEGREES",
     "MAX_MOTIF_SPAN_DEGREES",
     "MOTIF_OPERATION_WEIGHTS",
@@ -44,6 +46,7 @@ __all__ = [
     "TIE_PROBABILITY",
     "BarSlot",
     "BassFigure",
+    "BassMotion",
     "MelodyShape",
     "Motif",
     "MotifCell",
@@ -454,28 +457,56 @@ _SPARSE_BASS_FIGURE: BassFigure = ((0, 4, 0), (12, 4, 1))
 # One tone for the whole bar — a pedal under a slow line.
 _PEDAL_BASS_FIGURE: BassFigure = ((0, 16, 0),)
 
+
+class BassMotion(StrEnum):
+    """The named left-hand motions, one per figure.
+
+    A mood's vocabulary is a *set* of figures, and a player asking for the
+    bass "to walk" or "to hold a pedal" is asking which of them leads. The
+    figures were named only by which mood's table happened to hold them, so
+    there was no way to say that; this is the vocabulary that names the
+    motion, and `FIGURES_BY_MOTION` is the table back.
+
+    `ROOT` is `PLAIN_BASS_FIGURE` rather than a second figure that states
+    the chord: the plain statement *is* the root motion, and two constants
+    that behave alike would be two things to keep in sync.
+    """
+
+    ROOT = "root"
+    DRIVING = "driving"
+    ARCHED = "arched"
+    SPARSE = "sparse"
+    PEDAL = "pedal"
+
+
+FIGURES_BY_MOTION: dict[BassMotion, BassFigure] = {
+    BassMotion.ROOT: PLAIN_BASS_FIGURE,
+    BassMotion.DRIVING: _DRIVING_BASS_FIGURE,
+    BassMotion.ARCHED: _ARCHED_BASS_FIGURE,
+    BassMotion.SPARSE: _SPARSE_BASS_FIGURE,
+    BassMotion.PEDAL: _PEDAL_BASS_FIGURE,
+}
+
 BASS_FIGURES: dict[str, tuple[BassFigure, ...]] = {
     "electrifying": (
-        _DRIVING_BASS_FIGURE,
-        _ARCHED_BASS_FIGURE,
-        PLAIN_BASS_FIGURE,
+        FIGURES_BY_MOTION[BassMotion.DRIVING],
+        FIGURES_BY_MOTION[BassMotion.ARCHED],
+        FIGURES_BY_MOTION[BassMotion.ROOT],
     ),
     "calming": (
-        PLAIN_BASS_FIGURE,
-        _ARCHED_BASS_FIGURE,
-        _SPARSE_BASS_FIGURE,
+        FIGURES_BY_MOTION[BassMotion.ROOT],
+        FIGURES_BY_MOTION[BassMotion.ARCHED],
+        FIGURES_BY_MOTION[BassMotion.SPARSE],
     ),
     "sleep": (
-        _PEDAL_BASS_FIGURE,
-        PLAIN_BASS_FIGURE,
-        _SPARSE_BASS_FIGURE,
-        _ARCHED_BASS_FIGURE,
+        FIGURES_BY_MOTION[BassMotion.PEDAL],
+        FIGURES_BY_MOTION[BassMotion.ROOT],
+        FIGURES_BY_MOTION[BassMotion.SPARSE],
+        FIGURES_BY_MOTION[BassMotion.ARCHED],
     ),
 }
 # Moods without their own profile fall back to the gentle set.
 DEFAULT_BASS_FIGURES: tuple[BassFigure, ...] = BASS_FIGURES["calming"]
-
-
 
 
 def draw_bass_figures(
