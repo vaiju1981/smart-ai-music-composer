@@ -63,6 +63,7 @@ from typing import Any, Final
 from saimc.llm.base import ChatClient, ChatRequest, Message, ToolCall
 from saimc.session.models import Session, ToolInvocation, Turn, TurnTrigger
 from saimc.session.tools import ToolContext, dispatch, tool_specs
+from saimc.spec import CompositionSpec
 
 SYSTEM_PROMPT: Final[str] = """\
 You are the conductor of a music-writing session. You do not write music: every
@@ -154,15 +155,26 @@ def _value(name: str, value: Any) -> str:
     return str(value)
 
 
-def _spec_line(session: Session) -> str:
-    if session.spec is None:
-        return "spec: not parsed yet — call parse_brief before drafting"
-    fields = {
-        name: getattr(session.spec, name)
-        for name in _SPEC_FIELDS
-        if getattr(session.spec, name) is not None
-    }
+def spec_line(spec: CompositionSpec | None, *, missing: str = "not parsed yet") -> str:
+    """The piece's musical fields, in one line, for a model to read.
+
+    Shared rather than written twice: the conductor's digest and the feedback
+    translator both describe a piece to a model, and a second rendering of
+    `_SPEC_FIELDS` would be a second place a field can be forgotten and a
+    second place `_value` can be re-derived badly.
+
+    `missing` is the caller's because the two callers have different advice for
+    a session with no spec — the conductor can ask for it to be parsed, while a
+    translator reading feedback has nothing to tell the user to call.
+    """
+    if spec is None:
+        return f"spec: {missing}"
+    fields = {name: getattr(spec, name) for name in _SPEC_FIELDS if getattr(spec, name) is not None}
     return "spec: " + ", ".join(f"{name}={_value(name, value)}" for name, value in fields.items())
+
+
+def _spec_line(session: Session) -> str:
+    return spec_line(session.spec, missing="not parsed yet — call parse_brief before drafting")
 
 
 def _draft_line(draft: Any) -> str:
@@ -347,4 +359,4 @@ async def replay(turns: Iterable[Turn], ctx: ToolContext) -> list[ToolInvocation
     ]
 
 
-__all__ = ["MAX_DIGEST_TURNS", "SYSTEM_PROMPT", "digest", "replay", "take_turn"]
+__all__ = ["MAX_DIGEST_TURNS", "SYSTEM_PROMPT", "digest", "replay", "spec_line", "take_turn"]

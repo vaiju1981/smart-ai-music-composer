@@ -930,15 +930,41 @@ _COMPARE_PARAMETERS: Final[dict[str, Any]] = {
 }
 
 
+def request_schema() -> dict[str, Any]:
+    """One typed request, as the JSON Schema a model authors against.
+
+    The `enum` is `DELTA_TYPES`, so a knob a model is offered is a knob this
+    build carries — a hand-written list here would be a second copy of the
+    vocabulary, and the copy in a schema is the one that drifts. Only the knob
+    is described: a request's own arguments are checked by its own constructor
+    (`_deltas_arg`), which is the engine's business and not the schema's, so
+    restating a bound here would be a third place it is written down.
+
+    Public because two callers offer this vocabulary to a model and they must
+    offer the same one: `revise` as a list of requests, and the feedback
+    translator as one call per request.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "knob": {
+                "type": "string",
+                "enum": sorted(DELTA_TYPES),
+                "description": "Which request this is. Its other keys are that "
+                "request's own arguments.",
+            },
+        },
+        "required": ["knob"],
+    }
+
+
 def _revise_parameters(budget: ToolBudget) -> dict[str, Any]:
     """The `revise` schema, with the vocabulary and the width read off the code.
 
-    Two indirections for the same reason `_draft_parameters` has one. The
-    `enum` is `DELTA_TYPES`, so a knob the model is offered is a knob this build
-    carries, and the ceiling is the budget `_deltas_arg` enforces, so the number
-    the model is told cannot be a different number from the one it is held to. A
-    hand-written list here would be a third copy of the vocabulary, and the copy
-    in a schema is the one that drifts.
+    Two indirections for the same reason `_draft_parameters` has one: the
+    vocabulary comes from `request_schema`, and the ceiling is the budget
+    `_deltas_arg` enforces, so the number the model is told cannot be a
+    different number from the one it is held to.
     """
     return {
         "type": "object",
@@ -953,18 +979,7 @@ def _revise_parameters(budget: ToolBudget) -> dict[str, Any]:
                 "type": "array",
                 "minItems": 1,
                 "maxItems": budget.max_deltas,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "knob": {
-                            "type": "string",
-                            "enum": sorted(DELTA_TYPES),
-                            "description": "Which request this is. Its other keys are that "
-                            "request's own arguments.",
-                        },
-                    },
-                    "required": ["knob"],
-                },
+                "items": request_schema(),
                 "description": (
                     "The requests to apply, in order. Each is one knob and the value to set "
                     "it to — `{knob: SetTempo, tempo_bpm: 76}` takes the piece to 76 BPM. The "
@@ -1184,5 +1199,6 @@ __all__ = [
     "TurnLedger",
     "dispatch",
     "publish_draft",
+    "request_schema",
     "tool_specs",
 ]

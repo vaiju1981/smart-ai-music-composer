@@ -96,8 +96,10 @@ Four, and they are told apart because the sentence the user needs differs.
 `violates_the_spec` and `violates_the_plan` are the same situation against
 two documents — the request was understood and the piece cannot hold it —
 while `unknown_knob` is a request naming something the engine has no knob
-for at all. The last one is only ever built by `refuse_uncarried`, since a
-knob that does not exist has no value to construct.
+for at all. The last one has two builders and they are the two ways a name
+can be unknown: `refuse_uncarried`, for a request the design named and plan
+v1 has no knob for, and `translator._unknown`, for a name a model invented,
+which has no entry to describe because nothing ever designed it.
 
 `tempo_not_honoured` is the fourth for a different kind of reason: the
 request was understood, the piece *could* hold it, and the engine traded it

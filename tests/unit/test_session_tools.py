@@ -1377,6 +1377,7 @@ class TestTheHandlersAreAllReachable:
             "TurnLedger",
             "dispatch",
             "publish_draft",
+            "request_schema",
             "tool_specs",
         }
 
