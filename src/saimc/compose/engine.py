@@ -42,7 +42,6 @@ from itertools import pairwise
 from typing import Any
 
 from saimc.compose.duration import (
-    ArrangementKnobs,
     DurationArrangement,
     DurationUnfulfillableError,
     arrange_for_duration,
@@ -311,7 +310,7 @@ def compose(
         time_signature,
         arrangement,
         ensemble,
-        knobs=knobs,
+        plan=resolved,
     )
     lint_report = lint(
         score,
@@ -366,7 +365,7 @@ def _build_score(
     arrangement: DurationArrangement,
     ensemble: Ensemble,
     *,
-    knobs: ArrangementKnobs,
+    plan: CompositionPlan,
 ) -> tuple[NotationScore, tuple[tuple[int, ...], ...], tuple[KeySignature, ...]]:
     """Build the NotationScore from the spec + arrangement.
 
@@ -405,7 +404,9 @@ def _build_score(
     bars_since_breath = 0
 
     rng_base_seed = spec.seed if spec.seed is not None else 0
+    knobs = plan.arrangement_knobs()
     long_piece = arrangement.repetition_count >= knobs.arc_min_reps
+    bass_figures = plan.bass_figures
     harmony_voices = tuple(
         (voice_id, instrument)
         for voice_id, instrument in ensemble.voice_instruments().items()
@@ -430,13 +431,17 @@ def _build_score(
         is_final_section = section_idx == arrangement.repetition_count - 1
         if is_final_section:
             # The last repetition must land at home: rewrite its last
-            # two bars as the mood's cadence (earlier sections may end
+            # two bars as the plan's cadence (earlier sections may end
             # open — their V resolves into the next section's I).
-            section_template = apply_final_cadence(section_template, spec.mood.value)
-        # Long pieces lift the final repetition a whole step — the
-        # piece ends in the new key, so the coda (which follows it)
+            section_template = apply_final_cadence(
+                section_template,
+                cadence_degree=plan.cadence_degree,
+                seventh=plan.cadence_seventh,
+            )
+        # Long pieces lift the final repetition by the plan's offset —
+        # the piece ends in the new key, so the coda (which follows it)
         # stays lifted too and the ending keeps its cadence.
-        key_offset = MODULATION_OFFSET if is_final_section and long_piece else 0
+        key_offset = plan.modulation_offset if is_final_section and long_piece else 0
         section_result = _generate_section(
             key=key,
             time_signature=time_signature,
@@ -446,6 +451,7 @@ def _build_score(
             seed_for_variation=rng_base_seed + section_idx,
             mood=spec.mood.value,
             band=band,
+            figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
             prev_melody_leap=prev_melody_leap,
@@ -506,7 +512,11 @@ def _build_score(
     # so it carries the final cadence.
     if arrangement.coda_bars > 0:
         coda_template = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
-        coda_template = apply_final_cadence(coda_template, spec.mood.value)
+        coda_template = apply_final_cadence(
+            coda_template,
+            cadence_degree=plan.cadence_degree,
+            seventh=plan.cadence_seventh,
+        )
         coda_rng = random.Random(section_seed(spec.seed, arrangement.repetition_count))
         coda_result = _generate_section(
             key=key,
@@ -517,12 +527,13 @@ def _build_score(
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
             mood=spec.mood.value,
             band=band,
+            figures=bass_figures,
             prev_bass=prev_bass,
             prev_melody=prev_melody,
             prev_melody_leap=prev_melody_leap,
             # The outro thins out: the coda opens bass alone, and a
             # long-piece modulation stays lifted through the ending.
-            key_offset=MODULATION_OFFSET if long_piece else 0,
+            key_offset=plan.modulation_offset if long_piece else 0,
             melody_from_bar=1 if arrangement.coda_bars >= 2 else 0,
             # The coda is the piece's true ending: its final bar must
             # force the tonic resolution the way a last section does.
@@ -716,6 +727,7 @@ def _generate_section(
     seed_for_variation: int,
     mood: str,
     band: MelodyBand,
+    figures: tuple[BassFigure, ...],
     prev_bass: int | None = None,
     prev_melody: int | None = None,
     prev_melody_leap: int | None = None,
@@ -834,7 +846,7 @@ def _generate_section(
     # a figure must not shift the melody's draws, or this would be a
     # melody rewrite as well, and nobody asked for one.
     slot_figures = draw_bass_figures(
-        mood,
+        figures,
         rng=random.Random(seed_for_variation * 31 + 17),
         count=len(template.chords),
     )
@@ -3045,8 +3057,9 @@ TIE_PROBABILITY: dict[str, float] = {
 # Arrangement arc (S8): long pieces lift their final repetition a whole
 # step (the piece ends in the new key — the lift IS the ending), drop
 # the drums for one mid-piece section to give the texture a hole, and
-# step the dynamics per section instead of arching continuously.
-MODULATION_OFFSET: int = 2
+# step the dynamics per section instead of arching continuously. The
+# offset itself lives in `forms.py` with the key arithmetic it feeds, and
+# reaches the engine through the plan.
 PERCUSSION_REST_SECTION: int = 1
 
 

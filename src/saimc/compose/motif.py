@@ -381,9 +381,9 @@ DEFAULT_BASS_FIGURES: tuple[BassFigure, ...] = BASS_FIGURES["calming"]
 
 
 def draw_bass_figures(
-    mood: str, *, rng: random.Random, count: int
+    figures: tuple[BassFigure, ...], *, rng: random.Random, count: int
 ) -> tuple[BassFigure, ...]:
-    """One figure per chord slot, rotating through the mood's vocabulary.
+    """One figure per chord slot, rotating through the vocabulary given.
 
     A figure belongs to a *slot*, not to a bar: the left hand states a
     figure for as long as its harmony lasts and changes it when the
@@ -392,13 +392,19 @@ def draw_bass_figures(
     one — and it is the musical reading of the same number, since variety
     that arrived per bar would be noise rather than an accompaniment.
 
-    The moods' tables do the work: each runs from its most characteristic
-    figure to its plainest, and the slot's index takes the next one, so a
-    progression is accompanied by a line that changes with it. Only where
-    the rotation *starts* is drawn, so two pieces of one mood do not open
-    on the same figure.
+    The vocabulary does the work: each mood's table runs from its most
+    characteristic figure to its plainest, and the slot's index takes the
+    next one, so a progression is accompanied by a line that changes with
+    it. Only where the rotation *starts* is drawn, so two pieces of one
+    mood do not open on the same figure.
+
+    The vocabulary arrives as an argument rather than by mood name so that
+    it is a value a composition plan carries and a caller can edit — the
+    same reason the tables were named. `BASS_FIGURES[mood]` and its
+    fallback are still how the *default* plan finds this mood's table.
     """
-    figures = BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES)
+    if not figures:
+        raise ValueError("a bass vocabulary must carry at least one figure")
     start = rng.randrange(len(figures))
     return tuple(figures[(start + index) % len(figures)] for index in range(count))
 

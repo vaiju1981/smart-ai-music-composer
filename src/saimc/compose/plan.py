@@ -52,7 +52,12 @@ from saimc.compose.duration import (
     RITARDANDO_FACTOR,
     ArrangementKnobs,
 )
-from saimc.compose.forms import PHRASE_SIZES, cadence_degree_for
+from saimc.compose.forms import (
+    MODULATION_OFFSET,
+    PHRASE_SIZES,
+    cadence_degree_for,
+    cadence_seventh_for,
+)
 from saimc.compose.motif import (
     BASS_FIGURES,
     CHORD_TONE_DEGREES,
@@ -156,6 +161,21 @@ class CompositionPlan:
     as its harmony lasts, which is what `bass_onset_patterns` counts."""
     cadence_degree: int
     """The scale degree the final cadence approaches the tonic from."""
+    cadence_seventh: bool
+    """Whether the cadence chord is a seventh, as electrifying's V7 is.
+
+    The other half of the cadence: it was `mood == "electrifying"` inline,
+    so a plan could not state a cadence without the mood deciding half of
+    it. A value now, so `(plan, seed) -> notes` holds for the cadence as
+    it does for everything else the plan carries.
+    """
+    modulation_offset: int
+    """Semitones the final repetition of a long piece is lifted by.
+
+    `MODULATION_OFFSET`, which lived in `engine.py` and therefore joins the
+    plan here, as its layer is wired. Zero is a legal choice — a long piece
+    that returns home instead of lifting — it is simply not this engine's.
+    """
 
     # --- Arrangement ----------------------------------------------------
     form_sizes: tuple[int, ...]
@@ -224,6 +244,11 @@ class CompositionPlan:
         _require(
             0 <= self.cadence_degree <= 6,
             f"cadence_degree is out of the scale ({self.cadence_degree})",
+        )
+        _require(
+            abs(self.modulation_offset) <= 12,
+            "modulation_offset is a lift of the key, so it cannot exceed an "
+            f"octave ({self.modulation_offset})",
         )
 
         _require(bool(self.form_sizes), "form_sizes must not be empty")
@@ -308,6 +333,8 @@ class CompositionPlan:
             ],
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
             "cadence_degree": self.cadence_degree,
+            "cadence_seventh": self.cadence_seventh,
+            "modulation_offset": self.modulation_offset,
             "form_sizes": list(self.form_sizes),
             "intro_bars": self.intro_bars,
             "max_repeats": self.max_repeats,
@@ -371,6 +398,8 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         rhythm_weights=_named_weights(RHYTHM_WEIGHTS.get(mood, DEFAULT_RHYTHM_WEIGHTS)),
         bass_figures=BASS_FIGURES.get(mood, DEFAULT_BASS_FIGURES),
         cadence_degree=cadence_degree_for(mood),
+        cadence_seventh=cadence_seventh_for(mood),
+        modulation_offset=MODULATION_OFFSET,
         form_sizes=PHRASE_SIZES,
         intro_bars=INTRO_BARS,
         max_repeats=MAX_REPEATS,

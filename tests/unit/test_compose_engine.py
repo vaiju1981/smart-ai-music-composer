@@ -15,7 +15,6 @@ from saimc.compose.engine import (
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
     HARMONY_MELODY_CLEARANCE,
-    MODULATION_OFFSET,
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
@@ -48,6 +47,7 @@ from saimc.compose.engine import (
     compose,
 )
 from saimc.compose.forms import (
+    MODULATION_OFFSET,
     PHRASE_BARS,
     STEP_MAX_SEMITONES,
     ChordSlot,
@@ -152,7 +152,12 @@ def _bar_degrees_and_offsets(
     offset carries the long-piece modulation lift, which exempts each
     section's final two cadence bars.
     """
-    from saimc.compose.forms import apply_final_cadence, get_template_for_form
+    from saimc.compose.forms import (
+        apply_final_cadence,
+        cadence_degree_for,
+        cadence_seventh_for,
+        get_template_for_form,
+    )
 
     arrangement = out.arrangement
     lifted = arrangement.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
@@ -168,7 +173,11 @@ def _bar_degrees_and_offsets(
             MODULATION_OFFSET if section == arrangement.repetition_count - 1 and lifted else 0
         )
         if section == arrangement.repetition_count - 1:
-            template = apply_final_cadence(template, mood)
+            template = apply_final_cadence(
+                template,
+                cadence_degree=cadence_degree_for(mood),
+                seventh=cadence_seventh_for(mood),
+            )
         consumed = 0
         for slot in template.chords:
             exempt = section_offset and consumed >= template.bars - 2
@@ -181,7 +190,8 @@ def _bar_degrees_and_offsets(
     if arrangement.coda_bars > 0:
         coda = apply_final_cadence(
             _truncate_template_for_coda(arrangement.template, arrangement.coda_bars),
-            mood,
+            cadence_degree=cadence_degree_for(mood),
+            seventh=cadence_seventh_for(mood),
         )
         coda_offset = MODULATION_OFFSET if lifted else 0
         consumed = 0

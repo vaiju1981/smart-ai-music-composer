@@ -108,6 +108,10 @@ _MUTATIONS: dict[str, Any] = {
     "rhythm_weights": (("straight", 0.40), ("dotted", 0.30), ("tie", 0.30)),
     "bass_figures": tuple(reversed(_base().bass_figures)),
     "cadence_degree": 4,
+    # The base is calming, whose cadence is a plain triad, so `True` is the
+    # change and the electrifying V7 is the value it does not already hold.
+    "cadence_seventh": True,
+    "modulation_offset": 3,
     "form_sizes": (4, 8, 16, 32),
     "intro_bars": 3,
     # Lowered, not raised: §10 #10 caps how often a source section may
@@ -329,6 +333,8 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"bass_figures": ()}, "at least one figure"),
             ({"bass_figures": ((),)}, "at least one note"),
             ({"cadence_degree": 9}, "out of the scale"),
+            ({"modulation_offset": 13}, "cannot exceed an octave"),
+            ({"modulation_offset": -13}, "cannot exceed an octave"),
             ({"form_sizes": ()}, "must not be empty"),
             ({"form_sizes": (8, 0)}, "positive number of bars"),
             ({"intro_bars": -1}, "not be negative"),

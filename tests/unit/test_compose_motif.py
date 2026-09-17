@@ -11,6 +11,7 @@ import pytest
 from saimc.compose.engine import _melody_band_for, compose
 from saimc.compose.motif import (
     BASS_FIGURES,
+    DEFAULT_BASS_FIGURES,
     PLAIN_BASS_FIGURE,
     PPQ,
     Motif,
@@ -262,15 +263,31 @@ class TestBassFigures:
         short vocabulary: a plain weighted draw could repeat and leave
         the bar-to-bar reading counting one figure.
         """
-        drawn = draw_bass_figures("calming", rng=random.Random(4), count=6)
-        assert drawn == draw_bass_figures("calming", rng=random.Random(4), count=6)
+        drawn = draw_bass_figures(BASS_FIGURES["calming"], rng=random.Random(4), count=6)
+        again = draw_bass_figures(BASS_FIGURES["calming"], rng=random.Random(4), count=6)
+        assert drawn == again
         assert len(set(drawn)) >= 3
         assert all(a != b for a, b in itertools.pairwise(drawn))
 
-    def test_an_unknown_mood_falls_back_to_the_gentle_set(self) -> None:
-        assert set(draw_bass_figures("no-such-mood", rng=random.Random(1), count=4)) <= set(
-            BASS_FIGURES["calming"]
-        )
+    def test_the_fallback_vocabulary_is_the_gentle_set(self) -> None:
+        """The `.get(mood, default)` shape, now in `default_plan`.
+
+        Every `Mood` has a profile, so nothing reaches the fallback through
+        a spec — it is defensive. What can still be checked here is that the
+        fallback is the documented one and is drawable, which is what a
+        vocabulary handed straight to `draw_bass_figures` has to be.
+        """
+        assert BASS_FIGURES["calming"] == DEFAULT_BASS_FIGURES
+        drawn = draw_bass_figures(DEFAULT_BASS_FIGURES, rng=random.Random(1), count=4)
+        assert len(drawn) == 4
+        assert set(drawn) <= set(DEFAULT_BASS_FIGURES)
+
+    def test_an_empty_vocabulary_is_refused(self) -> None:
+        """A plan cannot carry an empty one — `CompositionPlan` refuses it —
+        but a direct caller can, and the refusal names the reason rather
+        than raising `randrange` on an empty range."""
+        with pytest.raises(ValueError, match="at least one figure"):
+            draw_bass_figures((), rng=random.Random(1), count=2)
 
 
 class TestMotifMelody:

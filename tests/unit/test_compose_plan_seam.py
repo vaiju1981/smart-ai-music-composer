@@ -11,10 +11,17 @@ parameter being dead is invisible to it. A seam that cannot be shown to be
 live is a seam that will be found dead at Phase C, when the conductor
 starts passing plans that do nothing.
 
-So each arrangement knob is composed twice, once at its default and once
-mutated, and the whole output — score, performance plan and the
-arrangement the sidecar records — has to move. A knob the engine reads
-from a module table instead of from the plan moves nothing and fails here.
+So each knob is composed twice, once at its default and once mutated,
+and the whole output — score, performance plan and the arrangement the
+sidecar records — has to move. A knob the engine reads from a module
+table instead of from the plan moves nothing and fails here.
+
+The cases are grouped by the layer that reads them, and each group names
+its fields explicitly, because there is no struct to enumerate them
+against the way `ArrangementKnobs` enumerates the arrangement's. B9
+closes that: once every layer is wired, one test asserts the union of
+these groups names every field of the plan, so a knob added without a
+seam case fails rather than quietly going uncovered.
 """
 
 from __future__ import annotations
@@ -25,14 +32,20 @@ from typing import Any
 import pytest
 
 from saimc.canonical import canonical_sha256
-from saimc.compose.duration import DEFAULT_ARRANGEMENT_KNOBS, ArrangementKnobs
+from saimc.compose.duration import (
+    DEFAULT_ARRANGEMENT_KNOBS,
+    ArrangementKnobs,
+    bar_ticks,
+)
 from saimc.compose.engine import CompositionEngineError, EngineErrorCode, EngineOutput, compose
+from saimc.compose.motif import BASS_FIGURES
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
     CompositionPlan,
     PlanError,
     default_plan,
 )
+from saimc.compose.score import VOICE_BASS
 from saimc.spec import CompositionSpec
 
 _SPEC = CompositionSpec(mood="calming", duration_seconds=180, seed=11)
@@ -172,6 +185,211 @@ class TestTheArcKnobReachesTheScoreBuilder:
             "not reading arc_min_reps from the plan"
         )
         assert with_arc.notation_score.compute_hash() != without_arc.notation_score.compute_hash()
+
+
+_HARMONY_KNOBS: dict[str, Any] = {
+    # Another mood's vocabulary. A bass figure decorates a chord slot for
+    # as long as its harmony lasts, and the three mood tables state the
+    # same slots differently, so swapping the vocabulary re-writes the
+    # bass line without touching the chords it is built on.
+    "bass_figures": BASS_FIGURES["electrifying"],
+    # Calming closes plagally, approaching the tonic from degree 3; this
+    # is the authentic V-I the cadence would otherwise be written with.
+    "cadence_degree": 4,
+    # And with it a seventh on the cadence chord, which calming's plain
+    # triad does not carry.
+    "cadence_seventh": True,
+    # A lift of a whole tone rather than the engine's minor third. Both
+    # are legal (the plan refuses only beyond an octave), and the piece
+    # ends in a different new key.
+    "modulation_offset": 3,
+}
+
+_HARMONY_FIELDS = frozenset(
+    {"bass_figures", "cadence_degree", "cadence_seventh", "modulation_offset"}
+)
+"""The plan's `--- Harmony ---` block, which reads these four.
+
+Spelled out because, unlike the arrangement, this layer has no struct to
+enumerate — the comparison below is what keeps this set honest against
+the plan's own field list until B9's union check makes it mechanical.
+"""
+
+
+class TestTheHarmonyLayerIsLive:
+    """The chords, the cadence, the bass vocabulary and the lift.
+
+    `bass_figures` reaches the notes through `draw_bass_figures`; the two
+    cadence fields through `apply_final_cadence`; `modulation_offset`
+    through the `key_offset` the section is transposed by. All four were
+    module-table or inline-mood reads before B3.
+    """
+
+    def test_every_harmony_knob_has_a_case(self) -> None:
+        assert set(_HARMONY_KNOBS) == _HARMONY_FIELDS
+
+    @pytest.mark.parametrize("knob", sorted(_HARMONY_KNOBS))
+    def test_a_non_default_plan_moves_the_output(self, knob: str) -> None:
+        plan = replace(default_plan(_SPEC), **{knob: _HARMONY_KNOBS[knob]})
+        moved = _fingerprint(compose(_SPEC, plan=plan)) != _DEFAULT_FINGERPRINT
+        assert moved, (
+            f"{knob} is carried by the plan but does not reach the engine: "
+            "composing under it produced the same score, performance plan and "
+            "arrangement as the default. The seam is dead for this knob."
+        )
+
+    def test_the_cases_are_not_all_one_knob_in_disguise(self) -> None:
+        base = default_plan(_SPEC)
+        for knob, value in _HARMONY_KNOBS.items():
+            assert getattr(base, knob) != value, knob
+
+
+class TestTheHarmonyKnobsReachTheCodaToo:
+    """`_SPEC` reaches the body's cadence and no coda; the coda is the hidden half.
+
+    Every harmony knob is honoured at two call sites. `apply_final_cadence`
+    runs on the last repetition of the body and again on the coda template,
+    the modulation lift is passed at both of those `_generate_section`
+    calls, and the bass vocabulary goes to the coda's call as well. At
+    180 s `_SPEC` arranges to five repetitions and no coda at all, so a
+    sabotage that ignored the plan at the coda's call sites would leave
+    every test above green — the same shape as B2's `arc_min_reps`, where
+    one read masked another.
+
+    **The parametrised tests above cannot cover this**, and that is the
+    point of the class: a fingerprint that moved because the body read the
+    plan moved for reasons that have nothing to do with the coda. So each
+    test here reads a quantity the coda alone writes, compares it against
+    the same quantity under a plan mutated in exactly one knob, and fails
+    if it did not move. What the body did is irrelevant to all three.
+
+    The spec that reaches the coda needs the plan for the reason B2 found:
+    no default arrangement has both a coda and
+    `repetition_count >= arc_min_reps`, because a coda is only reached
+    where few repetitions fit. So the long-piece branches inside the coda
+    arm are reachable only through a lowered `arc_min_reps` — here 41 s of
+    `calming`, which arranges to eight bars once plus a four-bar coda, so
+    the coda is the piece's final four bars.
+    """
+
+    _CODA_SPEC = CompositionSpec(mood="calming", duration_seconds=41, seed=3)
+    _LONG_WITH_CODA = replace(default_plan(_CODA_SPEC), arc_min_reps=1)
+
+    def _compose(self, **changes: Any) -> EngineOutput:
+        return compose(self._CODA_SPEC, plan=replace(self._LONG_WITH_CODA, **changes))
+
+    def _coda_start(self, output: EngineOutput) -> int:
+        """The first bar the coda writes.
+
+        `total_bars` counts the body — `form_bars` times the repetitions —
+        and `coda_bars` is appended to it rather than included in it, so
+        the coda starts where the body ends.
+        """
+        return output.arrangement.total_bars
+
+    def test_a_long_piece_with_a_coda_is_what_this_composes(self) -> None:
+        """The premise, asserted rather than assumed: a spec that stopped
+        reaching the coda, or stopped counting as long, would leave the
+        assertions below reading the body and covering nothing."""
+        output = self._compose()
+        arrangement = output.arrangement
+        assert arrangement.coda_bars > 0, "the coda arm was not reached"
+        assert arrangement.repetition_count >= self._LONG_WITH_CODA.arc_min_reps, (
+            "the piece is not long, so the coda's long-piece branches are not taken"
+        )
+        assert len(output.bar_keys) == arrangement.total_bars + arrangement.coda_bars, (
+            "the coda is not appended after the body, so `_coda_start` is wrong"
+        )
+
+    def test_the_coda_cadence_is_the_plans_cadence(self) -> None:
+        """`chord_bars` is written from the template, so the coda's last two
+        bars are the coda's cadence and nothing the body handed over can
+        move them."""
+        for knob in ("cadence_degree", "cadence_seventh"):
+            assert (
+                self._compose(**{knob: _HARMONY_KNOBS[knob]}).chord_bars[-2:]
+                != self._compose().chord_bars[-2:]
+            ), (
+                f"{knob} reaches the body's cadence but not the coda's: "
+                "`apply_final_cadence` is not being given the plan at the coda call"
+            )
+
+    def test_the_coda_bass_is_written_from_the_plans_vocabulary(self) -> None:
+        """Read as the rhythm of the coda's bass onsets, measured from the coda's start.
+
+        The pitches are not usable here: the coda's walk starts from the
+        landing tone the body handed it, and a vocabulary change moves that
+        landing tone too, so a pitch-only comparison could move without the
+        coda reading anything. The onsets cannot — `draw_bass_figures`
+        chooses a figure by index, and a figure states a rhythm before it
+        states any pitch, so the coda's onset positions follow the
+        vocabulary and nothing else.
+        """
+        ticks = bar_ticks(self._CODA_SPEC.time_signature.value)
+
+        def onsets(output: EngineOutput) -> tuple[int, ...]:
+            start = self._coda_start(output) * ticks
+            return tuple(
+                sorted(
+                    note.tick - start
+                    for note in output.notation_score.notes
+                    if note.tick >= start and note.voice_id == VOICE_BASS
+                )
+            )
+
+        assert onsets(self._compose(bass_figures=_HARMONY_KNOBS["bass_figures"])) != onsets(
+            self._compose()
+        ), (
+            "the coda's bass rhythm did not follow the plan's vocabulary: "
+            "`_generate_section` is not being given it at the coda call"
+        )
+
+    def test_the_coda_is_lifted_by_the_plans_offset(self) -> None:
+        """The coda's lifted bars carry the key the body's do.
+
+        The assertion is agreement rather than movement, because movement
+        is what the body already provides: under a plan that lifts by five
+        semitones the body's final repetition is in F, and the coda has to
+        be in F too. A coda reading a constant would sit a third away from
+        the section it follows.
+        """
+        output = self._compose(modulation_offset=5)
+        start = self._coda_start(output)
+        assert output.bar_keys[start] == output.bar_keys[0], (
+            "the coda is not in the key the final repetition modulated to: "
+            "`_build_score` is not reading the plan's modulation_offset at the coda call"
+        )
+        assert output.bar_keys[start] != self._compose(modulation_offset=0).bar_keys[start]
+
+
+class TestTheWidestLiftIsOneTheEngineCanHonour:
+    """`abs(modulation_offset) <= 12` is a musical bound, not a guess.
+
+    A twelve-semitone lift leaves the final repetition's *key signature*
+    alone and moves its notes an octave — which is exactly what makes it
+    the edge of a lift rather than a modulation to somewhere else. The
+    plan refuses thirteen (`test_it_raises_with_the_reason` in
+    `test_compose_plan.py`), so twelve is the far end of the range an
+    editor is allowed to reach, and a bound the engine could not honour at
+    its own limit would be a bound that refuses legal plans.
+    """
+
+    def test_the_extreme_compiles_and_moves_the_notes(self) -> None:
+        """`compose` lints and raises on an illegal piece, so composing at
+        all is half the assertion. The other half needs a bar that is
+        actually lifted: the last two bars of a section are its cadence and
+        carry no offset (`slot_offset` in `_generate_section`), so the
+        lifted key has to be read from the top of the final repetition —
+        and the notes have to move while the key does not."""
+        unlifted = compose(_SPEC, plan=replace(default_plan(_SPEC), modulation_offset=0))
+        lifted_bar = unlifted.arrangement.total_bars - unlifted.arrangement.form_bars
+        for offset in (12, -12):
+            lifted = compose(_SPEC, plan=replace(default_plan(_SPEC), modulation_offset=offset))
+            assert lifted.notation_score.compute_hash() != unlifted.notation_score.compute_hash()
+            assert lifted.bar_keys[lifted_bar] == unlifted.bar_keys[lifted_bar], (
+                "an octave away is the same key, which is why an octave is the "
+                "bound the plan states"
+            )
 
 
 class TestTheCodaBranchReadsThePlan:

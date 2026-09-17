@@ -306,31 +306,65 @@ CADENCE_DEGREE: Mapping[str, int] = {
 DEFAULT_CADENCE_DEGREE: int = 4
 """The cadence an unlisted mood gets: a dominant, the stronger close."""
 
+CADENCE_SEVENTH: Mapping[str, bool] = {
+    "electrifying": True,
+}
+"""Whether the cadence chord is a seventh.
+
+Only electrifying's dominant is a V7; a seventh under the plagal close
+would be heard as an added sixth over the tonic that follows it. The
+other moods take `DEFAULT_CADENCE_SEVENTH`, which is the triad.
+"""
+
+DEFAULT_CADENCE_SEVENTH: bool = False
+"""The cadence an unlisted mood gets: the triad, which is the plain close."""
+
+MODULATION_OFFSET: int = 2
+"""Semitones a long piece's final repetition is lifted by.
+
+A whole step, and the lift *is* the ending: the piece arrives in the new
+key and stays there through the coda. It lives here, with `transposed_key`
+and the rest of the key arithmetic, rather than in `engine.py` where it was
+declared — a plan has to be able to read it, and `engine.py` imports
+`plan.py`, so the dependency cannot run the other way.
+"""
+
 
 def cadence_degree_for(mood: str) -> int:
     """The scale degree this mood's final cadence approaches the tonic from."""
     return CADENCE_DEGREE.get(mood, DEFAULT_CADENCE_DEGREE)
 
 
-def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
-    """Rewrite a template's last two bars as its mood's cadence.
+def cadence_seventh_for(mood: str) -> bool:
+    """Whether this mood's final cadence chord is a seventh."""
+    return CADENCE_SEVENTH.get(mood, DEFAULT_CADENCE_SEVENTH)
 
-    The bar before the final tonic becomes the dominant (V) for
-    electrifying — as a V7 — or the subdominant (IV) for calming/sleep,
-    giving the melody a harmonic target to resolve onto. Both cadence
-    chords are pinned to root-position bass (`bass_degree`) so the
-    final close lands on the tonic's root, not on a walking inversion.
-    Bar count is preserved: the cadence bars replace the template's
-    last two bars, so duration arithmetic is unaffected. Templates
-    shorter than three bars are returned unchanged (there is no room
-    for a 2-bar close).
+
+def apply_final_cadence(
+    template: ChordTemplate, *, cadence_degree: int, seventh: bool
+) -> ChordTemplate:
+    """Rewrite a template's last two bars as the cadence it is given.
+
+    The bar before the final tonic becomes the degree named — the dominant
+    (V) for electrifying, the subdominant (IV) for calming/sleep — giving
+    the melody a harmonic target to resolve onto, as a seventh chord when
+    `seventh`. Both cadence chords are pinned to root-position bass
+    (`bass_degree`) so the final close lands on the tonic's root, not on a
+    walking inversion. Bar count is preserved: the cadence bars replace the
+    template's last two bars, so duration arithmetic is unaffected.
+    Templates shorter than three bars are returned unchanged (there is no
+    room for a 2-bar close).
+
+    The degree and the seventh arrive as arguments rather than as a mood
+    name so the whole cadence is a value a plan carries; `CADENCE_DEGREE`
+    and `cadence_degree_for` remain how the *default* plan finds this
+    mood's pair.
     """
-    cadence_degree = cadence_degree_for(mood)
     if template.bars < 3:
         return template
     kept = _truncate_template(template, template.bars - 2).chords
     cadence = (
-        ChordSlot(cadence_degree, 1, seventh=(mood == "electrifying"), bass_degree=cadence_degree),
+        ChordSlot(cadence_degree, 1, seventh=seventh, bass_degree=cadence_degree),
         ChordSlot(0, 1, bass_degree=0),
     )
     return ChordTemplate(
@@ -661,8 +695,11 @@ def bar_diatonic_pcs(chord_pcs: tuple[int, ...], key: KeySignature) -> frozenset
 
 __all__ = [
     "CADENCE_DEGREE",
+    "CADENCE_SEVENTH",
     "DEFAULT_CADENCE_DEGREE",
+    "DEFAULT_CADENCE_SEVENTH",
     "LEAP_MIN_SEMITONES",
+    "MODULATION_OFFSET",
     "MOOD_PROFILES",
     "PHRASE_BARS",
     "PHRASE_SIZES",
@@ -675,6 +712,7 @@ __all__ = [
     "bar_diatonic_pcs",
     "bar_scale_intervals",
     "cadence_degree_for",
+    "cadence_seventh_for",
     "chord_tone_degrees",
     "get_mood_profile",
     "get_template_for_form",
