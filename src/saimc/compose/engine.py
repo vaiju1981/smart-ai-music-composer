@@ -3200,6 +3200,36 @@ PERCUSSION_TIMING_US: dict[str, int] = {"light": 5_000, "expressive": 15_000}
 GHOST_NOTE_PROBABILITY: float = 0.08
 GHOST_NOTE_VELOCITY_RANGE: tuple[int, int] = (20, 35)
 
+# The realization is drawn from two streams, one per group of voices: the
+# melodic group (the tune and the bed under it) draws from one and the kit
+# from the other. One stream could not do, and the measurement is the
+# reason. The draws are taken in event order, so a voice that writes one
+# more note shifts every draw the other voice makes after it:
+# `bass_root_motion` shortened this piece's tune by one note and moved the
+# kit's realized timing in **all 207** of its hits — its fills with it. A
+# coupling between two voices neither of which reads the other is one no
+# plan knob can express and no critic can attribute, so each voice's
+# realized timing is a function of its own notes and the piece's seed and
+# of nothing that happens in the other stream.
+#
+# Only that arrow was observable — the melodic events are built before the
+# kit's, so the kit's length could never shift the tune's draws — but which
+# order `events` is built in is an accident of this function rather than a
+# property of the design, and a shared stream is a coupling waiting to point
+# the other way.
+_MELODIC_REALIZATION_SALT: Final[int] = 11
+_KIT_REALIZATION_SALT: Final[int] = 12
+
+
+def _realization_stream(seed: int | None, salt: int) -> random.Random:
+    """The stream the voices of one group draw their realization from.
+
+    The salt separates the groups; `None` seeds the piece's own default,
+    which is what a caller that names no seed gets.
+    """
+    return random.Random(((seed or 0) * 2654435761 + salt) % (2**31))
+
+
 # CC11 (expression) rides the dynamic arch so phrases swell and relax
 # even inside a held chord. 96 is near-full expression at the arch peak.
 EXPRESSION_BASE: int = 96
@@ -3461,7 +3491,8 @@ def _build_performance_plan(
     # Humanization touches only this plan — the NotationScore (and the
     # engraved sheet) keeps its grid-perfect timing.
     if humanization != "none":
-        rng = random.Random(((seed or 0) * 2654435761 + 11) % (2**31))
+        rng = _realization_stream(seed, _MELODIC_REALIZATION_SALT)
+        kit_rng = _realization_stream(seed, _KIT_REALIZATION_SALT)
         timing_us = HUMANIZE_TIMING_US.get(humanization, HUMANIZE_TIMING_US["light"])
         velocity_span = HUMANIZE_VELOCITY_SPAN.get(
             humanization, HUMANIZE_VELOCITY_SPAN["light"]
@@ -3483,7 +3514,7 @@ def _build_performance_plan(
                     )
                 )
             elif event.voice_id == VOICE_PERCUSSION:
-                offset = round(rng.uniform(-1.0, 1.0) * perc_timing_us)
+                offset = round(kit_rng.uniform(-1.0, 1.0) * perc_timing_us)
                 humanized.append(
                     PerformanceNoteEvent(
                         voice_id=event.voice_id,
@@ -3541,13 +3572,15 @@ def _build_performance_plan(
             ]
 
         # Ghost notes: a quiet extra hit a 16th after some percussion
-        # notes, skipped when a real hit already occupies the slot.
+        # notes, skipped when a real hit already occupies the slot. Both
+        # of the kit's draws come from the kit's stream, so nothing the
+        # tune or the bed writes can move them.
         percussion = [e for e in events if e.voice_id == VOICE_PERCUSSION]
         if percussion:
             sixteenth_us = round(60_000_000 / score.tempo.bpm / 4)
             ghosts: list[PerformanceNoteEvent] = []
             for event in percussion:
-                if rng.random() >= GHOST_NOTE_PROBABILITY:
+                if kit_rng.random() >= GHOST_NOTE_PROBABILITY:
                     continue
                 ghost_start = event.start_us + sixteenth_us
                 if any(
@@ -3562,7 +3595,7 @@ def _build_performance_plan(
                         pitch_midi=event.pitch_midi,
                         start_us=ghost_start,
                         duration_us=event.duration_us,
-                        velocity=rng.randint(*GHOST_NOTE_VELOCITY_RANGE),
+                        velocity=kit_rng.randint(*GHOST_NOTE_VELOCITY_RANGE),
                         tie=False,
                     )
                 )

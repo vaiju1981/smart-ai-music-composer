@@ -11,6 +11,8 @@ import pytest
 
 from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS, bar_ticks
 from saimc.compose.engine import (
+    _KIT_REALIZATION_SALT,
+    _MELODIC_REALIZATION_SALT,
     _RANK_RUBBING,
     _START_REACH_DEGREES,
     _WALK_REACH_DEGREES,
@@ -38,6 +40,7 @@ from saimc.compose.engine import (
     _octaves_in_window,
     _opening_step,
     _place_bar,
+    _realization_stream,
     _scale_degree_to_semitones,
     _settle_harmony_register,
     _snap_to_chord,
@@ -57,6 +60,7 @@ from saimc.compose.forms import (
 )
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
+from saimc.compose.percussion import DRUM_STYLES
 from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     VOICE_BASS,
@@ -1488,6 +1492,121 @@ class TestExpressionModel:
         assert off_grid, "expected percussion timing offsets off the 16th grid"
 
 
+class TestRealizationStreams:
+    """The tune and the kit draw their realization from separate streams.
+
+    One stream made the kit a function of the tune's *length*: the draws are
+    taken in event order, so a melodic note the engine wrote or did not write
+    shifted every draw the kit made after it. Measured before the split, and
+    the measurement is why the split is two streams rather than a stream for
+    the ghost pass alone: `bass_root_motion` shortened one piece's tune by one
+    note and moved the kit's realized timing in **all 207** of its hits, not
+    merely in the fills.
+
+    **Only one of the two directions witnessed that bug**, and the tests say
+    which. The melody's events are built before the kit's, so the melodic
+    draws are always taken first and the kit's count could never shift them —
+    `test_the_tune_does_not_move_when_the_kits_note_count_does` passed before
+    the split and would pass with the streams merged again, which makes it a
+    ratchet on that ordering rather than a witness of the coupling. It is kept
+    because the ordering is an accident of how `events` is built, not a
+    property of the design, and a future edit that put a melodic event after a
+    percussion one would turn the coupling around with nothing to notice.
+    """
+
+    def test_the_kit_does_not_move_when_the_tunes_note_count_does(self) -> None:
+        """The direction the coupling was found in.
+
+        The pair is the same spec under the two bass policies, which is the
+        edit that shortened this piece's tune — so the premise that the tune
+        really did change length is asserted rather than assumed, and the kit
+        is the whole of what may not follow it.
+        """
+        spec = _spec(
+            Mood.ELECTRIFYING,
+            duration=30,
+            seed=42,
+            instrumentation="drum_set",
+            humanization="light",
+        )
+        on = compose(spec)
+        off = compose(spec, plan=replace(on.plan, bass_root_motion=False))
+
+        melody_on = self._realized(on, VOICE_MELODY)
+        melody_off = self._realized(off, VOICE_MELODY)
+        assert melody_on != melody_off, "the tune did not change: nothing to attribute"
+        assert len({len(melody_on), len(melody_off)}) == 2, (
+            "the two policies wrote the same number of melodic notes, so this pair does "
+            "not test what a *length* does to another voice's stream"
+        )
+        assert self._realized(on, VOICE_PERCUSSION) == self._realized(off, VOICE_PERCUSSION)
+
+    def test_the_tune_does_not_move_when_the_kits_note_count_does(self) -> None:
+        """The other direction — a ratchet, not the direction the bug ran.
+
+        Which of the two directions witnessed the coupling, and why this one
+        did not, is the class docstring's. `drum_style_name` is the plan field
+        that changes the kit and nothing else, so the pair is one spec composed
+        at every style the vocabulary has; the premise asserts the sweep really
+        does vary the kit's size — including a style whose template this meter
+        has none for, which writes no drums at all — because a sweep whose
+        styles all wrote the same number of hits would prove nothing.
+        """
+        spec = _spec(
+            Mood.ELECTRIFYING,
+            duration=30,
+            seed=42,
+            instrumentation="drum_set",
+            humanization="light",
+        )
+        base = compose(spec)
+        tune = self._realized(base, VOICE_MELODY)
+        sizes = []
+        for style in sorted(DRUM_STYLES):
+            out = compose(spec, plan=replace(base.plan, drum_style_name=style))
+            sizes.append(len(self._realized(out, VOICE_PERCUSSION)))
+            assert self._realized(out, VOICE_MELODY) == tune, style
+        assert sizes, "no style was swept"
+        assert min(sizes) == 0, f"no style silences the kit: {sizes}"
+        assert max(sizes) > 3 * len(tune), f"the kit's sizes barely move: {sizes}"
+
+    def test_the_two_groups_get_different_streams(self) -> None:
+        """The split's own failure mode: two names, one stream.
+
+        If the two salts were ever made equal the coupling would come back
+        without either test above noticing — each stream would still advance
+        independently of the other's *length*, so both would pass, while the
+        kit's scatter became a copy of the tune's at the same draw index. The
+        helper is the only place that can be seen.
+        """
+        melodic = _realization_stream(42, _MELODIC_REALIZATION_SALT)
+        kit = _realization_stream(42, _KIT_REALIZATION_SALT)
+        assert _MELODIC_REALIZATION_SALT != _KIT_REALIZATION_SALT
+        draws = [round(melodic.random(), 6) for _ in range(8)]
+        kit_draws = [round(kit.random(), 6) for _ in range(8)]
+        assert draws != kit_draws
+        # Both are a function of the piece's seed and nothing else: the same
+        # seed replays the stream, a different one does not.
+        replay = _realization_stream(42, _KIT_REALIZATION_SALT)
+        assert [round(replay.random(), 6) for _ in range(8)] == kit_draws
+        other = _realization_stream(43, _KIT_REALIZATION_SALT)
+        assert [round(other.random(), 6) for _ in range(8)] != kit_draws
+
+    @staticmethod
+    def _realized(out, voice_id: int) -> list[tuple[int, int, int, bool]]:
+        """One voice's sounded events, timing included — the stream's output.
+
+        The notation score is the wrong surface for this: humanization touches
+        only the performance plan, so the written notes are identical whatever
+        the streams do and every assertion here would pass vacuously.
+        """
+        return [
+            (e.start_us, e.pitch_midi, e.velocity, e.tie)
+            for e in out.performance_plan.notes
+            if e.voice_id == voice_id
+        ]
+
+
 class TestRhythmVocabulary:
     """S7: the melody speaks in dotted figures, 16ths, ties and pickups."""
 
@@ -2519,27 +2638,30 @@ class TestHarmonyVoice:
         humanization off so the ghost pass cannot move them. What moved
         is the melody's pitch — from the fixed 64-84 window every
         instrument used to share to the piano's own band, 60-77 — which
-        is the whole point of the table. The pin has been re-based four
+        is the whole point of the table. The pin has been re-based five
         times now: once when the melody walk was rewritten to move in
         scale degrees, once when the bass replaced its one hard-coded
         figure with the figure library, once for the instrument table
-        above, and once for `bass_root_motion`, which narrowed the bass
-        walk's landing tones to the chord's root.
+        above, once for `bass_root_motion`, which narrowed the bass
+        walk's landing tones to the chord's root, and once for the
+        realization-stream split.
 
-        That fourth re-basing exposed a coupling worth naming, because
-        the percussion pin moved with the melody's and neither voice
-        reads the other. The humanization pass draws one `uniform` per
-        melodic, harmonic and percussion note from a single stream, and
-        the ghost pass then draws its `random()` per percussion note
-        from *the same stream* — so the bar of the stream the ghosts
-        begin at is a function of how many melodic notes were written.
-        This piece's melody went from 84 notes to 83, the ghost draws
-        started one position earlier, and the kit's fills changed while
-        its groove did not (16 ghosts became 17). A melodic edit
-        re-writing the drums' fills is a coupling no critic can
-        attribute and no plan can express; giving the ghost pass its own
-        stream is the fix and is Phase F's next commit rather than this
-        one, so that each commit's music change stays singular.
+        The fourth re-basing is why the fifth happened, and the pair is
+        worth reading together. `bass_root_motion` shortened this tune by
+        one note, and the kit's own realized events moved with it — all
+        207 of them, fills and timing together — because the humanization
+        pass drew from a single stream in event order, so the bar of the
+        stream the kit started at was a function of how many melodic notes
+        were written. Neither voice reads the other, so no plan knob could
+        express that and no critic could attribute it. The split gives the
+        melodic group and the kit one stream each (F2a), and the kit's count
+        is now 206 whatever the tune does — 191 written hits and 15 ghosts
+        off its own stream, where the shared one gave it 17. The bass and
+        the tune read byte-identical to the pin above, because the melodic
+        events are built before the kit's and therefore took the same draws
+        in the same order: the split moves the kit and only the kit. This
+        pin is the record of the new music; `TestRealizationStreams` is what
+        holds the decoupling itself.
         """
         out = compose(
             _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
@@ -2555,8 +2677,8 @@ class TestHarmonyVoice:
                 83,
             ),
             VOICE_PERCUSSION: (
-                "240d18fe7a1cd3be984b2d266311dbce66427f315be0faf75548b99109a57de8",
-                208,
+                "064e0d34ebaada775a82ba6115bd2249f000f35579dd0aa8fdbed3b4e896a61e",
+                206,
             ),
         }
         for voice_id, (digest, count) in pinned.items():

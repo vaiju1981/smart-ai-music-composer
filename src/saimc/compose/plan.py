@@ -257,10 +257,10 @@ class CompositionPlan:
     harmony moves carries the tune with it, and `_settle_harmony_register`
     moves the bed under the tune in turn. Over the same matrix the bass
     moves in every one of the 162 pieces, the tune in 44 and the bed in
-    33. The kit's written notes never move; its *fills* do, with the
-    tune's note count, through the humanization stream the ghost pass
-    shares — a coupling owed its own stream before anything can attribute
-    it.
+    33. The kit's written notes never move; its realized fills did, with the
+    tune's note count, through the humanization stream it shared with the
+    melodic voices — a coupling that could not be attributed, and that Phase
+    F2a ended by giving the kit a stream of its own.
     """
     cadence_degree: int
     """The scale degree the final cadence approaches the tonic from."""
