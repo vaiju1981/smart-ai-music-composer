@@ -24,9 +24,11 @@ from saimc.compose.engine import compose
 from saimc.compose.plan import default_plan
 from saimc.quality import QUALITY_THRESHOLDS, PieceQuality, QualityFinding
 from saimc.session.arbiter import (
+    ELEMENTS,
     METRIC_TIERS,
     _breach,
     arbiter_order,
+    deciding_element,
     draft_key,
     musical_key,
     musical_order,
@@ -38,6 +40,8 @@ from saimc.session.tools import _draft_from
 from saimc.spec import CompositionSpec, Mood
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
+_ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+"""A second plan at the same seed, for the element no measurement can reach."""
 
 _CLEAN: PieceQuality = PieceQuality(
     piece="baseline",
@@ -103,6 +107,72 @@ def _rehash_above(parent: Draft) -> Draft:
             if child.plan_hash > parent.plan_hash:
                 return child
     raise AssertionError("no cadence/offset pair raised the hash above the parent's")
+
+
+def _draft_of(spec: CompositionSpec, draft_id: str, *, seed: int = 1) -> Draft:
+    """A real draft composed at another spec, with the posed clean quality.
+
+    `_draft` is built on one plan, and one element of the order can only be
+    reached by two of them — see `_pair_for`. The seed is stamped the same way
+    `_draft` stamps it, so the pair differs on its plan and on nothing else.
+    """
+    stamped = spec.model_copy(update={"seed": seed})
+    return replace(_draft_from(draft_id, stamped, compose(stamped)), quality=_CLEAN)
+
+
+def _elements_before(left: Draft, right: Draft, element: str) -> bool:
+    """Whether two drafts tie on every element that decides ahead of `element`.
+
+    This is the premise a case for one element has to carry. Ties *after* the
+    named element are inevitable rather than suspicious — a pair differing in how
+    many bars it missed differs in the magnitude and the tier too, and the point
+    is that it did not have to be asked about either.
+    """
+    decided = ELEMENTS.index(element)
+    return draft_key(left)[:decided] == draft_key(right)[:decided]
+
+
+_ELEMENT_CASES = ("legality", "misses", "breach", "tier", "plan_hash", "seed")
+"""The six elements, once each, as the case for it is named here.
+
+A literal table rather than something read off `ELEMENTS`, for the reason D2
+recorded about `_HARMONY_LEVEL_FIELDS`: a case per element is what closes the
+hole, and one derived from the tuple under test would close it by agreeing with
+it. `test_every_element_has_a_case_of_its_own` is what holds the two together —
+`ELEMENTS` gaining a seventh makes this line the failing one.
+"""
+
+
+def _pair_for(element: str) -> tuple[Draft, Draft]:
+    """Two drafts differing on `element` and tying exactly on all before it.
+
+    Each pair is chosen for the element it is a case *for*, which is the whole
+    difficulty: the breach and the tier are only reached once the count ties, so
+    both are built as one miss against one miss, and the tier's two bars are
+    missed by the same fraction of themselves — `(24 - 12) / 12` and
+    `(48 - 24) / 24` are the same 1.0, and `pytest.approx` would not be enough,
+    because a near-tie is not a tie and the element below would decide.
+    """
+    if element == "legality":
+        passed = _draft(1)
+        return passed, replace(passed, lint=replace(passed.lint, passed=False))
+    if element == "misses":
+        return _draft(1), _draft(1, quality=_quality(step_ratio=0.10))
+    if element == "breach":
+        return (
+            _draft(1, quality=_quality(max_leap_semitones=13)),
+            _draft(1, quality=_quality(max_leap_semitones=14)),
+        )
+    if element == "tier":
+        return (
+            _draft(1, quality=_quality(range_semitones=48)),
+            _draft(1, quality=_quality(max_leap_semitones=24)),
+        )
+    if element == "plan_hash":
+        return _draft(1), _draft_of(_ELECTRIFYING, "draft-1b")
+    if element == "seed":
+        return _draft(1), _draft(2)
+    raise AssertionError(f"no case is written for the element {element!r}")
 
 
 def test_the_clean_baseline_clears_every_bar() -> None:
@@ -338,6 +408,55 @@ class TestTheTiebreakers:
         assert unseeded < seeded
 
 
+class TestWhatDecidedIt:
+    """The order is also an explanation, and the sentence has to be the ranking's own.
+
+    `deciding_element` reads the first element the two keys differ on, which is
+    the one `sorted` read — so the reason a draft is shown above another cannot
+    disagree with the ranking that put it there.
+    """
+
+    def test_every_element_has_a_case_of_its_own(self) -> None:
+        """D2's rule: a table of literals is one coverage hole per entry."""
+        assert sorted(_ELEMENT_CASES) == sorted(ELEMENTS)
+
+    def test_the_names_are_as_many_as_the_elements_the_order_has(self) -> None:
+        """One name per element, so a seventh element cannot go unnamed.
+
+        The length is read against a real key rather than against a number: the
+        claim is that the table names the elements `OrderKey` *has*, and a count
+        written down here would be a third copy of the arity.
+        """
+        assert len(ELEMENTS) == len(draft_key(_draft(1)))
+        assert len(set(ELEMENTS)) == len(ELEMENTS), "distinct, or two elements share a name"
+
+    def test_the_names_are_the_order_they_decide_in(self) -> None:
+        """A ratchet on a judgement, in the shape the table itself uses.
+
+        Nothing can prove the sequence is right — it is a judgement, and the
+        module says so. What this pins is that re-ordering it is a *declared*
+        edit rather than a silent one, the same shape as the `__all__` and
+        catalogue pins.
+        """
+        assert ELEMENTS == ("legality", "misses", "breach", "tier", "plan_hash", "seed")
+
+    @pytest.mark.parametrize("element", _ELEMENT_CASES)
+    def test_the_first_element_that_differs_is_the_one_named(self, element: str) -> None:
+        leader, follower = _pair_for(element)
+
+        assert _elements_before(leader, follower, element), "the pair ties on everything before it"
+        assert draft_key(leader) < draft_key(follower), "and is ordered the way it reads"
+        assert deciding_element(leader, follower) == element
+
+    def test_two_drafts_that_share_every_element_have_no_deciding_one(self) -> None:
+        """The type admits it and a caller should not expect it.
+
+        Two drafts equal on all six elements are one plan at one seed, so there
+        is no reason to give and `None` is the answer rather than a name.
+        """
+        assert deciding_element(_draft(1), _draft(1)) is None
+
+
 class TestTotality:
     """Element zero of the contract: any two drafts compare, however they arrived."""
 
@@ -489,10 +608,12 @@ def test_the_module_exports_what_it_claims() -> None:
     from saimc.session import arbiter
 
     assert set(arbiter.__all__) == {
+        "ELEMENTS",
         "METRIC_TIERS",
         "MusicalKey",
         "OrderKey",
         "arbiter_order",
+        "deciding_element",
         "draft_key",
         "musical_key",
         "musical_order",

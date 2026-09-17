@@ -166,15 +166,22 @@ def _spec_line(session: Session) -> str:
 
 
 def _draft_line(draft: Any) -> str:
-    """One candidate: how to name it, and what it measured.
+    """One candidate: how to name it, what it came from, and what it measured.
 
     The *findings* are reported rather than the raw metrics. A finding is the
     part that says what is wrong with a candidate, which is what a next decision
     is about; the ten measurements behind it are what `critique` is for.
+
+    A revision says which draft it came from, because that is what makes it a
+    revision: a model choosing what to do next needs to know that two of the
+    drafts on its list are the same piece, or it will treat them as rivals.
     """
     sketch = " sketched" if draft.sketch is not None else ""
+    lineage = f" from {draft.parent_id}" if draft.parent_id is not None else ""
     misses = ", ".join(finding.metric for finding in draft.quality.findings())
-    return f"  {draft.draft_id} seed={draft.spec.seed}{sketch} misses: {misses or 'nothing'}"
+    return (
+        f"  {draft.draft_id} seed={draft.spec.seed}{lineage}{sketch} misses: {misses or 'nothing'}"
+    )
 
 
 def digest(session: Session) -> str:

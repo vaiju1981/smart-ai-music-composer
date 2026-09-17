@@ -44,19 +44,22 @@ from saimc.compose.linter import LintCode, LintIssue, LintReport
 from saimc.compose.plan import CompositionPlan, PlanError, UnsupportedPlanVersionError
 from saimc.llm.base import LLMError
 from saimc.quality import PieceQuality
+from saimc.session.deltas import Delta, delta_from_dict, delta_to_dict
 from saimc.spec import (
     SPEC_SCHEMA_VERSION,
     CompositionSpec,
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 2
+SESSION_SCHEMA_VERSION: Final[int] = 3
 """Bump when a record in this module gains, loses or reshapes a field.
 
-Moved to 2 when `Session` gained `spec`. The field has a default, so an
-older document would have loaded with the parser's answer silently missing
-— which is the failure the tag exists to prevent, and the reason the guard
-compares the tag rather than tolerating what it recognises.
+Moved to 2 when `Session` gained `spec`, and to 3 when `Draft` gained
+`deltas`. Both fields have defaults, so an older document would have loaded
+with the field silently missing — which is the failure the tag exists to
+prevent, and the reason the guard compares the tag rather than tolerating
+what it recognises. A draft's lineage read as empty is a draft that claims
+to have been drafted from the brief when it was revised from another.
 """
 
 SESSION_FORMAT_PREFIX: Final[str] = "Session"
@@ -322,10 +325,15 @@ class Draft:
     reproducibility a claim about this build rather than about the draft.
 
     `parent_id` is the lineage — the draft a revision started from, `None`
-    for one drafted from the brief alone. It is the one piece of the
-    revision's provenance that does not depend on the delta vocabulary, so
-    it is recorded now; the deltas that produced the draft land beside it in
-    Phase D, with the types that express them.
+    for one drafted from the brief alone. `deltas` is the rest of it: every
+    request that has been applied to this line, in the order it was applied,
+    with the ones an earlier revision carried and this one added both present.
+    It is the *chain* rather than the step, and that is what makes a revision
+    reproducible: `apply_deltas` folds these from the line's root spec, and the
+    root's own spec is the spec of the draft at the end of the `parent_id` walk.
+    A step would not do, because the plan is derived from the spec and the
+    plan-writing half of a chain has to be folded from the root or a second
+    revision quietly discards the first.
     """
 
     draft_id: str
@@ -336,6 +344,7 @@ class Draft:
     quality: PieceQuality
     lint: LintReport
     parent_id: str | None = None
+    deltas: tuple[Delta, ...] = ()
     sketch: SketchRecord | None = None
 
     def __post_init__(self) -> None:
@@ -344,6 +353,11 @@ class Draft:
             require_id_segment(self.parent_id, label="parent_id")
         if not self.performance_plan_hash:
             raise ValueError("a draft records the digest of the performance it composed")
+        if self.deltas and self.parent_id is None:
+            raise ValueError(
+                "a draft that carries deltas must name the draft they were applied to: "
+                "deltas with no parent are a revision of nothing"
+            )
 
     @property
     def score_hash(self) -> str:
@@ -369,6 +383,7 @@ class Draft:
             "draft_id": self.draft_id,
             "created_at": self.created_at.isoformat(),
             "parent_id": self.parent_id,
+            "deltas": [delta_to_dict(delta) for delta in self.deltas],
             "spec": self.spec.model_dump(mode="json"),
             "plan": self.plan.to_canonical_dict(),
             "performance_plan_hash": self.performance_plan_hash,
@@ -385,6 +400,7 @@ class Draft:
             draft_id=draft_id,
             created_at=datetime.fromisoformat(payload["created_at"]),
             parent_id=payload.get("parent_id"),
+            deltas=tuple(delta_from_dict(entry) for entry in payload.get("deltas", [])),
             spec=_read_spec(payload["spec"], owner=f"draft {draft_id}"),
             plan=_read_plan(payload["plan"], owner=f"draft {draft_id}"),
             performance_plan_hash=payload["performance_plan_hash"],

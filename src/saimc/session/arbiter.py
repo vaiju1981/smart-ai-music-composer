@@ -152,6 +152,41 @@ def rank(drafts: Iterable[Draft]) -> list[Draft]:
     return sorted(drafts, key=draft_key)
 
 
+ELEMENTS: Final[tuple[str, ...]] = (
+    "legality",
+    "misses",
+    "breach",
+    "tier",
+    "plan_hash",
+    "seed",
+)
+"""The six elements, in the order they decide, named as they are spoken to a user.
+
+One name per element of `OrderKey`, in the same order, and it is a *literal*
+table rather than something derived from `musical_order`: an explanation is
+words, and a name generated from an index would be a name nobody chose. The
+two are held together by a test that reads both — the length, and a case per
+name — so a seventh element cannot be added without an eighth line here.
+"""
+
+
+def deciding_element(better: Draft, worse: Draft) -> str | None:
+    """Which element of the order put `better` ahead of `worse`.
+
+    The first element on which the two keys differ, which is the one `sorted`
+    read, so the sentence and the ranking cannot disagree about why a draft sits
+    where it does. `None` when they differ on nothing — two drafts that share
+    every element are the same plan at the same seed, so it is a return the type
+    allows rather than one a caller should expect.
+    """
+    ahead = draft_key(better)
+    behind = draft_key(worse)
+    for name, left, right in zip(ELEMENTS, ahead, behind, strict=True):
+        if left != right:
+            return name
+    return None
+
+
 def draft_key(draft: Draft) -> OrderKey:
     """One draft's place in the order, read off the record."""
     return (*musical_key(draft), draft.plan_hash, _comparable_seed(draft.spec.seed))
@@ -261,10 +296,12 @@ def _comparable_seed(seed: int | None) -> int:
 
 
 __all__ = [
+    "ELEMENTS",
     "METRIC_TIERS",
     "MusicalKey",
     "OrderKey",
     "arbiter_order",
+    "deciding_element",
     "draft_key",
     "musical_key",
     "musical_order",

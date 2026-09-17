@@ -32,10 +32,13 @@ One table (`TOOLS`) serves both the catalogue and the dispatcher. Two tables
 keyed by the same names would be two chances for a name to exist in one and
 not the other; one table means a tool that is offered is a tool that runs.
 
-What is deliberately *not* here: `revise`, `apply_delta` and `compare`. Each
-takes a `Delta`, and the delta vocabulary is Phase D's deliverable — writing
-them now would mean inventing a placeholder vocabulary here and rewriting the
-appliers when the real one lands. The fan-out they will rank already exists.
+What is deliberately *not* here: `apply_delta`, as a tool on its own. The
+plan's tool table lists it beside `revise`, and they are the same act seen
+from two sides — `revise` is the whole of it, from the draft the user is
+looking at to the draft that answers them — so a second tool that folded
+deltas without composing would let a model move the plan of a piece it never
+heard. `revise` returns the refusal an `apply_delta` would have, in the same
+words, which is what the design asks for.
 """
 
 from __future__ import annotations
@@ -58,6 +61,17 @@ from saimc.parser import parse_prompt
 from saimc.quality import score_piece
 from saimc.render.audio import render_sketch
 from saimc.render.instruments import resolve_job_soundfont
+from saimc.session.arbiter import deciding_element, rank, regression
+from saimc.session.deltas import (
+    DELTA_TYPES,
+    Delta,
+    DeltaRefusal,
+    apply_deltas,
+    delta_from_dict,
+    delta_to_dict,
+    refuse_uncarried,
+    swallowed_tempo,
+)
 from saimc.session.models import (
     Draft,
     Session,
@@ -93,6 +107,26 @@ ever useful.
 
 TURN_DEADLINE_SECONDS: Final[float] = 120.0
 """Wall clock for one turn's tools. Six times the measured worst case."""
+
+MAX_DELTAS_PER_REVISION: Final[int] = 8
+"""How many requests one `revise` call may carry.
+
+The width of a revision, in the same sense `MAX_CANDIDATES_PER_DRAFT` is the
+width of a fan-out, and it is read by the tool rather than counted in the
+ledger for the same reason: folding deltas is arithmetic over a frozen
+dataclass, and the turn's cost is the one composition that follows.
+"""
+
+MAX_REVISIONS_PER_LINE: Final[int] = 8
+"""How many revisions one draft's line may accumulate.
+
+The answer to the question the plan left open — how long a session stays
+revisable — and it is also the bound on the walk to the line's root, because
+that walk is how a revision finds the spec its chain folds onto. A bound is
+needed for the second reason as much as the first: a hand-edited document can
+name a parent that names a parent that names the first one, and an unbounded
+walk would not return.
+"""
 
 
 class ToolError(Exception):
@@ -153,6 +187,8 @@ class ToolBudget:
     """
 
     max_candidates: int = MAX_CANDIDATES_PER_DRAFT
+    max_deltas: int = MAX_DELTAS_PER_REVISION
+    max_revisions: int = MAX_REVISIONS_PER_LINE
     max_sketches: int = MAX_SKETCHES_PER_TURN
     max_llm_calls: int = MAX_LLM_CALLS_PER_TURN
     deadline_seconds: float = TURN_DEADLINE_SECONDS
@@ -160,6 +196,8 @@ class ToolBudget:
     def __post_init__(self) -> None:
         for label, value in (
             ("max_candidates", self.max_candidates),
+            ("max_deltas", self.max_deltas),
+            ("max_revisions", self.max_revisions),
             ("max_sketches", self.max_sketches),
             ("max_llm_calls", self.max_llm_calls),
         ):
@@ -263,14 +301,19 @@ def _str_arg(args: Mapping[str, Any], name: str, *, default: str | None = None) 
 
 
 def _named_draft(ctx: ToolContext, args: Mapping[str, Any]) -> Draft:
-    """Resolve the `draft_id` argument against this session's drafts.
-
-    The list of ids it *does* have goes into the refusal: a model that guessed
-    an id can correct itself in the next turn instead of asking again.
-    """
+    """Resolve the `draft_id` argument against this session's drafts."""
     draft_id = _str_arg(args, "draft_id")
     if draft_id is None:
         raise ToolRefusal("invalid_arguments", "draft_id is required")
+    return _draft_named(ctx, draft_id)
+
+
+def _draft_named(ctx: ToolContext, draft_id: str) -> Draft:
+    """The draft with this id, or a refusal naming the ids this session has.
+
+    The list goes into the refusal: a model that guessed an id can correct
+    itself in the next turn instead of asking again.
+    """
     try:
         return ctx.session.draft(draft_id)
     except KeyError as exc:
@@ -298,13 +341,22 @@ def _with_seed(spec: CompositionSpec, seed: int) -> CompositionSpec:
     return CompositionSpec.model_validate({**spec.model_dump(mode="json"), "seed": seed})
 
 
-def _draft_from(draft_id: str, spec: CompositionSpec, output: EngineOutput) -> Draft:
+def _draft_from(
+    draft_id: str,
+    spec: CompositionSpec,
+    output: EngineOutput,
+    *,
+    parent_id: str | None = None,
+    deltas: tuple[Delta, ...] = (),
+) -> Draft:
     """One candidate, recorded from what the engine actually produced.
 
     The plan is read from the output rather than re-derived with
-    `default_plan(spec)`. They are the same value today, and the one the
-    engine published is the one it composed under — the distinction the oracle
-    test makes for the same reason.
+    `default_plan(spec)`. They are the same value for a draft composed from
+    the brief, and for a revision they are not: the plan a revision folds is
+    the one the engine composed under, and re-deriving would silently drop
+    every plan request in the chain. Reading it off the output is the same
+    distinction the oracle test makes.
 
     The lint report is recomputed: `EngineOutput` does not carry it and
     nothing hashes it. That is a second lint of the same score, not a second
@@ -325,6 +377,8 @@ def _draft_from(draft_id: str, spec: CompositionSpec, output: EngineOutput) -> D
             bar_keys=output.bar_keys or None,
             voice_instruments={v.voice_id: v.instrument for v in output.voice_instruments},
         ),
+        parent_id=parent_id,
+        deltas=deltas,
     )
 
 
@@ -423,6 +477,242 @@ async def _critique(ctx: ToolContext, args: Mapping[str, Any]) -> str:
             "findings": [asdict(finding) for finding in draft.quality.findings()],
         }
     )
+
+
+def _lineage(session: Session, draft: Draft, *, limit: int) -> tuple[Draft, int]:
+    """The draft this one's line started from, and how many revisions deep it is.
+
+    A revision folds its chain onto the *root's* spec rather than onto the spec
+    of the draft being revised. It has to: the plan is derived from the spec, so
+    the plan-writing half of a chain has to be folded from the base the chain
+    was built on, and folding it onto a later spec would discard whatever the
+    earlier revisions asked for. The root is where the chain starts, and a
+    root's spec is the root spec because a root draft has no deltas.
+
+    Bounded, and the bound is not decoration: `parent_id` is a string read off a
+    document, so a hand-edited one can name a draft that names it back. `seen`
+    catches that by name and `limit` catches a line longer than the budget, and
+    neither is reachable through the tools.
+    """
+    seen = {draft.draft_id}
+    walk, depth = draft, 0
+    while walk.parent_id is not None:
+        if depth >= limit:
+            raise ToolRefusal(
+                "revision_limit",
+                f"{draft.draft_id} is more than {limit} revision(s) from the piece its line "
+                "started as, which is as far as a line may be revised. Start a new draft "
+                "from the brief, or publish what you have.",
+            )
+        parent_id = walk.parent_id
+        if parent_id in seen:
+            raise ToolRefusal(
+                "broken_lineage",
+                f"draft {walk.draft_id} and its ancestors name each other in a cycle, so "
+                "there is no piece this line started from.",
+            )
+        seen.add(parent_id)
+        try:
+            walk = session.draft(parent_id)
+        except KeyError as exc:
+            raise ToolRefusal(
+                "broken_lineage",
+                f"draft {parent_id} is named as the parent of {walk.draft_id} and this "
+                "session does not have it, so the chain cannot be folded.",
+            ) from exc
+        depth += 1
+    return walk, depth
+
+
+def _deltas_arg(args: Mapping[str, Any], *, maximum: int) -> tuple[Delta, ...]:
+    """Read the `deltas` argument, refusing anything that is not a request.
+
+    A request the engine carries no knob for is answered from `UNCARRIED`
+    rather than as a misspelling — the same distinction `refuse_uncarried`
+    exists for, and the one a user's words turn into: "add a saxophone" is
+    understood and unbuilt, and telling them it was not understood would be
+    false. Everything else — a bad knob name, a value the knob's own type
+    cannot hold, an argument the knob does not have — is refused by name with
+    the vocabulary listed.
+    """
+    raw = args.get("deltas")
+    if not isinstance(raw, list) or not raw:
+        raise ToolRefusal("invalid_arguments", "deltas must be a non-empty list of requests")
+    if len(raw) > maximum:
+        raise ToolRefusal(
+            "invalid_arguments",
+            f"at most {maximum} request(s) per revision, got {len(raw)}. Split them across "
+            "two revisions if they are all worth making.",
+        )
+    parsed: list[Delta] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            raise ToolRefusal("invalid_arguments", f"each request must be an object, got {entry!r}")
+        knob = entry.get("knob")
+        unbuilt = refuse_uncarried(knob) if isinstance(knob, str) else None
+        if unbuilt is not None:
+            raise ToolRefusal(unbuilt.reason, unbuilt.message)
+        try:
+            parsed.append(delta_from_dict(entry))
+        except (TypeError, ValueError) as exc:
+            raise ToolRefusal("invalid_arguments", str(exc)) from exc
+    return tuple(parsed)
+
+
+def _sole_refusal(refusal: DeltaRefusal) -> str:
+    """One refused request as the whole answer, with the alternative named.
+
+    A revision that honoured none of its requests is the one case where the
+    applier's sentence *is* the answer rather than a line in a report, and there
+    the sentence alone stops a step short of what the user needs: "less than or
+    equal to 240" is a bound, and `SetTempo(240)` is the request that satisfies
+    it. Everywhere else the two travel apart — `nearest` is a field of the
+    payload's `refused` list — because a sentence with the advice baked into it
+    would be the same advice in two places.
+    """
+    if refusal.nearest is None:
+        return refusal.message
+    return f"{refusal.message} The nearest request this piece can honour is {refusal.nearest}."
+
+
+async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """Apply typed requests to a draft's piece, and keep the result as a draft.
+
+    The ratchet runs before anything is recorded: a revision that measures worse
+    than the draft it came from is refused with the arbiter's own sentence, and
+    the session keeps the draft it had. Equal is allowed — moving the music
+    without moving a measurement is what "the same piece, differently" means.
+
+    The child is composed at the parent's seed unless a request re-rolls it,
+    which is what makes a revision recognisably the same piece: the material the
+    seed decides survives the edit.
+    """
+    parent = _named_draft(ctx, args)
+    requests = _deltas_arg(args, maximum=ctx.budget.max_deltas)
+    root, depth = _lineage(ctx.session, parent, limit=ctx.budget.max_revisions)
+    if depth >= ctx.budget.max_revisions:
+        raise ToolRefusal(
+            "revision_limit",
+            f"{parent.draft_id} is {depth} revision(s) from {root.draft_id}, and a line may "
+            f"be revised {ctx.budget.max_revisions} time(s). Start a new draft from the brief, "
+            "or publish what you have.",
+        )
+
+    application = apply_deltas(root.spec, (*parent.deltas, *requests))
+    # The prefix re-folds to exactly the state it was folded in — same spec,
+    # same plan, same order — so a request the chain already accepted cannot
+    # refuse now, and everything the applier refused is from *this* call.
+    # Checked rather than assumed, because a draft whose own requests do not
+    # replay is a draft describing a piece nothing else can reach.
+    if application.applied[: len(parent.deltas)] != parent.deltas:
+        raise ToolFailure(
+            "lineage_mismatch",
+            f"{parent.draft_id}'s recorded requests do not replay against the spec its line "
+            "started from, so this revision cannot be applied to the piece it names.",
+        )
+    added = application.applied[len(parent.deltas) :]
+    if not added:
+        first = application.refused[0]
+        raise ToolRefusal(first.reason, _sole_refusal(first))
+
+    try:
+        output = compose(application.spec, plan=application.plan)
+    except CompositionEngineError as exc:
+        raise ToolRefusal(str(exc.code), exc.message) from exc
+
+    # A request the engine traded away is refused before anything else, because
+    # the piece in hand is not the piece that was asked for: a tempo the length
+    # outranked composes a perfectly good draft, and keeping it would answer
+    # "make it faster" with a draft that is not. This is the only place the
+    # question can be asked, since it needs the arrangement a composition made.
+    swallowed = swallowed_tempo(added, spec=application.spec, arrangement=output.arrangement)
+    if swallowed is not None:
+        raise ToolRefusal(swallowed.reason, swallowed.message)
+
+    child = _draft_from(
+        f"draft-{len(ctx.session.drafts)}",
+        application.spec,
+        output,
+        parent_id=parent.draft_id,
+        deltas=application.applied,
+    )
+    regressed = regression(parent, child)
+    if regressed is not None:
+        raise ToolRefusal("revision_regressed", regressed)
+
+    ctx.session.drafts.append(child)
+    return _render(
+        {
+            "draft_id": child.draft_id,
+            "parent_id": parent.draft_id,
+            "seed": child.spec.seed,
+            "lint_passed": child.lint.passed,
+            "quality": child.quality.entry(),
+            "applied": [delta_to_dict(delta) for delta in added],
+            "refused": [
+                {"reason": refusal.reason, "message": refusal.message, "nearest": refusal.nearest}
+                for refusal in application.refused
+            ],
+            "moved_on": deciding_element(child, parent),
+        }
+    )
+
+
+async def _compare(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """Rank drafts against one another, and name what decided each step.
+
+    The order is the arbiter's, and the reason is the first element of it on
+    which a draft lost — the same element `sorted` read, so the sentence and the
+    ranking cannot disagree. `critique` says what one draft measures; this says
+    which of several is ahead and why, which is the question a fan-out leaves
+    the conductor holding.
+    """
+    raw = args.get("draft_ids")
+    if raw is None:
+        drafts = list(ctx.session.drafts)
+    elif not isinstance(raw, list) or not raw:
+        raise ToolRefusal(
+            "invalid_arguments", "draft_ids must be a non-empty list of ids, or omitted"
+        )
+    else:
+        ids: list[str] = []
+        for item in raw:
+            if not isinstance(item, str) or not item.strip():
+                raise ToolRefusal(
+                    "invalid_arguments", f"each draft_id must be a string, got {item!r}"
+                )
+            if item in ids:
+                raise ToolRefusal(
+                    "invalid_arguments",
+                    f"{item!r} is asked for twice, and a draft ranked against itself says "
+                    "nothing. Ask for distinct drafts.",
+                )
+            ids.append(item)
+        drafts = [_draft_named(ctx, draft_id) for draft_id in ids]
+
+    if not drafts:
+        raise ToolRefusal(
+            "no_drafts",
+            "this session has no drafts yet, so there is nothing to rank. Call draft first.",
+        )
+
+    ranked = rank(drafts)
+    entries: list[dict[str, Any]] = []
+    for index, draft in enumerate(ranked):
+        entry: dict[str, Any] = {
+            "rank": index + 1,
+            "draft_id": draft.draft_id,
+            "parent_id": draft.parent_id,
+            "seed": draft.spec.seed,
+            "lint_passed": draft.lint.passed,
+            "quality": draft.quality.entry(),
+        }
+        if index:
+            leader = ranked[index - 1]
+            entry["behind"] = leader.draft_id
+            entry["on"] = deciding_element(leader, draft)
+        entries.append(entry)
+    return _render({"ranking": entries})
 
 
 async def _sketch(ctx: ToolContext, args: Mapping[str, Any]) -> str:
@@ -623,6 +913,72 @@ def _draft_parameters(budget: ToolBudget) -> dict[str, Any]:
     }
 
 
+_COMPARE_PARAMETERS: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "draft_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+            "description": (
+                "The drafts to rank against each other, by id. Omit to rank every draft the "
+                "session has, which is what a fan-out wants."
+            ),
+        },
+    },
+    "additionalProperties": False,
+}
+
+
+def _revise_parameters(budget: ToolBudget) -> dict[str, Any]:
+    """The `revise` schema, with the vocabulary and the width read off the code.
+
+    Two indirections for the same reason `_draft_parameters` has one. The
+    `enum` is `DELTA_TYPES`, so a knob the model is offered is a knob this build
+    carries, and the ceiling is the budget `_deltas_arg` enforces, so the number
+    the model is told cannot be a different number from the one it is held to. A
+    hand-written list here would be a third copy of the vocabulary, and the copy
+    in a schema is the one that drifts.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "draft_id": {
+                "type": "string",
+                "description": (
+                    "The id of the draft to revise, exactly as `draft` or `revise` returned it."
+                ),
+            },
+            "deltas": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": budget.max_deltas,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "knob": {
+                            "type": "string",
+                            "enum": sorted(DELTA_TYPES),
+                            "description": "Which request this is. Its other keys are that "
+                            "request's own arguments.",
+                        },
+                    },
+                    "required": ["knob"],
+                },
+                "description": (
+                    "The requests to apply, in order. Each is one knob and the value to set "
+                    "it to — `{knob: SetTempo, tempo_bpm: 76}` takes the piece to 76 BPM. The "
+                    "engine owns every value's legal range, so a request it cannot honour "
+                    "comes back refused with the range and the nearest legal value, and the "
+                    "rest of the requests still apply."
+                ),
+            },
+        },
+        "required": ["draft_id", "deltas"],
+        "additionalProperties": False,
+    }
+
+
 def _static(schema: dict[str, Any]) -> ToolParameters:
     """A schema that does not depend on the budget.
 
@@ -691,6 +1047,32 @@ TOOLS: Final[Mapping[str, Tool]] = {
         ),
         parameters=_static(_SKETCH_PARAMETERS),
         handler=_sketch,
+    ),
+    "revise": Tool(
+        name="revise",
+        description=(
+            "Change a draft instead of redrafting it: apply typed requests to the piece it "
+            "already is and keep the result as a new draft, composed at the same seed so it "
+            "is recognisably the same piece. This is how feedback becomes music — the user's "
+            "sentence turned into requests, never into a new prompt. A request the engine "
+            "cannot honour is refused by name with the nearest legal value, and the rest "
+            "still apply. A revision that would measure worse than the draft it came from is "
+            "refused; keep the draft and ask for something else."
+        ),
+        parameters=_revise_parameters,
+        handler=_revise,
+    ),
+    "compare": Tool(
+        name="compare",
+        description=(
+            "Rank drafts against each other by one written-down order — legality first, then "
+            "how many quality bars a draft misses, how far past them it went, which bar was "
+            "the highest, and finally its plan's hash and its seed — and say which of those "
+            "decided each step. Use it to tell the user which candidate leads and why, "
+            "rather than reading the numbers out."
+        ),
+        parameters=_static(_COMPARE_PARAMETERS),
+        handler=_compare,
     ),
     "finalize": Tool(
         name="finalize",
@@ -787,7 +1169,9 @@ async def dispatch(call: ToolCall, ctx: ToolContext) -> ToolInvocation:
 
 __all__ = [
     "MAX_CANDIDATES_PER_DRAFT",
+    "MAX_DELTAS_PER_REVISION",
     "MAX_LLM_CALLS_PER_TURN",
+    "MAX_REVISIONS_PER_LINE",
     "MAX_SKETCHES_PER_TURN",
     "TOOLS",
     "TURN_DEADLINE_SECONDS",

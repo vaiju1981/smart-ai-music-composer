@@ -54,6 +54,15 @@ read off the constraint that failed — Pydantic's `{"le": 240}` becomes
 document's own message already names the alternative ("percussion role
 requires the drum_set instrument") the message *is* the alternative and
 `nearest` stays empty, for the same reason.
+
+**One request needs a reader that composes, and it is stated rather than
+hidden.** Every bound above is a document's, which is why this module can
+check them without writing a note. A tempo is not: the duration search may
+re-derive it, so whether `SetTempo(96)` was honoured is only knowable from
+the arrangement a composition produced. `swallowed_tempo` is that check, and
+it takes the arrangement as an argument for exactly this reason — the caller
+that composes is the caller that can ask, and a caller that only folds (the
+translator, a stored chain) cannot and must not pretend to.
 """
 
 from __future__ import annotations
@@ -61,10 +70,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, replace
 from enum import StrEnum
-from typing import Any, Final, Literal, TypeAlias
+from typing import Any, Final, Literal, TypeAlias, get_args
 
 from pydantic import ValidationError
 
+from saimc.compose.duration import DurationArrangement
+from saimc.compose.forms import get_mood_profile
 from saimc.compose.motif import FIGURES_BY_MOTION, BassMotion
 from saimc.compose.plan import CompositionPlan, PlanError, default_plan
 from saimc.spec import (
@@ -76,15 +87,26 @@ from saimc.spec import (
     WesternKey,
 )
 
-Reason: TypeAlias = Literal["violates_the_spec", "violates_the_plan", "unknown_knob"]
+Reason: TypeAlias = Literal[
+    "violates_the_spec", "violates_the_plan", "tempo_not_honoured", "unknown_knob"
+]
 """Why a request was not honoured.
 
-Three, and they are told apart because the sentence the user needs differs.
+Four, and they are told apart because the sentence the user needs differs.
 `violates_the_spec` and `violates_the_plan` are the same situation against
 two documents — the request was understood and the piece cannot hold it —
 while `unknown_knob` is a request naming something the engine has no knob
 for at all. The last one is only ever built by `refuse_uncarried`, since a
 knob that does not exist has no value to construct.
+
+`tempo_not_honoured` is the fourth for a different kind of reason: the
+request was understood, the piece *could* hold it, and the engine traded it
+away. The duration search is allowed to re-derive a pinned tempo when no
+arrangement fits the requested length at it — the length is a release gate
+and outranks the tempo — so the answer to "make it faster" is a piece that
+is not faster. A trade is not a bound, and the sentence a user needs is
+"the length won", which is why it is not folded into `violates_the_plan`.
+See `swallowed_tempo`, which is the only thing that builds one.
 """
 
 Level: TypeAlias = Literal["none", "light", "expressive"]
@@ -296,6 +318,9 @@ class SetHumanization(Delta):
 
     level: Level
 
+    def __post_init__(self) -> None:
+        _one_of(self, "level", Level)
+
     def spec_changes(self, spec: CompositionSpec) -> Mapping[str, Any]:
         return {"humanization": self.level}
 
@@ -379,6 +404,9 @@ class SetHarmonyLevel(Delta):
 
     texture: Texture
     velocity: int
+
+    def __post_init__(self) -> None:
+        _one_of(self, "texture", Texture)
 
     def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
         return {_HARMONY_LEVEL_FIELDS[self.texture]: self.velocity}
@@ -477,6 +505,9 @@ class SetSectionEnergy(Delta):
 
     role: Terrace
     factor: float
+
+    def __post_init__(self) -> None:
+        _one_of(self, "role", Terrace)
 
     def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
         # The terrace's name is the plan's field suffix: peak -> section_energy_peak.
@@ -659,6 +690,56 @@ def refuse_uncarried(request: str) -> DeltaRefusal | None:
     )
 
 
+def swallowed_tempo(
+    requests: Iterable[Delta], *, spec: CompositionSpec, arrangement: DurationArrangement
+) -> DeltaRefusal | None:
+    """The refusal for a tempo request the duration search replaced, or `None`.
+
+    `arrange_for_duration` declares a pinned tempo it cannot fit unfulfillable
+    and then catches its own refusal, because the length is a release gate and
+    outranks the tempo. That policy is deliberate and tested in `duration.py`;
+    what it leaves behind is a request the user made and an engine that quietly
+    answered with a different number, which is the one outcome this module's
+    first rule forbids.
+
+    So the tempo a call asked for is held against the tempo the piece actually
+    plays, and a mismatch is refused with both numbers and the range that would
+    have reached it. The check needs the arrangement, so it cannot live in
+    `apply_deltas` — the applier never composes — and a caller that folds
+    without composing cannot ask this question at all.
+
+    A chain's *last* tempo request is the one that counts, because that is the
+    one the spec ends up carrying; an earlier one that was also replaced is the
+    same request with a smaller number in front of it, and reporting the last
+    is what tells the user what to change.
+    """
+    asked = [delta for delta in requests if isinstance(delta, SetTempo)]
+    if not asked:
+        return None
+    tempo_bpm = asked[-1].tempo_bpm
+    if arrangement.tempo_bpm == tempo_bpm:
+        return None
+    low_bpm, high_bpm = get_mood_profile(spec.mood.value).tempo_range_bpm
+    # A half-BPM arrangement is one this vocabulary cannot ask for — `SetTempo`
+    # takes an int — so `nearest` is named only when the piece's own tempo is a
+    # request the user could make, rather than a value that would be refused in
+    # turn for not being one.
+    nearest = (
+        f"SetTempo({int(arrangement.tempo_bpm)})" if arrangement.tempo_bpm.is_integer() else None
+    )
+    return DeltaRefusal(
+        request="SetTempo",
+        reason="tempo_not_honoured",
+        message=(
+            f"SetTempo({tempo_bpm}) cannot be honoured: the length outranks the tempo, so this "
+            f"{spec.duration_seconds}-second piece is played at {arrangement.tempo_bpm:g} BPM "
+            f"instead. A tempo is honoured when the mood's range ({low_bpm}-{high_bpm} BPM) "
+            "reaches it and the piece's length fits at that tempo."
+        ),
+        nearest=nearest,
+    )
+
+
 def delta_to_dict(delta: Delta) -> dict[str, Any]:
     """The delta as the document the preference log stores.
 
@@ -738,6 +819,29 @@ def _nearest_from(knob: str, failing: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _one_of(instance: Delta, name: str, literal: Any) -> None:
+    """Hold a `Literal`-typed field to the members the type names.
+
+    A `Literal` is a promise the type checker enforces and the interpreter does
+    not, so a value arriving from a tool call or a stored document reaches
+    `plan_changes` unexamined. These three fields are not decoration: a terrace
+    names a *plan field* and a texture names a *level field*, so an unknown one
+    is an `AttributeError` or a `KeyError` raised from inside the fold rather
+    than the named refusal every other request in this vocabulary gets — and a
+    crash is a worse answer than a refusal, because it says the product is
+    broken where a refusal says what it can do instead.
+
+    Refusing at construction is the discipline `_canonical` applies to the enums
+    one paragraph down, and it means a delta cannot exist in a state the applier
+    has to survive.
+    """
+    members = get_args(literal)
+    value = getattr(instance, name)
+    if value not in members:
+        known = ", ".join(repr(member) for member in members)
+        raise ValueError(f"{type(instance).__name__}({name}={value!r}) is not one of {known}")
+
+
 def _canonical(instance: Delta, name: str, enum: type[StrEnum]) -> None:
     """Hold an enum field as the member it names rather than as the string.
 
@@ -797,4 +901,5 @@ __all__ = [
     "delta_from_dict",
     "delta_to_dict",
     "refuse_uncarried",
+    "swallowed_tempo",
 ]

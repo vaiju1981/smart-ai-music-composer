@@ -27,6 +27,7 @@ import pytest
 
 from saimc.compose.engine import EngineOutput, compose
 from saimc.compose.linter import LintReport, lint
+from saimc.compose.motif import BassMotion
 from saimc.compose.plan import (
     PLAN_FORMAT,
     UnsupportedPlanVersionError,
@@ -34,6 +35,7 @@ from saimc.compose.plan import (
 )
 from saimc.llm.base import LLMError
 from saimc.quality import score_piece
+from saimc.session.deltas import Delta, SetBassMotion, SetTempo, SetTimeSignature, apply_deltas
 from saimc.session.models import (
     SESSION_FORMAT,
     SESSION_SCHEMA_VERSION,
@@ -46,10 +48,12 @@ from saimc.session.models import (
     Verdict,
     require_id_segment,
 )
+from saimc.session.tools import _draft_from
 from saimc.spec import (
     SPEC_SCHEMA_VERSION,
     CompositionSpec,
     Mood,
+    TimeSignature,
     UnsupportedSpecVersionError,
 )
 
@@ -80,6 +84,7 @@ def _draft(
     *,
     sketch: SketchRecord | None = None,
     parent_id: str | None = None,
+    deltas: tuple[Delta, ...] = (),
 ) -> Draft:
     """A real draft: composed, linted and scored, not assembled by hand."""
     return Draft(
@@ -91,7 +96,27 @@ def _draft(
         quality=score_piece(_OUTPUT.notation_score, piece=draft_id),
         lint=_lint_report(),
         parent_id=parent_id,
+        deltas=deltas,
         sketch=sketch,
+    )
+
+
+def _revision(deltas: tuple[Delta, ...], *, parent_id: str = "draft-one") -> Draft:
+    """A real revision: the chain folded from the root, then composed under it.
+
+    Built through the fold and the tool's own recorder rather than posed,
+    because the record's two halves are not independent: the plan *is* the
+    fold's plan, and a fixture carrying one chain and another chain's plan would
+    make every round-trip case below a case about a document no tool can write.
+    """
+    application = apply_deltas(_SPEC, deltas)
+    output = compose(application.spec, plan=application.plan)
+    return _draft_from(
+        "draft-two",
+        application.spec,
+        output,
+        parent_id=parent_id,
+        deltas=application.applied,
     )
 
 
@@ -334,6 +359,137 @@ class TestDraft:
         document = _draft().to_document()
         assert document["plan"]["format"] == PLAN_FORMAT
         assert document["plan"] == _PLAN.to_canonical_dict()
+
+
+class TestTheChainOfDeltas:
+    """`Draft.deltas` is the accumulated chain, and the record is where that is kept.
+
+    The whole difficulty of a revision is that a plan is *derived* from the spec,
+    and `default_plan` reads only a mood and a meter — so a second revision
+    cannot patch the first one's plan, and folding only its own deltas from its
+    own spec would quietly discard them. What makes that recoverable is that the
+    chain is on the record rather than in a step, and these are the properties
+    the fold depends on.
+    """
+
+    _CHAIN = (
+        SetBassMotion(motion=BassMotion.SPARSE),
+        SetTempo(tempo_bpm=90),
+    )
+
+    def test_a_revision_round_trips_with_its_whole_chain(self) -> None:
+        """The deltas have to survive a save and a load for a fold to be a replay.
+
+        Equality is asserted on the tuple rather than on its length, because the
+        types are frozen dataclasses and two deltas that are equal are the same
+        request — which is the property the fold reads.
+        """
+        draft = _revision(self._CHAIN)
+        loaded = Draft.from_document(draft.to_document())
+
+        assert loaded == draft
+        assert loaded.deltas == self._CHAIN
+
+    def test_the_chain_is_written_as_plain_values(self) -> None:
+        """No type names in the document, so a log of these is readable on its own.
+
+        The knob is the key a reader dispatches on and every field is its plain
+        value, which is what `delta_to_dict` promises and what the preference
+        log will be read through.
+        """
+        document = _revision(self._CHAIN).to_document()
+
+        assert document["deltas"] == [
+            {"knob": "SetBassMotion", "motion": "sparse"},
+            {"knob": "SetTempo", "tempo_bpm": 90},
+        ]
+
+    def test_a_revision_records_the_chain_it_folded(self) -> None:
+        """The premise the round trip rests on: the fixture is a real revision.
+
+        A chain that did not actually move the plan would make the case above
+        about two identical documents, so both halves of the fold are asserted —
+        the tempo it wrote and the figure it moved to the front.
+        """
+        draft = _revision(self._CHAIN)
+
+        assert draft.spec.tempo_bpm == 90
+        assert draft.plan.bass_figures[0] != _PLAN.bass_figures[0]
+
+    def test_a_meter_delta_round_trips_as_its_member(self) -> None:
+        """The enums are held as members rather than as their names.
+
+        `delta_to_dict` writes the plain value and `delta_from_dict` hands it
+        back, so a name outside the enum fails at the constructor instead of
+        becoming a string nothing else in the module expects. The premise is
+        asserted — the document really does carry the bare name — because a
+        serializer that wrote the `TimeSignature` repr would pass the round trip
+        while being useless to a reader.
+        """
+        delta = SetTimeSignature(time_signature=TimeSignature.SIX_EIGHT)
+        document = _revision((delta,)).to_document()
+
+        assert document["deltas"] == [{"knob": "SetTimeSignature", "time_signature": "6/8"}]
+        assert Draft.from_document(document).deltas == (delta,)
+
+    def test_a_draft_with_no_chain_writes_an_empty_list(self) -> None:
+        """A root draft is a draft with an empty chain, not one with no key."""
+        draft = _draft()
+
+        assert draft.deltas == ()
+        assert draft.to_document()["deltas"] == []
+
+    def test_a_document_from_before_the_chain_is_read_as_empty(self) -> None:
+        """`.get()` tolerance, the same one every other sidecar field has.
+
+        A draft written by the build before this one has no `deltas` key at all,
+        and it means the same thing as an empty one: the draft was not a
+        revision.
+        """
+        document = _draft().to_document()
+        del document["deltas"]
+
+        assert Draft.from_document(document).deltas == ()
+
+    def test_deltas_with_no_parent_are_refused(self) -> None:
+        """A contradiction rather than a preference: a revision of nothing.
+
+        The chain is folded from the *root's* spec, and the root is found by
+        walking `parent_id` — a draft carrying deltas and naming no parent has
+        no root to fold from, so the record refuses to exist rather than
+        deferring the failure to the first revision that tries to use it.
+
+        The record here is malformed on purpose: it is the shape under test, and
+        `_draft` is the only way to reach it, since `_revision` goes through the
+        tool that cannot build one.
+        """
+        with pytest.raises(ValueError, match="deltas with no parent"):
+            _draft("draft-two", deltas=self._CHAIN)
+
+    def test_a_document_that_contradicts_itself_is_refused_on_load(self) -> None:
+        """The load path, not the constructor — C3's rule for closed vocabularies.
+
+        A hand-edited document is not the writer, so the invariant has to hold
+        where the record is *read* and not merely where it is built.
+        """
+        document = _draft().to_document()
+        document["deltas"] = [{"knob": "SetTempo", "tempo_bpm": 90}]
+
+        with pytest.raises(ValueError, match="deltas with no parent"):
+            Draft.from_document(document)
+
+    def test_a_document_naming_a_knob_this_build_lacks_is_refused(self) -> None:
+        """The vocabulary is closed, and an unknown knob is named rather than skipped.
+
+        A dropped delta would be a revision that silently did not happen, which
+        is the failure the whole delta module refuses once — here on the load
+        path, where a document is not the writer.
+        """
+        document = _revision(self._CHAIN).to_document()
+        document["deltas"][0] = {"knob": "SetSwingRatio", "ratio": 0.5}
+
+        with pytest.raises(ValueError, match="unknown knob"):
+            Draft.from_document(document)
 
 
 class TestSession:

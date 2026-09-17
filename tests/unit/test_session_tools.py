@@ -28,8 +28,9 @@ import asyncio
 import json
 import time
 from dataclasses import replace
+from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -39,7 +40,8 @@ from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult, ToolCall
 from saimc.render.audio import AudioArtifact
 from saimc.session import tools
-from saimc.session.models import Session, ToolInvocation
+from saimc.session.arbiter import ELEMENTS, musical_key, rank
+from saimc.session.models import Draft, Session, ToolInvocation
 from saimc.session.store import SessionStorage
 from saimc.session.tools import (
     MAX_CANDIDATES_PER_DRAFT,
@@ -54,6 +56,14 @@ from saimc.spec import CompositionSpec, Mood, SpecError
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
 _ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+_SIXTY = CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=5)
+"""The one length a tempo test needs, and it is a length rather than a mood.
+
+The duration search is allowed to re-derive a tempo, so whether a tempo request
+survives depends on the length: a minute-long calming piece holds 80 BPM
+exactly and holds nothing else in its range, while the 30-second fixture plays
+at 64 BPM whatever it is asked for. Both halves of the check need a spec, and
+this is the one the honoured half needs."""
 _OUTPUT = compose(_SPEC)
 
 
@@ -137,9 +147,22 @@ class TestTheCatalogue:
             assert spec.parameters["additionalProperties"] is False
 
     def test_the_catalogue_names_exactly_the_tools_this_phase_wrote(self) -> None:
-        """A ratchet. Phase D adds `revise`, `apply_delta` and `compare`, and
-        will have to say so here rather than letting them appear."""
-        assert sorted(TOOLS) == ["critique", "draft", "finalize", "parse_brief", "sketch"]
+        """A ratchet. D3 adds `revise` and `compare`; a later phase adding a
+        tool has to say so here rather than letting it appear.
+
+        `apply_delta` is still absent, and deliberately: C4's finding 8 left it
+        out because a delta is only meaningful applied to a lineage, and `revise`
+        is that whole act. The module docstring carries the same reason.
+        """
+        assert sorted(TOOLS) == [
+            "compare",
+            "critique",
+            "draft",
+            "finalize",
+            "parse_brief",
+            "revise",
+            "sketch",
+        ]
 
     def test_the_fan_out_ceiling_is_the_budget_it_is_checked_against(self) -> None:
         """The drift this design exists to prevent: a `maximum` the schema
@@ -506,6 +529,615 @@ class TestCritique:
         assert "draft-0" in invocation.result
 
 
+class TestRevise:
+    """A revision is a chain of requests folded onto a lineage, and the ratchet gates it.
+
+    Three properties carry the weight. The first is the one `Draft`'s record
+    shape was changed for: a second revision must not discard the first one's
+    plan requests. The others are the tool's own contract — a request it cannot
+    honour is refused rather than obeyed or crashed on, and a revision that
+    measures worse is refused with the arbiter's own sentence.
+    """
+
+    _BASS: ClassVar[dict[str, object]] = {"knob": "SetBassMotion", "motion": "sparse"}
+    _MOTIF: ClassVar[dict[str, object]] = {"knob": "SetMotifVariation", "factor": 2.0}
+    _TEMPO: ClassVar[dict[str, object]] = {"knob": "SetTempo", "tempo_bpm": 96}
+    """Three requests, and they are three because they do three different things.
+
+    `_BASS` and `_MOTIF` both move the piece and move nothing the scorecard
+    measures, so a revision carrying either is a revision whose only deciding
+    element is the plan hash. `_TEMPO` is the request this length cannot hold —
+    a 30-second calming piece plays at 64 BPM whatever it is asked for — which
+    is why the swallow test is written about it rather than about a mover."""
+
+    def test_a_revision_is_a_new_draft_that_names_its_parent(self, ctx: ToolContext) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        payload = _payload(_call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS]))
+
+        assert payload["draft_id"] == "draft-1"
+        assert payload["parent_id"] == "draft-0"
+        assert [draft.draft_id for draft in ctx.session.drafts] == ["draft-0", "draft-1"]
+        root, child = ctx.session.drafts
+        assert child.parent_id == "draft-0"
+        assert child.plan.bass_figures != root.plan.bass_figures, "and the request was honoured"
+
+    def test_the_seed_is_the_parents_so_the_material_survives_the_edit(
+        self, ctx: ToolContext
+    ) -> None:
+        """ "Hold the bass" must not become a different tune.
+
+        The seed decides the draws behind the arrangement, the harmony and the
+        melody, so a revision that re-rolled it would be a new piece wearing the
+        old one's name — and the user's edit would be indistinguishable from a
+        reroll.
+        """
+        _ready(ctx)
+        _drafts(ctx, seed=11)
+
+        payload = _payload(_call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS]))
+
+        assert payload["seed"] == 11
+        assert ctx.session.drafts[1].spec.seed == ctx.session.drafts[0].spec.seed
+
+    def test_a_second_revision_keeps_the_firsts_plan_requests(self, ctx: ToolContext) -> None:
+        """The bug the chain exists to prevent, and the reason `Draft.deltas` is one.
+
+        A plan is derived from the spec and `default_plan` reads only a mood and a
+        meter, so the second revision cannot patch the first one's plan; folding
+        only its own request from its own spec would silently revert the bass.
+        Both halves are asserted — that the first revision moved the vocabulary,
+        and that the second did not move it back.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+        _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+        _call(ctx, "revise", draft_id="draft-1", deltas=[self._MOTIF])
+
+        root, first, second = ctx.session.drafts
+        assert first.plan.bass_figures != root.plan.bass_figures, "the premise: the bass"
+        assert second.plan.bass_figures == first.plan.bass_figures, "and the second did not undo it"
+        assert second.plan.motif_operation_weights != first.plan.motif_operation_weights
+        assert [delta.knob for delta in second.deltas] == ["SetBassMotion", "SetMotifVariation"]
+
+    def test_the_answer_carries_what_was_applied_and_what_was_refused(
+        self, ctx: ToolContext
+    ) -> None:
+        """One request honoured and one not, so both halves of the answer are read.
+
+        A chain that refused everything whole would be refused before reaching
+        the payload, so the partial case is the only one where the `refused` list
+        is visible at all.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        payload = _payload(
+            _call(
+                ctx,
+                "revise",
+                draft_id="draft-0",
+                deltas=[self._BASS, {"knob": "SetTempo", "tempo_bpm": 1000}],
+            )
+        )
+
+        assert payload["applied"] == [self._BASS]
+        (refused,) = payload["refused"]
+        assert refused["reason"] == "violates_the_spec"
+        assert refused["nearest"] == "SetTempo(240)"
+        root, child = ctx.session.drafts
+        assert child.plan.bass_figures != root.plan.bass_figures, "the honoured half stands"
+
+    def test_the_answer_names_the_element_of_the_order_that_moved(self, ctx: ToolContext) -> None:
+        """The revision's own explanation, and the one that does not depend on taste.
+
+        Holding the bass is a plan hash and nothing else: the notes are re-barred
+        under a different figure but the piece measures the same bar for bar,
+        which is asserted as the premise rather than trusted — if this request
+        ever moved a measurement, this test would be measuring the wrong element
+        and must say so.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        payload = _payload(_call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS]))
+
+        parent, child = ctx.session.drafts
+        assert musical_key(child) == musical_key(parent), "the premise: no measurement moved"
+        assert payload["moved_on"] == "plan_hash"
+
+    def test_a_tempo_the_length_cannot_hold_is_refused_rather_than_quietly_replaced(
+        self, ctx: ToolContext
+    ) -> None:
+        """A request the engine traded away, which is not the same as one it cannot hold.
+
+        `arrange_for_duration` catches its own refusal when a pinned tempo does
+        not fit the requested length and derives the tempo from the mood instead
+        — the length is a release gate and outranks the tempo. That is a
+        deliberate engine policy, and it leaves the one thing the vocabulary may
+        not produce: a request answered with a draft that does not do what it
+        asks. This piece plays at 64 BPM whatever the tempo is set to, so without
+        the check a user asking for 96 would be told the piece was theirs.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[self._TEMPO])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "tempo_not_honoured"
+        assert "SetTempo(96)" in invocation.result, "the request, named"
+        assert "64 BPM" in invocation.result, "the tempo it plays instead"
+        assert "50-80 BPM" in invocation.result, "and the range that could have reached it"
+        assert len(ctx.session.drafts) == 1, "and nothing was recorded"
+
+    def test_a_tempo_the_length_can_hold_is_applied_and_the_draft_says_so(
+        self, ctx: ToolContext
+    ) -> None:
+        """The other half of the check, without which it would be a refusal of everything.
+
+        80 BPM fits a minute-long calming piece exactly, so the arrangement keeps
+        it and the revision lands — with the performance plan moved, which is the
+        observable that says the tempo reached the notes' timing rather than only
+        the spec.
+        """
+        _ready(ctx, _SIXTY)
+        _drafts(ctx)
+
+        payload = _payload(
+            _call(ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetTempo", "tempo_bpm": 80}])
+        )
+
+        assert payload["seed"] == _SIXTY.seed
+        parent, child = ctx.session.drafts
+        assert child.spec.tempo_bpm == 80
+        assert child.performance_plan_hash != parent.performance_plan_hash, "and it is played"
+
+    def test_a_revision_that_measures_worse_is_refused_with_the_arbiters_sentence(
+        self, ctx: ToolContext
+    ) -> None:
+        """The ratchet, fired through the tool rather than asserted about.
+
+        Closing the clearance puts the bed against the tune, and this seed then
+        misses `register_separation_semitones`. The refusal names the bar that
+        moved and the draft to keep, because that is what the conductor reads and
+        the user is told.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetHarmonyClearance", "semitones": 1}],
+        )
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "revision_regressed"
+        assert "misses 1 quality bar" in invocation.result, "the bar that moved, counted"
+        assert "may not be worse than the draft it came from" in invocation.result, "the rule"
+        assert "draft-0" in invocation.result, "and which draft to keep"
+
+    def test_a_refused_revision_leaves_the_session_as_it_was(self, ctx: ToolContext) -> None:
+        """A refusal is an answer that changed nothing, so nothing is recorded."""
+        _ready(ctx)
+        _drafts(ctx)
+        before = list(ctx.session.drafts)
+
+        _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetHarmonyClearance", "semitones": 1}],
+        )
+
+        assert ctx.session.drafts == before
+
+    def test_a_request_the_engine_has_no_knob_for_is_answered_as_unbuilt(
+        self, ctx: ToolContext
+    ) -> None:
+        """ "Understood and unbuilt" is a different answer from "not understood".
+
+        A swing ratio is a real musical request the engine cannot yet honour, so
+        it refuses by name with the alternative that does exist rather than as a
+        misspelling — which is what `refuse_uncarried` is for and what a user's
+        own words turn into.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetSwing"}])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "unknown_knob"
+        assert "SetSwing" in invocation.result, "the request, named"
+        assert "SetDrumStyle" in invocation.result, "and what it can do instead"
+
+    def test_a_value_the_request_cannot_hold_is_refused_rather_than_crashed(
+        self, ctx: ToolContext
+    ) -> None:
+        """A `Literal`-typed field, which is the case that used to crash the tool.
+
+        A terrace names a plan field, so an unknown one raised an `AttributeError`
+        from inside the fold and the user was told the tool was broken. Both
+        halves are asserted — a refusal, and *not* the `error` outcome a crash
+        records — because a crash is also a recorded answer and only one of the
+        two is the contract.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetSectionEnergy", "role": "verse", "factor": 2.0}],
+        )
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "invalid_arguments"
+        assert "verse" in invocation.result
+        assert "'opening', 'peak', 'final', 'middle'" in invocation.result, "the vocabulary, named"
+
+    @pytest.mark.parametrize(
+        "requests",
+        [[], [{"knob": "SetTempo"}], [{"knob": "SetTempo", "tempo_bpm": 96}, "faster"], ["x"]],
+    )
+    def test_a_list_that_is_not_a_list_of_requests_is_refused(
+        self, ctx: ToolContext, requests: Any
+    ) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=requests)
+
+        assert invocation.error_code == "invalid_arguments"
+
+    def test_more_requests_than_the_budget_allows_is_refused(self, ctx: ToolContext) -> None:
+        """The bound is read off the budget, so a smaller one refuses sooner."""
+        small = ToolContext(
+            session=ctx.session,
+            sessions=ctx.sessions,
+            jobs=ctx.jobs,
+            budget=ToolBudget(max_deltas=2),
+        )
+        _ready(small)
+        _drafts(small)
+
+        invocation = _call(small, "revise", draft_id="draft-0", deltas=[self._TEMPO] * 3)
+
+        assert invocation.error_code == "invalid_arguments"
+        assert "at most 2" in invocation.result
+        assert len(small.session.drafts) == 1, "and nothing was recorded"
+
+    def test_revising_a_draft_the_session_does_not_have_refuses(self, ctx: ToolContext) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "revise", draft_id="draft-9", deltas=[self._BASS])
+
+        assert invocation.error_code == "unknown_draft"
+        assert "draft-0" in invocation.result
+
+    def test_a_line_may_be_revised_only_as_far_as_the_budget(self, ctx: ToolContext) -> None:
+        """A small budget, so the bound is reached in two revisions rather than eight."""
+        small = ToolContext(
+            session=ctx.session,
+            sessions=ctx.sessions,
+            jobs=ctx.jobs,
+            budget=ToolBudget(max_revisions=2),
+        )
+        _ready(small)
+        _drafts(small)
+        _call(small, "revise", draft_id="draft-0", deltas=[self._BASS])
+        _call(small, "revise", draft_id="draft-1", deltas=[self._BASS])
+
+        invocation = _call(small, "revise", draft_id="draft-2", deltas=[self._BASS])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "revision_limit"
+        assert "draft-0" in invocation.result, "the piece the line started as"
+        assert "2 time(s)" in invocation.result
+        assert len(small.session.drafts) == 3
+
+    def test_a_line_longer_than_the_budget_is_read_against_the_budget(
+        self, ctx: ToolContext
+    ) -> None:
+        """The walk's own bound, reached by reading a line built under a larger one.
+
+        A line's depth is a property of the documents in the session rather than
+        of the budget in hand, so a smaller budget reads a line it did not build
+        — which is the same "a stored document is not the writer" case the
+        `parent_id` cycle guard is for, and the two bounds are separate refusals
+        because they fire one revision apart.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+        for _ in range(3):
+            _call(ctx, "revise", draft_id=ctx.session.drafts[-1].draft_id, deltas=[self._BASS])
+        assert ctx.session.drafts[-1].parent_id is not None, "the premise: the line is deep"
+
+        small = ToolContext(
+            session=ctx.session,
+            sessions=ctx.sessions,
+            jobs=ctx.jobs,
+            budget=ToolBudget(max_revisions=2),
+        )
+        invocation = _call(small, "revise", draft_id="draft-3", deltas=[self._BASS])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "revision_limit"
+        assert "more than 2 revision(s)" in invocation.result
+        assert len(ctx.session.drafts) == 4
+
+    def test_a_recorded_chain_that_does_not_replay_is_a_failure_rather_than_a_revision(
+        self, ctx: ToolContext
+    ) -> None:
+        """The guard on a document that is not the writer, fired by editing one.
+
+        The chain is folded from the line's root spec and the prefix has to
+        re-fold to exactly what was recorded — otherwise the draft in hand is a
+        piece nothing else can reach, and applying new requests to it would record
+        a lineage that never existed. `error` rather than `refused`, because this
+        is not a request the engine declined: it is a record that cannot be
+        honoured at all.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+        _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+
+        document = ctx.session.drafts[1].to_document()
+        document["deltas"].append({"knob": "SetCadence", "degree": 9, "seventh": False})
+        ctx.session.replace_draft(Draft.from_document(document))
+
+        invocation = _call(ctx, "revise", draft_id="draft-1", deltas=[self._BASS])
+
+        assert invocation.outcome == "error"
+        assert invocation.error_code == "lineage_mismatch"
+        assert len(ctx.session.drafts) == 2, "and nothing was recorded"
+
+    def test_a_revision_whose_every_request_was_refused_names_the_first_reason(
+        self, ctx: ToolContext
+    ) -> None:
+        """A call with nothing left in it, which is a real answer rather than an empty turn.
+
+        `SetTempo(1000)` is refused by the spec's own bound and it is the only
+        request in the call, so there is nothing to compose and nothing to
+        record. What comes back is the *applier's* sentence with the nearest
+        legal request, which is what a user who asked for 1000 BPM needs to hear
+        — and it is the one path where the refusal is not the engine's.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(
+            ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetTempo", "tempo_bpm": 1000}]
+        )
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "violates_the_spec"
+        assert "SetTempo(240)" in invocation.result, "and the nearest legal request"
+        assert len(ctx.session.drafts) == 1, "and nothing was recorded"
+
+    def test_a_sole_refusal_with_no_nearest_carries_the_appliers_sentence_alone(
+        self, ctx: ToolContext
+    ) -> None:
+        """Some refusals name no alternative, and the answer must not invent one.
+
+        A cadence degree is refused for being outside the scale rather than for
+        exceeding a bound, so there is no "nearest legal value" to offer and the
+        applier says so by leaving `nearest` unset. The sentence is then the
+        whole of the answer, which is what keeps the tool from promising a
+        request the vocabulary would refuse in turn.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetCadence", "degree": 9, "seventh": False}],
+        )
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "violates_the_plan"
+        assert "cadence_degree" in invocation.result
+        assert "nearest request" not in invocation.result, "and no alternative is invented"
+        assert len(ctx.session.drafts) == 1, "and nothing was recorded"
+
+    def test_a_lineage_naming_a_draft_this_session_lacks_is_refused(self, ctx: ToolContext) -> None:
+        """A `parent_id` is a string read off a document, and a document is not the writer.
+
+        Deleting the draft a lineage names leaves a record that points at
+        nothing, which no tool can build and a hand-edited file can — so the
+        walk refuses it by name rather than folding a chain whose root does not
+        exist.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+        _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+
+        document = ctx.session.drafts[1].to_document()
+        document["parent_id"] = "draft-9"
+        ctx.session.replace_draft(Draft.from_document(document))
+
+        invocation = _call(ctx, "revise", draft_id="draft-1", deltas=[self._BASS])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "broken_lineage"
+        assert "draft-9" in invocation.result, "and it names the draft that is missing"
+        assert len(ctx.session.drafts) == 2, "and nothing was recorded"
+
+    def test_a_lineage_that_names_itself_back_is_refused(self, ctx: ToolContext) -> None:
+        """The other half of the same guard, and the reason it is a `seen` set.
+
+        A draft that is its own parent is a walk with no end. The two refusals
+        are one code because they are one situation — a line with no root — but
+        they are two sentences, because "this draft is missing" and "these drafts
+        name each other" are different things to tell a user.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+        _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+
+        document = ctx.session.drafts[1].to_document()
+        document["parent_id"] = "draft-1"
+        ctx.session.replace_draft(Draft.from_document(document))
+
+        invocation = _call(ctx, "revise", draft_id="draft-1", deltas=[self._BASS])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "broken_lineage"
+        assert "cycle" in invocation.result
+        assert len(ctx.session.drafts) == 2, "and nothing was recorded"
+
+    def test_a_revision_the_engine_will_not_compose_is_refused_with_its_own_reason(
+        self, ctx: ToolContext, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The engine's refusal reaches the conductor as a refusal, not as a crash.
+
+        Every request in the chain was honoured and the piece the fold describes
+        is still one `compose` declines to write — so the answer has to be the
+        engine's own code, because that is the only thing that says what is
+        wrong with the music rather than with the request.
+        """
+        _ready(ctx)
+        _drafts(ctx)
+
+        def _never(spec: CompositionSpec, *, plan: Any = None) -> Any:
+            raise CompositionEngineError(
+                code=EngineErrorCode.DURATION_UNFULFILLABLE, message="no arrangement fits"
+            )
+
+        monkeypatch.setattr(tools, "compose", _never)
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[self._BASS])
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "duration_unfulfillable"
+        assert "no arrangement fits" in invocation.result
+        assert len(ctx.session.drafts) == 1, "and nothing was recorded"
+
+
+class TestCompare:
+    """Ranking several drafts, and naming what put each one where it sits."""
+
+    def test_a_fan_out_is_ranked_and_every_step_says_what_decided_it(
+        self, ctx: ToolContext
+    ) -> None:
+        _ready(ctx)
+        _drafts(ctx, n=3)
+
+        ranking = _payload(_call(ctx, "compare"))["ranking"]
+
+        assert [entry["rank"] for entry in ranking] == [1, 2, 3]
+        assert len({entry["draft_id"] for entry in ranking}) == 3
+        assert "behind" not in ranking[0], "nothing is ahead of the leader"
+        assert "on" not in ranking[0]
+        for previous, entry in pairwise(ranking):
+            assert entry["behind"] == previous["draft_id"]
+            assert entry["on"] in ELEMENTS
+
+    def test_the_ranking_is_the_arbiters_own(self, ctx: ToolContext) -> None:
+        """The tool has no order of its own, and this is what says so."""
+        _ready(ctx)
+        _drafts(ctx, n=3)
+
+        ranking = _payload(_call(ctx, "compare"))["ranking"]
+
+        assert [entry["draft_id"] for entry in ranking] == [
+            draft.draft_id for draft in rank(ctx.session.drafts)
+        ]
+
+    def test_two_candidates_of_one_fan_out_are_decided_by_their_seeds(
+        self, ctx: ToolContext
+    ) -> None:
+        """The tie the plan hash cannot settle, seen from the tool.
+
+        Both candidates are one plan at two seeds, and this spec breaches nothing
+        at either, so the seed is the only element left — which is the case the
+        sixth element of the order exists for. The premise is asserted rather
+        than trusted, because a spec that breached something would be decided by
+        the breach and say nothing about the seed.
+        """
+        _ready(ctx)
+        _drafts(ctx, n=2, seed=5)
+
+        first, second = ctx.session.drafts
+        assert musical_key(first) == musical_key(second), "the premise: neither breaches a bar"
+        assert first.plan_hash == second.plan_hash, "the premise: one plan, two seeds"
+
+        ranking = _payload(_call(ctx, "compare"))["ranking"]
+
+        assert ranking[1]["behind"] == ranking[0]["draft_id"]
+        assert ranking[1]["on"] == "seed"
+
+    def test_only_the_drafts_asked_for_are_ranked(self, ctx: ToolContext) -> None:
+        _ready(ctx)
+        _drafts(ctx, n=3)
+
+        ranking = _payload(_call(ctx, "compare", draft_ids=["draft-0", "draft-2"]))["ranking"]
+
+        assert [entry["rank"] for entry in ranking] == [1, 2]
+        assert {entry["draft_id"] for entry in ranking} == {"draft-0", "draft-2"}
+
+    def test_a_revision_is_ranked_beside_its_parent_and_says_which_it_came_from(
+        self, ctx: ToolContext
+    ) -> None:
+        """The lineage is on the card, so a model reading it does not treat one
+        piece as two rivals."""
+        _ready(ctx)
+        _drafts(ctx)
+        _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetBassMotion", "motion": "sparse"}],
+        )
+
+        entries = {entry["draft_id"]: entry for entry in _payload(_call(ctx, "compare"))["ranking"]}
+
+        assert entries["draft-0"]["parent_id"] is None
+        assert entries["draft-1"]["parent_id"] == "draft-0"
+
+    def test_a_session_with_no_drafts_says_what_to_do_about_it(self, ctx: ToolContext) -> None:
+        invocation = _call(ctx, "compare")
+
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "no_drafts"
+        assert "draft" in invocation.result
+
+    def test_a_draft_asked_for_twice_is_refused(self, ctx: ToolContext) -> None:
+        """A draft ranked against itself says nothing, and the id list is the model's."""
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "compare", draft_ids=["draft-0", "draft-0"])
+
+        assert invocation.error_code == "invalid_arguments"
+        assert "twice" in invocation.result
+
+    @pytest.mark.parametrize("bad", [[7], [], "draft-0", {}])
+    def test_a_list_of_anything_but_ids_is_refused(self, ctx: ToolContext, bad: Any) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "compare", draft_ids=bad)
+
+        assert invocation.error_code == "invalid_arguments"
+
+    def test_an_unknown_draft_lists_the_ones_the_session_has(self, ctx: ToolContext) -> None:
+        _ready(ctx)
+        _drafts(ctx)
+
+        invocation = _call(ctx, "compare", draft_ids=["draft-9"])
+
+        assert invocation.error_code == "unknown_draft"
+        assert "draft-0" in invocation.result
+
+
 @pytest.fixture
 def rendered(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """A stand-in for the FluidSynth pass, writing the files it claims to.
@@ -730,7 +1362,9 @@ class TestTheHandlersAreAllReachable:
     def test_the_module_exports_what_it_claims(self) -> None:
         assert set(tools.__all__) == {
             "MAX_CANDIDATES_PER_DRAFT",
+            "MAX_DELTAS_PER_REVISION",
             "MAX_LLM_CALLS_PER_TURN",
+            "MAX_REVISIONS_PER_LINE",
             "MAX_SKETCHES_PER_TURN",
             "TOOLS",
             "TURN_DEADLINE_SECONDS",
@@ -756,6 +1390,25 @@ class TestWithoutAModel:
         _ready(ctx)
         assert _call(ctx, "draft").ok
         assert _call(ctx, "critique", draft_id="draft-0").ok
+
+    def test_the_whole_feedback_loop_runs_with_no_model_in_the_loop(self, ctx: ToolContext) -> None:
+        """Drafting, revising and ranking are arithmetic and the arbiter's order.
+
+        This is the plan's "feedback degrades" bullet as a test: with the model
+        absent the conductor cannot speak, but every Tier-1 edit and every
+        deterministic tool still answers, so the product is usable by a user who
+        only wants to steer with controls.
+        """
+        _ready(ctx)
+        assert _call(ctx, "draft").ok
+        assert _call(
+            ctx,
+            "revise",
+            draft_id="draft-0",
+            deltas=[{"knob": "SetBassMotion", "motion": "sparse"}],
+        ).ok
+        assert _call(ctx, "compare").ok
+        assert ctx.llm is None, "the premise: no model is wired"
 
     def test_the_one_tool_that_needs_a_model_says_so_by_name(self, ctx: ToolContext) -> None:
         assert _call(ctx, "parse_brief").error_code == "llm_not_configured"

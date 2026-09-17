@@ -29,12 +29,14 @@ in the first place.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields
 from enum import StrEnum
 from typing import get_args
 
 import pytest
 
+from saimc.compose.duration import DurationArrangement, arrange_for_duration
 from saimc.compose.engine import compose
 from saimc.compose.motif import FIGURES_BY_MOTION, BassMotion
 from saimc.compose.plan import CompositionPlan, default_plan
@@ -71,6 +73,7 @@ from saimc.session.deltas import (
     delta_from_dict,
     delta_to_dict,
     refuse_uncarried,
+    swallowed_tempo,
 )
 from saimc.spec import (
     CompositionSpec,
@@ -383,6 +386,14 @@ class TestTheHarmonyLevels:
     levels are three literal strings, so each needs its own: a `pad` request
     writing the arpeggio's field is a mistake no formula can make and no single
     case can witness.
+
+    That is the whole of the argument for *coverage*, and it was read as the
+    whole of the argument for the field: D3 found by using the type that a
+    formula over an unvalidated value is not the same thing as a checked one —
+    an unknown terrace and an unknown texture each raised from inside the fold
+    rather than refusing. The check is a `Literal`'s members at construction, and
+    `test_a_value_outside_a_literal_is_refused_at_construction` is where that
+    lives. **A formula needs no case per entry; it does need the value checked.**
     """
 
     @pytest.mark.parametrize(("texture", "field"), sorted(_HARMONY_LEVELS.items()))
@@ -699,6 +710,33 @@ class TestTheStoredDocument:
         with pytest.raises(ValueError):
             SetMood(mood="grumpy")
 
+    @pytest.mark.parametrize(
+        ("build", "named"),
+        [
+            (lambda: SetHumanization(level="loudish"), "'none', 'light', 'expressive'"),
+            (lambda: SetHarmonyLevel(texture="strings", velocity=64), "'pad'"),
+            (lambda: SetSectionEnergy(role="verse", factor=2.0), "'opening', 'peak'"),
+        ],
+    )
+    def test_a_value_outside_a_literal_is_refused_at_construction(
+        self, build: Callable[[], Delta], named: str
+    ) -> None:
+        """A `Literal` is a promise the interpreter does not keep, so the record does.
+
+        Found by using the type rather than by reading it: `SetSectionEnergy`'s
+        terrace names a *plan field* and `SetHarmonyLevel`'s texture names a
+        *level field*, so an unknown one raised an `AttributeError` and a
+        `KeyError` from inside the fold — a `tool_crashed` reaching the user
+        where the vocabulary's whole rule is a named refusal. The three fields
+        are the `Literal`s the vocabulary has, and the members named in the
+        message are read off the alias rather than restated, so a fourth texture
+        is offered without an edit here.
+        """
+        with pytest.raises(ValueError) as caught:
+            build()
+
+        assert named in str(caught.value)
+
     def test_a_document_naming_an_unknown_knob_is_refused_with_the_vocabulary(self) -> None:
         with pytest.raises(ValueError) as caught:
             delta_from_dict({"knob": "SetVibe", "vibe": "good"})
@@ -734,4 +772,77 @@ class TestTheChainMovesTheMusic:
             plan=application.plan,
             applied=(_EXAMPLES["SetCadence"],),
             refused=(),
+        )
+
+
+class TestTheTempoTheEngineTradedAway:
+    """The one request whose honour is only knowable from a composition.
+
+    Every other refusal in this module is a document's own bound, which is why the
+    applier can raise it while folding. A tempo is not: `arrange_for_duration`
+    declares a pinned tempo it cannot fit unfulfillable and then catches its own
+    refusal, because the length is a release gate and outranks the tempo. That
+    policy is deliberate — it is asserted in `test_compose_duration.py` — and it
+    leaves a request the user made answered with a piece that does not do it.
+
+    So the check takes the arrangement, and the arrangement only exists where a
+    composition happened. These cases build one with the real search rather than a
+    hand-made struct, because the question being asked is what the search does.
+    """
+
+    def _arrangement(self, *, duration_seconds: float, tempo_bpm: float) -> DurationArrangement:
+        return arrange_for_duration(
+            mood="calming",
+            target_duration_seconds=duration_seconds,
+            time_signature="4/4",
+            tempo_bpm=tempo_bpm,
+        )
+
+    def test_a_tempo_the_arrangement_kept_is_not_refused(self) -> None:
+        """The half without which the check would refuse every tempo there is."""
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=60)
+        arrangement = self._arrangement(duration_seconds=60.0, tempo_bpm=80.0)
+        assert arrangement.tempo_bpm == 80.0, "the premise: the search kept the pin"
+        assert swallowed_tempo([SetTempo(80)], spec=spec, arrangement=arrangement) is None
+
+    def test_a_tempo_the_length_outranked_is_refused_with_both_numbers(self) -> None:
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30)
+        arrangement = self._arrangement(duration_seconds=30.0, tempo_bpm=96.0)
+        refusal = swallowed_tempo([SetTempo(96)], spec=spec, arrangement=arrangement)
+        assert refusal is not None
+        assert (refusal.request, refusal.reason) == ("SetTempo", "tempo_not_honoured")
+        assert "SetTempo(96)" in refusal.message, "the request"
+        assert f"{arrangement.tempo_bpm:g} BPM" in refusal.message, "and what it plays instead"
+        assert "50-80 BPM" in refusal.message, "and the range that would have reached it"
+        assert refusal.nearest == f"SetTempo({int(arrangement.tempo_bpm)})"
+
+    def test_a_chain_is_judged_by_the_last_tempo_it_asks_for(self) -> None:
+        """The spec ends up carrying the last request, so that is the one answered."""
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30)
+        arrangement = self._arrangement(duration_seconds=30.0, tempo_bpm=96.0)
+        refusal = swallowed_tempo([SetTempo(70), SetTempo(96)], spec=spec, arrangement=arrangement)
+        assert refusal is not None
+        assert "SetTempo(96)" in refusal.message
+        assert "SetTempo(70)" not in refusal.message
+
+    def test_a_half_bpm_arrangement_names_no_request_to_make(self) -> None:
+        """`SetTempo` takes an int, so a 53.5 BPM piece has no nearest to offer.
+
+        Naming one would be advice the vocabulary cannot express — a round trip
+        through `delta_from_dict` would refuse it for not being an integer — which
+        is the same reason the field is documented as nullable at all.
+        """
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=180)
+        arrangement = self._arrangement(duration_seconds=180.0, tempo_bpm=50.0)
+        assert not arrangement.tempo_bpm.is_integer(), "the premise: the search landed on a half"
+        refusal = swallowed_tempo([SetTempo(50)], spec=spec, arrangement=arrangement)
+        assert refusal is not None
+        assert refusal.nearest is None
+
+    def test_a_chain_that_asks_for_no_tempo_has_nothing_to_judge(self) -> None:
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30)
+        arrangement = self._arrangement(duration_seconds=30.0, tempo_bpm=96.0)
+        assert (
+            swallowed_tempo([_EXAMPLES["SetBassMotion"]], spec=spec, arrangement=arrangement)
+            is None
         )
