@@ -170,6 +170,9 @@ class OllamaAdapter:
             resp = await self._http.post(f"{self._base_url}/api/chat", json=body)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
+            # A failed request still took time, and it is the same reading the
+            # other four branches carry: the elapsed time of the attempt.
+            latency_ms = int((time.perf_counter() - t0) * 1000)
             return ParseResult(
                 parser_source="llm",
                 attempts=1,
@@ -181,6 +184,7 @@ class OllamaAdapter:
                     stage="parsing",
                     attempts=1,
                 ),
+                extra={"latency_ms": str(latency_ms)},
             )
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
