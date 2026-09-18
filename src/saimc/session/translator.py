@@ -19,10 +19,15 @@ be writing the request rather than reading it. What it cannot read it reports; s
 
 **Three outcomes and they are three because the sentences differ.** A phrase can
 become a request (a `Delta`), be recognised as a request the engine cannot honour
-(a `DeltaRefusal` from `refuse_uncarried` — "swing" is understood and unbuilt),
-or name nothing at all (the words are reported as unread). The middle one is the
-distinction the vocabulary's `UNCARRIED` table exists for, and collapsing either
-of the other two into it would tell the user something false.
+(a `DeltaRefusal`), or name nothing at all (the words are reported as unread). The
+middle one is the distinction the vocabulary's `UNCARRIED` table exists for, and
+collapsing either of the other two into it would tell the user something false.
+**A refusal is a family and not one sentence**: `refuse_uncarried` answers a
+request no knob carries, and `_directionless` answers one the plan *does* carry
+where the words named the knob and not the direction — "harmonic rhythm" against
+"chords change slower". Telling a listener the engine cannot do something it can
+is the false answer both exist to prevent, which is why the second is its own
+reason rather than a second `unknown_knob`.
 
 **Nothing here composes, and the one question that needs a composition is
 therefore not asked here.** `swallowed_tempo` needs the arrangement, so whether a
@@ -50,6 +55,7 @@ from saimc.session.deltas import (
     SetBassMotion,
     SetDrumStyle,
     SetDuration,
+    SetHarmonicRhythm,
     SetHarmonyTexture,
     SetHumanization,
     SetMood,
@@ -178,6 +184,18 @@ def _unbuilt(request: str) -> Reader:
     return _fixed(refusal)
 
 
+def _directionless(request: str, message: str) -> Reader:
+    """A reader for a phrase that names a knob and no direction.
+
+    Built here rather than by `_unbuilt`, which refuses a request the engine has
+    no knob for: this one the engine *has*, and the words do not say which way to
+    move it. The refusal is built at import for `_unbuilt`'s reason — a phrase
+    that could not produce a sentence would fail when the module loads rather than
+    turning into an unread phrase at the moment a user says it.
+    """
+    return _fixed(DeltaRefusal(request=request, reason="direction_unnamed", message=message))
+
+
 def _longer(spec: CompositionSpec) -> Delta:
     return SetDuration(spec.duration_seconds + _SECONDS_PER_STEP)
 
@@ -303,15 +321,58 @@ KEYWORD_TABLE: Final[tuple[Phrase, ...]] = (
         ),
         _another_take,
     ),
-    # And the five requests the design named that plan v1 has no knob for. Each
-    # is understood, refused by name, and answered with what to ask for instead.
+    # And the four requests the design named that no knob carries. Each is
+    # understood, refused by name, and answered with what to ask for instead.
     Phrase(
         ("up an octave", "down an octave", "an octave higher", "an octave lower", "register"),
         _unbuilt("SetRegister"),
     ),
+    # The harmonic rhythm is a knob and a *direction*, and a listener who names
+    # only the knob has not asked for a piece yet — which is what
+    # `direction_unnamed` is for. "harmonic rhythm faster" is a phrase of the
+    # faster entry beside this one, so the direction said out of order still
+    # reads: the longest match wins, and the three words beat the two.
     Phrase(
-        ("harmonic rhythm", "chords change faster", "chords change slower", "change chords faster"),
-        _unbuilt("SetHarmonicRhythm"),
+        ("harmonic rhythm",),
+        _directionless(
+            "SetHarmonicRhythm",
+            "the harmonic rhythm is how often the chords change, and the request does not "
+            "say which way to move it. Ask for the chords to change faster or slower, or "
+            "name the durations you want in bars.",
+        ),
+    ),
+    # Slower holds each chord longer, which is `(4,)` against the templates' own
+    # two-bar slot. Measured against the variety floor: 0.3 to 0.526, where the
+    # default is 0.117 to 0.5.
+    Phrase(
+        (
+            "chords change slower",
+            "change chords slower",
+            "chord changes slower",
+            "slower harmonic rhythm",
+            "harmonic rhythm slower",
+        ),
+        _fixed(SetHarmonicRhythm((4,))),
+    ),
+    # Faster is `(2, 1, 1)` and *not* `(1,)`, and the reason is measured rather
+    # than preferred: a section's close is written as two one-bar chords, so a
+    # one-bar pattern erases the only varied duration the piece has and reads
+    # **0.0** on `harmonic_rhythm_variety` — it is a pulse, which is the thing
+    # that bar exists to catch. `(2, 1, 1)` is faster than the default and
+    # varied, and measures 0.333 to 0.363. A one-bar pattern is also the one
+    # reading the engine refuses outright on a piece with a coda, so the
+    # vocabulary never names it for a second reason; the plan's field carries
+    # that one, because it is a fact about the knob rather than about the
+    # words.
+    Phrase(
+        (
+            "chords change faster",
+            "change chords faster",
+            "chord changes faster",
+            "faster harmonic rhythm",
+            "harmonic rhythm faster",
+        ),
+        _fixed(SetHarmonicRhythm((2, 1, 1))),
     ),
     Phrase(("swing", "swung", "swing feel"), _unbuilt("SetSwing")),
     Phrase(

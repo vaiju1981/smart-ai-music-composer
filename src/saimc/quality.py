@@ -429,11 +429,15 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
         hint=(
             "every section of every template in saimc/compose/forms.py is "
             "built from two-bar slots, so the only varied chord duration a "
-            "piece has is the cadence that ends each section: `section_close` "
-            "on the composition plan is the knob, and its `hold` setting — "
-            "sections that run on — is what takes the variety away. Adding "
-            "variety rather than keeping it needs the harmonic_rhythm plan "
-            "field, which the plan does not carry yet."
+            "piece has by default is the cadence that ends each section: "
+            "`section_close` on the composition plan is the knob, and its "
+            "`hold` setting — sections that run on — is what takes the "
+            "variety away. Adding variety rather than keeping it is "
+            "`harmonic_rhythm`, the durations in bars a template's "
+            "progression is re-cut into. A pattern holding more than one "
+            "duration is what has rhythm; a uniform one is a pulse at any "
+            "rate, and `(1,)` reads zero because the close is two one-bar "
+            "chords and a one-bar pattern swallows it."
         ),
         axis="harmony",
     ),

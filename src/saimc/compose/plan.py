@@ -107,7 +107,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 4
+PLAN_SCHEMA_VERSION: Final[int] = 5
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -341,6 +341,43 @@ class CompositionPlan:
     a name outside it would be a section closing some third way no test
     looks at.
     """
+    harmonic_rhythm: tuple[int, ...] | None
+    """The chord durations a template's progression is re-cut into, in bars.
+
+    A pattern rather than a rate, and it cycles: `(1,)` walks the progression
+    a chord a bar, `(4,)` holds each for four, and `(2, 1, 1)` is both faster
+    than the default two-bar slot and *varied*, which is the thing
+    `harmonic_rhythm_variety` measures. `apply_harmonic_rhythm` cuts it into
+    the template before the close rewrites the last two bars, so the cadence
+    a section ends on survives whatever the pattern says.
+
+    **A one-bar pattern is legal here and refused by the engine on any piece
+    with a coda**, and both halves of that are deliberate. It is a pulse at
+    any rate, so it reads 0.0 on `harmonic_rhythm_variety` — measured, and
+    the reason the vocabulary's "faster" is `(2, 1, 1)`. And it is the only
+    pattern that makes `_truncate_template_for_coda`'s forced tone sound as a
+    bar of its own, where the bass walk writes a non-chord tone: composed, it
+    raises `lint_failed` rather than producing a piece. A plan is thus a
+    document that can be *read* and cannot be *honoured* for this one value,
+    which is the plan's own rule — the refusal is named, and the tool surface
+    carries it to the user per candidate — but it is a fact a writer of this
+    field has to know, so it is here rather than in the phase that found it.
+    See `test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds`.
+
+    **`None` is this plan's one deliberate deferral, and it is structural.**
+    It means "the template's own rhythm" — the rate the hand-coded
+    progression already has — and it cannot be materialized into a tuple the
+    way every other field here is, because *which* template a piece uses is
+    the duration search's to decide at compose time: it picks the form, the
+    repetition count and the variant, and the template is then truncated or
+    extended to fit. Measured: `sleep`'s two eight-bar templates are `(2, 2,
+    2, 2)` and `(4, 4)`, so no single tuple stands for the default even
+    within one mood. The degrees, the slot colours and the bar counts are
+    deferred the same way and for the same reason; what this field adds is
+    that a piece whose rhythm was *asked for* replays it from the plan rather
+    than from `forms.py`, the way a piece whose key was asked for reads it
+    from the spec.
+    """
     modulation_offset: int
     """Semitones the final repetition of a long piece is lifted by.
 
@@ -492,6 +529,12 @@ class CompositionPlan:
             f"{', '.join(SECTION_CLOSES)}.",
         )
         _require(
+            self.harmonic_rhythm is None
+            or (bool(self.harmonic_rhythm) and all(bars >= 1 for bars in self.harmonic_rhythm)),
+            "harmonic_rhythm is a pattern of chord durations in bars, each at least "
+            f"one, or None for the templates' own rhythm; got {self.harmonic_rhythm}",
+        )
+        _require(
             abs(self.modulation_offset) <= 12,
             "modulation_offset is a lift of the key, so it cannot exceed an "
             f"octave ({self.modulation_offset})",
@@ -636,6 +679,9 @@ class CompositionPlan:
             "cadence_degree": self.cadence_degree,
             "cadence_seventh": self.cadence_seventh,
             "section_close": self.section_close,
+            "harmonic_rhythm": (
+                None if self.harmonic_rhythm is None else list(self.harmonic_rhythm)
+            ),
             "modulation_offset": self.modulation_offset,
             "form_sizes": list(self.form_sizes),
             "intro_bars": self.intro_bars,
@@ -715,6 +761,11 @@ class CompositionPlan:
             cadence_degree=payload["cadence_degree"],
             cadence_seventh=payload["cadence_seventh"],
             section_close=payload["section_close"],
+            harmonic_rhythm=(
+                None
+                if payload["harmonic_rhythm"] is None
+                else tuple(payload["harmonic_rhythm"])
+            ),
             modulation_offset=payload["modulation_offset"],
             form_sizes=tuple(payload["form_sizes"]),
             intro_bars=payload["intro_bars"],
@@ -874,6 +925,9 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         cadence_degree=cadence_degree_for(mood),
         cadence_seventh=cadence_seventh_for(mood),
         section_close=DEFAULT_SECTION_CLOSE,
+        # The templates' own rhythm, which is the only deferral in this
+        # document and cannot be avoided — see the field's own docstring.
+        harmonic_rhythm=None,
         modulation_offset=MODULATION_OFFSET,
         form_sizes=PHRASE_SIZES,
         intro_bars=INTRO_BARS,

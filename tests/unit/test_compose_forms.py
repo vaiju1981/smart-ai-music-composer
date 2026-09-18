@@ -19,6 +19,7 @@ from saimc.compose.forms import (
     ChordTemplate,
     apply_final_cadence,
     apply_half_cadence,
+    apply_harmonic_rhythm,
     apply_section_close,
     bar_scale_intervals,
     chord_root_offset,
@@ -292,6 +293,162 @@ class TestTheSectionClose:
         message = str(raised.value)
         assert "cadential" in message
         assert all(name in message for name in SECTION_CLOSES), message
+
+
+class TestTheHarmonicRhythm:
+    """A progression re-cut at the plan's rate: what it may move, and what not.
+
+    The plan carries the durations and the template carries the chords, so
+    the whole of this function is the arithmetic between them — and the two
+    properties every caller relies on are that the bar count is unchanged
+    (the arrangement's own bar arithmetic, and the duration the piece was
+    asked for, are built on it) and that no chord is cut to zero bars (a
+    zero-bar slot is a chord that never sounds, which `_generate_section`
+    has to skip by name).
+
+    What the re-cut must *not* move is the part of a slot that is not its
+    length: a cadence's seventh and a forced bass pin are musical decisions
+    the templates made, and a rate is not a reason to drop either.
+    """
+
+    def _template(self) -> ChordTemplate:
+        return get_template_for_form("calming", 8)
+
+    @staticmethod
+    def _bar_by_bar(template: ChordTemplate) -> tuple[ChordSlot, ...]:
+        """One entry per bar, so the durations are read as they sound."""
+        return tuple(slot._replace(bars=1) for slot in template.chords for _ in range(slot.bars))
+
+    def test_the_pattern_decides_how_long_each_degree_lasts(self) -> None:
+        """`(4,)` holds each chord of the default progression twice as long.
+
+        The default is four two-bar slots, so a four-bar pattern states the
+        first two of them and stops — the progression is not shortened, it
+        is *slowed*, and the chords that no longer fit are the ones the
+        cadence is about to rewrite anyway.
+        """
+        template = self._template()
+        re_cut = apply_harmonic_rhythm(template, (4,))
+        assert [(slot.degree, slot.bars) for slot in re_cut.chords] == [(0, 4), (5, 4)]
+        assert re_cut.bars == template.bars
+        assert [slot.seventh for slot in re_cut.chords] == [
+            slot.seventh for slot in template.chords[:2]
+        ], "the re-cut dropped a slot's seventh, which its length has nothing to do with"
+        assert all(slot.bass_degree is None for slot in re_cut.chords)
+
+    def test_a_one_bar_pattern_walks_the_progression_a_chord_a_bar(self) -> None:
+        template = self._template()
+        re_cut = apply_harmonic_rhythm(template, (1,))
+        degrees = [slot.degree for slot in re_cut.chords]
+        assert degrees == [0, 5, 3, 4, 0, 5, 3, 4], (
+            "a one-bar pattern does not walk the progression: the degrees are "
+            "not the template's own, in their own order, cycling"
+        )
+        assert all(slot.bars == 1 for slot in re_cut.chords)
+
+    @pytest.mark.parametrize("pattern", [(1,), (4,), (2, 1, 1), (3,), (5, 3), (16,), (2, 2, 2, 2)])
+    def test_the_bar_count_holds_and_no_chord_is_cut_to_nothing(self, pattern: tuple[int, ...]) -> None:
+        """The two invariants every caller's arithmetic rests on.
+
+        `(16,)` is here because the clamp is what makes it legal: a pattern
+        whose durations run past the template's own length would otherwise
+        write a chord longer than the section, and `(3,)` because a pattern
+        that does not divide the bar count is the arm that shortens the last
+        slot — the one place a clamp to zero could appear.
+        """
+        template = self._template()
+        re_cut = apply_harmonic_rhythm(template, pattern)
+        assert re_cut.bars == template.bars
+        assert sum(slot.bars for slot in re_cut.chords) == template.bars
+        assert all(slot.bars >= 1 for slot in re_cut.chords), (
+            "a chord was cut to zero bars, which is a chord that never sounds"
+        )
+        # The degrees are the template's own, in their own order, cycling —
+        # a rate moves how long a chord lasts and not which chord it is. The
+        # tail is *not* pinned: the pattern stops when the bars run out, so
+        # a slow pattern ends on an earlier degree than the template does,
+        # and `apply_final_cadence` rewrites those last two bars anyway.
+        template_degrees = [slot.degree for slot in template.chords]
+        assert [slot.degree for slot in re_cut.chords] == [
+            template_degrees[index % len(template_degrees)] for index in range(len(re_cut.chords))
+        ]
+
+    def test_a_pattern_that_does_not_fit_is_shortened_at_the_end_and_not_by_dropping_a_chord(
+        self,
+    ) -> None:
+        """`(3,)` over eight bars is 3, 3 and 2 — not 3, 3 and nothing.
+
+        A `while consumed < bars` loop that stopped when the next chord did
+        not fit would leave the piece two bars short of its section.
+        """
+        re_cut = apply_harmonic_rhythm(self._template(), (3,))
+        assert [slot.bars for slot in re_cut.chords] == [3, 3, 2]
+
+    def test_the_rhythm_a_uniform_template_already_has_is_the_pattern_that_restates_it(
+        self,
+    ) -> None:
+        """The premise behind `None`, stated where it holds and where it does not.
+
+        For the two-bar templates a pattern of two-bar slots writes the
+        template back, chord for chord — which is why `None` needs the
+        explanation the plan's field carries rather than being spelled as a
+        tuple the templates would agree with.
+        """
+        template = self._template()
+        assert all(slot.bars == 2 for slot in template.chords), (
+            "this test's premise is that calming's base template is uniform two-bar slots"
+        )
+        assert apply_harmonic_rhythm(template, (2, 2, 2, 2)).chords == template.chords
+
+    def test_no_single_pattern_stands_for_the_templates_own_rhythm_in_one_mood(self) -> None:
+        """Which is the whole reason the plan defers to `None`.
+
+        `sleep` ships both a four-bar pair and a four-slot two-bar
+        progression, and the duration search decides which one a piece uses
+        at compose time — so a `default_plan` that wrote one of them as a
+        pattern would be pinning an arrangement decision the plan does not
+        make. Asserted as a premise rather than described: a future
+        `forms.py` in which every template of a mood had the same slot
+        lengths would make the field's deferral unnecessary, and this test
+        is where that would be noticed.
+        """
+        slots_per_template = {
+            template.name: tuple(slot.bars for slot in template.chords)
+            for template in MOOD_PROFILES["sleep"].templates
+        }
+        assert len(set(slots_per_template.values())) > 1, (
+            f"every sleep template is cut the same way ({slots_per_template}), so no "
+            "pattern would need to be deferred — the plan's `None` is now a choice"
+        )
+        assert slots_per_template["sleep_drone"] == (4, 4)
+        assert slots_per_template["sleep_lullaby"] == (2, 2, 2, 2)
+
+    @pytest.mark.parametrize("pattern", [(), (0,), (2, 0), (2, -1), (-1, 2)])
+    def test_a_pattern_that_is_not_whole_bars_each_is_refused_by_name(
+        self, pattern: tuple[int, ...]
+    ) -> None:
+        """Refused here as well as at the plan, because a direct call is a caller.
+
+        The plan refuses these too, so this raise is unreachable through a
+        plan — which is why it is pinned: `_with_harmonic_rhythm` is one
+        call site and a script composing through `forms` is another, and a
+        pattern silently treated as a pulse would be the unnamed no-op the
+        deltas' rule forbids.
+
+        The guard is also load-bearing against a *hang*, which is more than
+        the rule asks of it. A zero in the pattern makes `duration` zero, so
+        `consumed` never advances and the loop appends chord slots until the
+        process dies — measured when the guard was removed to check this
+        test: 2.6 GB of RSS before it was killed. So the reading "a pattern
+        that does not fit is shortened at the end", which holds for every
+        whole-bar pattern, is not the property being defended here; the
+        function not returning at all is.
+        """
+        with pytest.raises(ValueError) as raised:
+            apply_harmonic_rhythm(self._template(), pattern)
+        message = str(raised.value)
+        assert str(tuple(pattern)) in message
+        assert "each at least one" in message
 
 
 class TestTempoRanges:

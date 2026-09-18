@@ -134,6 +134,11 @@ _MUTATIONS: dict[str, Any] = {
     # cadence once this field says so; `full` and the default `half` are
     # the two closes a piece can have in every one of its sections.
     "section_close": "full",
+    # The base defers to the templates' own rhythm — `None` — so any pattern
+    # is a change; this is the faster reading the vocabulary ships, which is
+    # also the one whose durations differ from each other rather than merely
+    # from two.
+    "harmonic_rhythm": (2, 1, 1),
     "modulation_offset": 3,
     "form_sizes": (4, 8, 16, 32),
     "intro_bars": 3,
@@ -278,6 +283,32 @@ class TestTheStoredPlanIsReadBack:
         """
         plan = default_plan(spec)
         reloaded = CompositionPlan.from_canonical_dict(plan.to_canonical_dict())
+        assert reloaded == plan
+        assert reloaded.compute_hash() == plan.compute_hash()
+
+    def test_a_pattern_is_stored_as_a_list_and_read_back_as_the_tuple(
+        self,
+    ) -> None:
+        """`harmonic_rhythm` is the one field whose value is not the shape JSON
+        holds, so the round trip above cannot cover it.
+
+        Every spec in `_spec_matrix` leaves the field deferred — `None` — and
+        `None` is written as `None` and read back as `None`, which is a
+        round trip that would pass with the tuple branch of the reader
+        deleted. A stored plan that holds a pattern is what makes the branch
+        load-bearing, and the digest is *not* what catches it: the writer
+        flattens a list as readily as a tuple, so a reloaded plan holding one
+        would hash alike — checked, not assumed. Equality is the guard, and
+        it is the right one, because "the reader inverts the writer" is a
+        claim about the object and not about its canonical form.
+        """
+        plan = replace(_base(), harmonic_rhythm=(2, 1, 1))
+        document = plan.to_canonical_dict()
+        assert document["harmonic_rhythm"] == [2, 1, 1], (
+            "the writer did not flatten the pattern to the list a JSON document holds"
+        )
+        reloaded = CompositionPlan.from_canonical_dict(json.loads(canonical_dumps(document)))
+        assert reloaded.harmonic_rhythm == (2, 1, 1)
         assert reloaded == plan
         assert reloaded.compute_hash() == plan.compute_hash()
 
@@ -568,6 +599,15 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             # rather than beside it, which is why the case names a fifth word
             # instead of reusing one of the three.
             ({"section_close": "cadential"}, "unknown section close"),
+            # A rhythm is a pattern of whole bars with something in each, so
+            # the three shapes it cannot be are its own refusals: nothing to
+            # cycle, a chord that never sounds, and a chord that lasts less
+            # than no time. `None` is not among them — it is the deferral to
+            # the templates' own rhythm, and `test_the_guard_lets_a_valid_plan_through`
+            # is what says so.
+            ({"harmonic_rhythm": ()}, "each at least one"),
+            ({"harmonic_rhythm": (2, 0)}, "each at least one"),
+            ({"harmonic_rhythm": (2, -1)}, "each at least one"),
             ({"modulation_offset": 13}, "cannot exceed an octave"),
             ({"modulation_offset": -13}, "cannot exceed an octave"),
             ({"form_sizes": ()}, "must not be empty"),

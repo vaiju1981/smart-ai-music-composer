@@ -42,11 +42,12 @@ a score the linter refused, and it fires where the notes are made.
 
 **The vocabulary is bounded by what the plan actually carries**, which is the
 design's own scope rule rather than a shortfall of this module. The design
-named `SetHarmonicRhythm`, `SetSwing`, `SetDrumEntry` and `SetRegister`; plan
-v1 has no knob for any of them. They are in `UNCARRIED` by name with what to
-ask for instead, because a request the engine cannot honour must not be
-answered with "I did not understand you": the request was understood, and it
-is unbuilt.
+named `SetHarmonicRhythm`, `SetSwing`, `SetDrumEntry` and `SetRegister`; the
+plan has since grown a knob for the first of them — `harmonic_rhythm`, the
+durations a progression's chords are re-cut into — and the other three are in
+`UNCARRIED` by name with what to ask for instead, because a request the engine
+cannot honour must not be answered with "I did not understand you": the
+request was understood, and it is unbuilt.
 
 Where a refusal can name a nearest legal request it does, and the bound is
 read off the constraint that failed — Pydantic's `{"le": 240}` becomes
@@ -88,27 +89,38 @@ from saimc.spec import (
 )
 
 Reason: TypeAlias = Literal[
-    "violates_the_spec", "violates_the_plan", "tempo_not_honoured", "unknown_knob"
+    "violates_the_spec",
+    "violates_the_plan",
+    "tempo_not_honoured",
+    "unknown_knob",
+    "direction_unnamed",
 ]
 """Why a request was not honoured.
 
-Four, and they are told apart because the sentence the user needs differs.
+Five, and they are told apart because the sentence the user needs differs.
 `violates_the_spec` and `violates_the_plan` are the same situation against
 two documents — the request was understood and the piece cannot hold it —
 while `unknown_knob` is a request naming something the engine has no knob
-for at all. The last one has two builders and they are the two ways a name
-can be unknown: `refuse_uncarried`, for a request the design named and plan
-v1 has no knob for, and `translator._unknown`, for a name a model invented,
+for at all. That one has two builders, and they are the two ways a name can
+be unknown: `refuse_uncarried`, for a request the design named and plan v1
+has no knob for, and `translator._unknown`, for a name a model invented,
 which has no entry to describe because nothing ever designed it.
 
-`tempo_not_honoured` is the fourth for a different kind of reason: the
-request was understood, the piece *could* hold it, and the engine traded it
-away. The duration search is allowed to re-derive a pinned tempo when no
-arrangement fits the requested length at it — the length is a release gate
-and outranks the tempo — so the answer to "make it faster" is a piece that
-is not faster. A trade is not a bound, and the sentence a user needs is
-"the length won", which is why it is not folded into `violates_the_plan`.
-See `swallowed_tempo`, which is the only thing that builds one.
+`tempo_not_honoured` is a trade rather than a bound: the request was
+understood, the piece *could* hold it, and the engine traded it away. The
+duration search is allowed to re-derive a pinned tempo when no arrangement
+fits the requested length at it — the length is a release gate and outranks
+the tempo — so the answer to "make it faster" is a piece that is not faster.
+The sentence a user needs is "the length won", which is why it is not folded
+into `violates_the_plan`. See `swallowed_tempo`, which is the only thing
+that builds one.
+
+`direction_unnamed` is the fifth, and it is the one a *phrase* rather than a
+request builds: the knob exists and the words do not say which way to move
+it. It is the answer to "harmonic rhythm" where "chords change slower" is a
+request, and it is its own reason rather than `unknown_knob` because the
+knob is exactly what is *not* unknown — telling a user the engine cannot do
+something it can is the false answer this vocabulary exists to prevent.
 """
 
 RequestSource: TypeAlias = Literal["typed", "conductor", "model", "keywords", "repair"]
@@ -535,6 +547,32 @@ class SetSectionClose(Delta):
 
 
 @dataclass(frozen=True)
+class SetHarmonicRhythm(Delta):
+    """The durations a progression's chords are re-cut into, in bars.
+
+    A pattern rather than a rate, because the two are different pieces: `(2,)`
+    and `(4,)` are the same progression at different speeds, while `(2, 1, 1)`
+    gives it a *rhythm* — and the pattern is what `harmonic_rhythm_variety`
+    measures, so a plan that can only name a rate cannot answer the bar it
+    reads. The entries cycle, so a three-entry pattern covers any form.
+
+    The value arrives as a JSON list from a model and from a stored document,
+    and as a tuple from a UI control, which is why it is held as a tuple on
+    construction rather than at each reader — `_pattern` refuses anything else
+    by name, so a list of strings cannot reach the plan and come back as the
+    engine comparing a `str` to a bar count.
+    """
+
+    pattern: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pattern", _pattern(self.pattern))
+
+    def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
+        return {"harmonic_rhythm": self.pattern}
+
+
+@dataclass(frozen=True)
 class SetModulation(Delta):
     """The semitones a long piece's final repetition is lifted by.
 
@@ -628,6 +666,7 @@ DELTA_TYPES: Final[dict[str, type[Delta]]] = {
     "SetBassMotion": SetBassMotion,
     "SetCadence": SetCadence,
     "SetSectionClose": SetSectionClose,
+    "SetHarmonicRhythm": SetHarmonicRhythm,
     "SetModulation": SetModulation,
     "SetIntroBars": SetIntroBars,
     "SetSectionEnergy": SetSectionEnergy,
@@ -668,11 +707,6 @@ UNCARRIED: Final[tuple[Uncarried, ...]] = (
             "on its own"
         ),
         instead="SetMelodyBand, the window the tune is written in, or SetHarmonyClearance",
-    ),
-    Uncarried(
-        request="SetHarmonicRhythm",
-        why="how often the harmony changes is the progression template's, and the plan carries no knob for it",
-        instead="SetBassMotion, or SetAccompanimentDensity for the figure's own rate",
     ),
     Uncarried(
         request="SetSwing",
@@ -924,6 +958,28 @@ def _canonical(instance: Delta, name: str, enum: type[StrEnum]) -> None:
     object.__setattr__(instance, name, enum(getattr(instance, name)))
 
 
+def _pattern(value: Any) -> tuple[int, ...]:
+    """A chord-duration pattern as the tuple of bars it names.
+
+    Built from three directions — a UI control, a model's tool call and a
+    stored document — and the last two arrive as a JSON list. The check is a
+    check rather than a `tuple(value)` for the reason a delta may never be a
+    silent no-op: `tuple("21")` is `("2", "1")`, which the plan would then
+    compare against a bar count and raise a `TypeError` from somewhere no
+    caller expects one. Booleans are refused with the numbers they pretend to
+    be, since `True` is an `int` in Python and a request for a one-bar chord
+    written as `true` is not a request anyone made.
+    """
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(entry, int) and not isinstance(entry, bool) for entry in value
+    ):
+        raise TypeError(
+            "pattern is a list of chord durations in whole bars, at least one bar "
+            f"each; got {value!r}"
+        )
+    return tuple(value)
+
+
 def _plain(value: Any) -> Any:
     """A field's value as JSON holds it: an enum is written as its value."""
     return value.value if isinstance(value, StrEnum) else value
@@ -949,6 +1005,7 @@ __all__ = [
     "SetCadence",
     "SetDrumStyle",
     "SetDuration",
+    "SetHarmonicRhythm",
     "SetHarmonyClearance",
     "SetHarmonyLevel",
     "SetHarmonyTexture",

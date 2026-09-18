@@ -53,6 +53,7 @@ from saimc.session.deltas import (
     SetCadence,
     SetDrumStyle,
     SetDuration,
+    SetHarmonicRhythm,
     SetHarmonyClearance,
     SetHarmonyLevel,
     SetHarmonyTexture,
@@ -115,6 +116,7 @@ _EXAMPLES: dict[str, Delta] = {
     "SetBassMotion": SetBassMotion(motion=BassMotion.PEDAL),
     "SetCadence": SetCadence(degree=4, seventh=True),
     "SetSectionClose": SetSectionClose(close="full"),
+    "SetHarmonicRhythm": SetHarmonicRhythm((2, 1, 1)),
     "SetModulation": SetModulation(semitones=5),
     "SetIntroBars": SetIntroBars(bars=3),
     "SetSectionEnergy": SetSectionEnergy(role="peak", factor=1.1),
@@ -149,6 +151,7 @@ _PLAN_EFFECTS: dict[str, dict[str, object]] = {
     "SetHarmonyLevel": {"harmony_pad_velocity": 64},
     "SetCadence": {"cadence_degree": 4, "cadence_seventh": True},
     "SetSectionClose": {"section_close": "full"},
+    "SetHarmonicRhythm": {"harmonic_rhythm": (2, 1, 1)},
     "SetModulation": {"modulation_offset": 5},
     "SetIntroBars": {"intro_bars": 3},
     "SetSectionEnergy": {"section_energy_peak": pytest.approx(1.12 * 1.1)},
@@ -475,6 +478,93 @@ class TestSetSectionClose:
         assert refusal.nearest is None
 
 
+class TestSetHarmonicRhythm:
+    """A pattern rather than a rate, and the value arrives from three directions.
+
+    The knob's own field is `tuple[int, ...] | None`, where `None` is the
+    templates' own two-bar rhythm — the plan's one deliberate deferral — so every
+    case here asserts the tuple that ends up in the plan rather than a scalar,
+    and the refusals are about what a *list* can hold that a pattern cannot.
+    """
+
+    def test_a_list_from_a_model_becomes_the_pattern_the_plan_holds(self) -> None:
+        """The JSON direction: a model's tool call and a stored document.
+
+        `delta_from_dict` is what the translator and the preference log both go
+        through, so the list is the shape that actually arrives — and a tuple
+        held at construction is what stops a list of anything reaching the plan.
+        """
+        delta = delta_from_dict({"knob": "SetHarmonicRhythm", "pattern": [2, 1, 1]})
+        assert delta == SetHarmonicRhythm((2, 1, 1))
+        assert apply_deltas(_SPEC, [delta]).plan.harmonic_rhythm == (2, 1, 1)
+
+    def test_a_tuple_from_a_ui_control_is_the_same_request_as_the_list(self) -> None:
+        assert SetHarmonicRhythm((4,)) == SetHarmonicRhythm([4])  # type: ignore[arg-type]
+
+    def test_the_pattern_is_carried_whole_rather_than_as_a_rate(self) -> None:
+        """The measurement the vocabulary's shape comes from.
+
+        `(2, 1, 1)` and `(2,)` hold the same average and are different pieces:
+        the first is a rhythm and the second is a pulse, which is what
+        `harmonic_rhythm_variety` reads. A field that could only name a rate
+        could not answer that bar.
+        """
+        application = apply_deltas(_SPEC, [SetHarmonicRhythm((2, 1, 1))])
+        assert application.plan.harmonic_rhythm == (2, 1, 1)
+        assert application.plan.harmonic_rhythm != (2,)
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "21",
+            [2, "1"],
+            [1.5],
+            [True],
+            None,
+            2,
+        ],
+    )
+    def test_a_pattern_that_is_not_whole_bars_is_refused_by_name(self, pattern: object) -> None:
+        """Every shape that would otherwise reach the plan as an arithmetic error.
+
+        `"21"` is the one worth naming: `tuple("21")` is `("2", "1")`, which the
+        plan would then compare against a bar count and raise a `TypeError` from
+        a line no caller expects one on. `True` is the other: it is an `int`, and
+        a one-bar chord written as `true` is not a request anyone made. The
+        bounds — an empty pattern, a zero bar, a negative one — are the *plan's*
+        to refuse, and the case below witnesses that they are refused there
+        rather than here.
+        """
+        with pytest.raises(TypeError):
+            SetHarmonicRhythm(pattern)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("pattern", [[], [0], [-2]])
+    def test_an_empty_or_non_positive_bar_count_is_refused_by_the_plan_itself(
+        self, pattern: list[int]
+    ) -> None:
+        """The bound is the document's, and the delta does not restate it.
+
+        A zero-bar chord is a chord that never sounds; a negative one would walk
+        `apply_harmonic_rhythm`'s loop backwards; an empty pattern is a request
+        for no rhythm at all, which is not a thing a progression can have. All
+        three are the plan's own sentence, built where the field is, which is why
+        they construct and then refuse rather than the other way round.
+        """
+        (refusal,) = apply_deltas(_SPEC, [SetHarmonicRhythm(pattern)]).refused
+        assert refusal.reason == "violates_the_plan"
+        assert "each at least one" in refusal.message
+
+    def test_the_default_is_the_templates_own_rhythm_and_not_a_pattern(self) -> None:
+        """The premise every other case in this class rests on.
+
+        If the default were a tuple, `None` would be an absent value rather than
+        a named one, and the templates' own rhythm — which differs per template,
+        `sleep_drone` being `(4, 4)` where `sleep_lullaby` is `(2, 2, 2, 2)` —
+        would have been flattened into a default the engine does not have.
+        """
+        assert _BASE_PLAN.harmonic_rhythm is None
+
+
 class TestAPlanDeltaWritesThePlan:
     @pytest.mark.parametrize("knob", sorted(_PLAN_EFFECTS))
     def test_the_named_fields_end_up_holding_the_requested_values(self, knob: str) -> None:
@@ -705,13 +795,14 @@ class TestTheUnbuiltKnobs:
             "an alternative that names no request is not an alternative"
         )
 
-    def test_the_unbuilt_requests_are_the_five_the_scope_rule_left_out(self) -> None:
-        # A ratchet, not evidence: the design's Tier-2 list named these, plan v1 has
+    def test_the_unbuilt_requests_are_the_four_the_scope_rule_left_out(self) -> None:
+        # A ratchet, not evidence: the design's Tier-2 list named these, the plan has
         # no knob for them, and re-opening or shortening the table should be a
-        # declared edit rather than a quiet one.
+        # declared edit rather than a quiet one. `SetHarmonicRhythm` left this table
+        # in F3c, when the plan grew `harmonic_rhythm` — which is why the count in
+        # this test's name is a fact to re-read rather than a constant to trust.
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
-            "SetHarmonicRhythm",
             "SetSwing",
             "SetDrumEntry",
             "ExtendSection",

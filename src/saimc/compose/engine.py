@@ -61,6 +61,7 @@ from saimc.compose.forms import (
     ChordSlot,
     ChordTemplate,
     apply_final_cadence,
+    apply_harmonic_rhythm,
     apply_section_close,
     bar_scale_intervals,
     chord_intervals,
@@ -512,6 +513,10 @@ def _build_score(
                 variant_index=section_idx,
             )
         is_final_section = section_idx == arrangement.repetition_count - 1
+        # The plan's rate, cut in before anything rewrites the section's
+        # ending: a close is two one-bar chords, and re-cutting the bars
+        # after it would overwrite the cadence the plan asked for.
+        section_template = _with_harmonic_rhythm(section_template, plan)
         if is_final_section:
             # The last repetition must land at home: rewrite its last
             # two bars as the plan's cadence (earlier sections may end
@@ -614,6 +619,10 @@ def _build_score(
     # so it carries the final cadence.
     if arrangement.coda_bars > 0:
         coda_template = _truncate_template_for_coda(arrangement.template, arrangement.coda_bars)
+        # The coda is a section of the piece, so it changes chords at the
+        # piece's rate too — and its own cadence is cut in after, for the
+        # same reason the body's sections' are.
+        coda_template = _with_harmonic_rhythm(coda_template, plan)
         coda_template = apply_final_cadence(
             coda_template,
             cadence_degree=plan.cadence_degree,
@@ -1698,6 +1707,19 @@ def _can_clear_the_tune(
     """
     room = below_ceiling - window.low_midi if not above else window.high_midi - above_floor
     return room >= BED_MIN_ROOM_SEMITONES
+
+
+def _with_harmonic_rhythm(template: ChordTemplate, plan: CompositionPlan) -> ChordTemplate:
+    """The plan's rate cut into a template, or the template itself.
+
+    `None` is the plan's spelling for the templates' own rhythm — the rate
+    the hand-coded progression already has — and this is where that name is
+    read, so the body's sections and the coda cannot disagree about what it
+    means or forget it between them.
+    """
+    if plan.harmonic_rhythm is None:
+        return template
+    return apply_harmonic_rhythm(template, plan.harmonic_rhythm)
 
 
 def _truncate_template_for_coda(template: ChordTemplate, coda_bars: int) -> ChordTemplate:

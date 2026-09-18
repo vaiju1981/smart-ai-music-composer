@@ -292,6 +292,40 @@ def _extend_template(template: ChordTemplate, target_bars: int) -> ChordTemplate
     )
 
 
+def apply_harmonic_rhythm(template: ChordTemplate, pattern: Sequence[int]) -> ChordTemplate:
+    """Re-cut a template's bars so its chords change at the pattern's rate.
+
+    The degrees are the template's and keep their order; the pattern decides
+    how long each one lasts, and both cycle when the other runs out. A
+    one-bar pattern therefore walks the whole progression a bar at a time and
+    a four-bar pattern holds each chord twice as long as the default two. A
+    pattern holding more than one duration is what gives a progression a
+    rhythm rather than a pulse, which is what `harmonic_rhythm_variety`
+    measures — a uniform pattern, at any rate, still reads as a pulse.
+
+    The last chord is shortened to land exactly on the template's bar count,
+    so the bar arithmetic every caller does with a template still holds. It
+    is never shortened to nothing: a slot of zero bars is a chord that never
+    sounds, and `_truncate_template` leaves one behind when a truncation
+    lands on a slot boundary, which is a defect the engine's walk has to skip
+    by name rather than one this function should add to.
+    """
+    if not pattern or min(pattern) < 1:
+        raise ValueError(
+            "a harmonic rhythm is a pattern of chord durations in bars, each at "
+            f"least one; got {tuple(pattern)}"
+        )
+    kept: list[ChordSlot] = []
+    consumed = 0
+    index = 0
+    while consumed < template.bars:
+        duration = min(pattern[index % len(pattern)], template.bars - consumed)
+        kept.append(template.chords[index % len(template.chords)]._replace(bars=duration))
+        consumed += duration
+        index += 1
+    return ChordTemplate(name=f"{template.name}_rhythm", bars=template.bars, chords=tuple(kept))
+
+
 # Cadential close per mood: electrifying resolves with an authentic
 # dominant cadence (V -> I); calming and sleep with a plagal one
 # (IV -> I). The final section's last two bars are rewritten to this

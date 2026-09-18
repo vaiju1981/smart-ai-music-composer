@@ -41,6 +41,7 @@ from saimc.session.deltas import (
     SetBassMotion,
     SetDrumStyle,
     SetDuration,
+    SetHarmonicRhythm,
     SetHarmonyTexture,
     SetHumanization,
     SetMood,
@@ -106,6 +107,8 @@ class TestTheKeywordTableReadsWhatItClaims:
             ("make it longer", SetDuration(210)),
             ("cut it short", SetDuration(150)),
             ("another take", ReRoll(6)),
+            ("chords change faster", SetHarmonicRhythm((2, 1, 1))),
+            ("slower harmonic rhythm", SetHarmonicRhythm((4,))),
         ],
     )
     def test_a_phrase_becomes_the_request_it_names(self, phrase: str, expected: Delta) -> None:
@@ -171,6 +174,8 @@ class TestTheKeywordTableReadsWhatItClaims:
             "again",
             "up an octave",
             "harmonic rhythm",
+            "chords change slower",
+            "chords change faster",
             "swing",
             "drums in at",
             "longer section",
@@ -179,10 +184,14 @@ class TestTheKeywordTableReadsWhatItClaims:
     def test_every_unbuilt_request_has_a_phrase(self) -> None:
         """`UNCARRIED` is the design's list, and the table has to cover it.
 
-        The premise rather than the assertion, and the reason it is here: a
-        sixth unbuilt request added to the vocabulary would otherwise be
-        readable by the model and unread by the fallback, which is a difference
-        between the two paths that nothing else would notice.
+        The premise rather than the assertion, and the reason it is here: an
+        unbuilt request added to the vocabulary would otherwise be readable by
+        the model and unread by the fallback, which is a difference between the
+        two paths that nothing else would notice. The directionless phrase is
+        in the set beside them because it is the *other* way a phrase refuses —
+        a knob this engine carries whose words name no direction — and the two
+        are read the same way here for the same reason: both are sentences the
+        fallback owes a listener, and neither may be an unread word.
         """
         readable = {
             phrase
@@ -197,9 +206,6 @@ class TestTheKeywordTableReadsWhatItClaims:
             "an octave lower",
             "register",
             "harmonic rhythm",
-            "chords change faster",
-            "chords change slower",
-            "change chords faster",
             "swing",
             "swung",
             "swing feel",
@@ -216,7 +222,6 @@ class TestTheKeywordTableReadsWhatItClaims:
         }
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
-            "SetHarmonicRhythm",
             "SetSwing",
             "SetDrumEntry",
             "ExtendSection",
@@ -251,7 +256,6 @@ class TestAnUnbuiltRequestIsRefusedByIdent:
         ("text", "knob"),
         [
             ("up an octave", "SetRegister"),
-            ("chords change faster", "SetHarmonicRhythm"),
             ("swing feel", "SetSwing"),
             ("bring the drums in", "SetDrumEntry"),
             ("extend the chorus", "ExtendSection"),
@@ -270,6 +274,90 @@ class TestAnUnbuiltRequestIsRefusedByIdent:
         assert [refusal.request for refusal in translation.refusals] == [knob]
         assert entry.why in translation.refusals[0].message
         assert translation.refusals[0].nearest == entry.instead
+
+
+class TestADirectionTheWordsDidNotName:
+    """The knob this engine *has*, refused for the words rather than the knob.
+
+    The distinction is the whole reason `direction_unnamed` exists: "swing" is a
+    request no knob carries, and "harmonic rhythm" is a request the plan carries
+    whose words do not say which way to move it. Answering the second with the
+    first's sentence would tell a listener the engine cannot do something it can.
+    """
+
+    def test_a_bare_knob_is_refused_for_the_direction_and_not_the_knob(self) -> None:
+        translation = _read("more harmonic rhythm please")
+        assert translation.deltas == ()
+        assert [refusal.request for refusal in translation.refusals] == ["SetHarmonicRhythm"]
+        refusal = translation.refusals[0]
+        assert refusal.reason == "direction_unnamed"
+        assert "faster" in refusal.message
+        assert "slower" in refusal.message
+        assert translation.unread == ("more please",)
+
+    def test_it_is_not_the_unbuilt_knob_and_says_nothing_about_not_carrying(self) -> None:
+        """The false sentence, asserted absent.
+
+        `refuse_uncarried` answers with "is not a knob this engine carries yet",
+        which is the one thing that is untrue here — so the message is asserted
+        against it rather than merely asserted to be non-empty.
+        """
+        (refusal,) = _read("harmonic rhythm").refusals
+        assert "not a knob this engine carries yet" not in refusal.message
+        assert refusal.nearest is None, "the message names both directions already"
+
+    def test_the_knob_is_one_the_engine_takes_and_the_refusal_is_not_about_that(self) -> None:
+        """The premise: the same request with a direction is honoured.
+
+        Without this the refusal above would pass for a knob that is genuinely
+        unbuilt. `SetHarmonicRhythm` is in `DELTA_TYPES` and folds into the plan,
+        which is what makes the refusal a reading of the *words*.
+        """
+        assert "SetHarmonicRhythm" in DELTA_TYPES
+        translation = _read("harmonic rhythm slower")
+        assert translation.deltas == (SetHarmonicRhythm((4,)),)
+        assert translation.refusals == ()
+
+    @pytest.mark.parametrize(
+        ("text", "pattern"),
+        [
+            ("chords change faster", (2, 1, 1)),
+            ("change chords faster", (2, 1, 1)),
+            ("faster harmonic rhythm", (2, 1, 1)),
+            ("harmonic rhythm faster", (2, 1, 1)),
+            ("chords change slower", (4,)),
+            ("change chords slower", (4,)),
+            ("slower harmonic rhythm", (4,)),
+            ("harmonic rhythm slower", (4,)),
+        ],
+    )
+    def test_a_direction_reads_whether_it_comes_before_or_after_the_knob(
+        self, text: str, pattern: tuple[int, ...]
+    ) -> None:
+        """The words said out of order still read, and the longest match is why.
+
+        "harmonic rhythm faster" contains the directionless entry's two words as
+        a subspan; a three-word phrase beating a two-word one is the ordering
+        rule, so the direction is read rather than reported as a trailing unread
+        word — which is what would happen if the shorter phrase were tried first.
+        """
+        translation = _read(text)
+        assert translation.deltas == (SetHarmonicRhythm(pattern),)
+        assert translation.refusals == ()
+        assert translation.unread == ()
+
+    def test_a_uniform_fast_pattern_is_not_what_a_listener_asking_for_faster_gets(self) -> None:
+        """`(2, 1, 1)` and not `(1,)`, which is a musical finding and not taste.
+
+        A section's close is written as two one-bar chords, so a one-bar pattern
+        makes the cadence indistinguishable from the progression and the piece
+        reads **0.0** against `harmonic_rhythm_variety`'s 0.10 floor — measured
+        across three moods and three lengths. Every revision made with `(1,)`
+        would be rejected by the ratchet, so the reading a listener gets for
+        "faster" is the varied one.
+        """
+        assert _read("chords change faster").deltas == (SetHarmonicRhythm((2, 1, 1)),)
+        assert _read("chords change faster").deltas != (SetHarmonicRhythm((1,)),)
 
 
 class TestTheLongestMatchWins:

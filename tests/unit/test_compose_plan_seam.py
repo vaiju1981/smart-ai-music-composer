@@ -60,6 +60,7 @@ from saimc.compose.engine import (
 )
 from saimc.compose.ensemble import resolve_ensemble
 from saimc.compose.forms import SECTION_CLOSES
+from saimc.compose.linter import LintCode
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_MELODY_SHAPE,
@@ -329,6 +330,14 @@ _HARMONY_KNOBS: dict[str, Any] = {
     # attributable to the field alone. The base is calming's six keys and
     # seed 11 lands on Dm; this two-key pool lands the same seed on Em.
     "key_pool": ("G", "Em"),
+    # Every template's slots are two bars, so cycling 2-1-1 re-cuts each
+    # progression into a faster, varied one — the durations differ, not
+    # just the chords they are stated with. It is cut in *before* the
+    # close and the final cadence, and it reaches the coda too, though at
+    # the four bars a coda has this pattern leaves it as the default's
+    # (see `test_the_coda_is_re_cut_at_the_plans_rate`, which is why the
+    # movement here is the body's).
+    "harmonic_rhythm": (2, 1, 1),
 }
 
 _HARMONY_FIELDS = frozenset(
@@ -337,12 +346,13 @@ _HARMONY_FIELDS = frozenset(
         "bass_root_motion",
         "cadence_degree",
         "cadence_seventh",
+        "harmonic_rhythm",
         "key_pool",
         "modulation_offset",
         "section_close",
     }
 )
-"""The plan's `--- Harmony ---` block, which reads these seven.
+"""The plan's `--- Harmony ---` block, which reads these eight.
 
 Spelled out because, unlike the arrangement, this layer has no struct to
 enumerate — the comparison below is what keeps this set honest against
@@ -351,15 +361,17 @@ the plan's own field list until B9's union check makes it mechanical.
 
 
 class TestTheHarmonyLayerIsLive:
-    """The chords, the cadence, the bass vocabulary and the lift.
+    """The chords, the cadence, the bass vocabulary, the lift and the rate.
 
     `bass_figures` reaches the notes through `draw_bass_figures`;
     `bass_root_motion` through the candidate tones the walk may land on;
     the two cadence fields through `apply_final_cadence`;
     `modulation_offset` through the `key_offset` the section is transposed
-    by. The first four were module-table or inline-mood reads that B3
-    lifted into the plan; the fifth is a new musical choice Phase F added,
-    and it is here because it belongs to the same block.
+    by; `harmonic_rhythm` through `_with_harmonic_rhythm`, which re-cuts
+    each template's bars before the close is written. The first five were
+    module-table or inline-mood reads that B3 lifted into the plan; the
+    last two are new musical choices Phase F added, and they are here
+    because they belong to the same block.
     """
 
     def test_every_harmony_knob_has_a_case(self) -> None:
@@ -459,23 +471,99 @@ class TestTheHarmonyKnobsReachTheCodaToo:
         states any pitch, so the coda's onset positions follow the
         vocabulary and nothing else.
         """
-        ticks = bar_ticks(_CODA_SPEC.time_signature.value)
-
-        def onsets(output: EngineOutput) -> tuple[int, ...]:
-            start = self._coda_start(output) * ticks
-            return tuple(
-                sorted(
-                    note.tick - start
-                    for note in output.notation_score.notes
-                    if note.tick >= start and note.voice_id == VOICE_BASS
-                )
-            )
-
-        assert onsets(self._compose(bass_figures=_HARMONY_KNOBS["bass_figures"])) != onsets(
-            self._compose()
-        ), (
+        assert self._coda_bass_onsets(
+            self._compose(bass_figures=_HARMONY_KNOBS["bass_figures"])
+        ) != self._coda_bass_onsets(self._compose()), (
             "the coda's bass rhythm did not follow the plan's vocabulary: "
             "`_generate_section` is not being given it at the coda call"
+        )
+
+    def test_the_coda_is_re_cut_at_the_plans_rate(self) -> None:
+        """The coda has no progression to re-cut, so the rate reaches it through
+        the slot arithmetic rather than through the chords — and both halves of
+        that are pinned here.
+
+        A reachable coda is four bars, and `_truncate_template_for_coda` forces
+        its last kept slot onto the tonic, so the coda's per-bar degrees are
+        `I, I, IV, I` under *every* pattern and a test asserting they moved
+        would be asserting nothing. The invariance is the premise, asserted
+        rather than described, and it is read off `chord_bars` — which is
+        written from the coda's template rather than from the RNG, so it
+        cannot be moved by what the body drew.
+
+        What the re-cut does move is the *slot* the bars belong to, and the
+        piece's bass figure is chosen by slot index. `(4,)` therefore changes
+        which notes the coda's bass states, while `(2, 1, 1)` — the faster
+        reading — leaves the coda's template exactly as the default's,
+        because its last two slots are the ones the final cadence truncates
+        away: the re-cut is live at the coda call and, at four bars, only a
+        pattern that breaks the two-bar boundary can show it. Both directions
+        are asserted, so the claim cannot drift into either half alone.
+        """
+        default_coda = self._compose().chord_bars[-4:]
+        for pattern in ((4,), (2, 1, 1)):
+            assert self._compose(harmonic_rhythm=pattern).chord_bars[-4:] == default_coda, (
+                f"harmonic_rhythm={pattern} moved the coda's chords, so the degrees are "
+                "not invariant and the onset reading below is not what this test says it is"
+            )
+        assert self._coda_bass_onsets(self._compose(harmonic_rhythm=(4,))) != (
+            self._coda_bass_onsets(self._compose())
+        ), (
+            "the coda's slot structure did not follow the plan's rate: "
+            "`_with_harmonic_rhythm` is not being called at the coda call"
+        )
+        assert self._coda_bass_onsets(self._compose(harmonic_rhythm=(2, 1, 1))) == (
+            self._coda_bass_onsets(self._compose())
+        ), (
+            "the two-bar-preserving pattern changed the coda, which the truncation to the "
+            "coda's first two bars is what prevents — so this test's two readings no longer "
+            "differ for the reason it gives"
+        )
+
+    def test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds(self) -> None:
+        """`(1,)` is the one reading this engine cannot compose at a coda.
+
+        Pinned because it is the *engine's* answer and not the vocabulary's,
+        and the two have to be told apart. The vocabulary never emits a
+        one-bar pattern — "chords change faster" is `(2, 1, 1)`, for the
+        measured reason that a one-bar pulse reads 0.0 on
+        `harmonic_rhythm_variety` — but a plan built by hand, by a UI control
+        or by a conductor can name one, and what it gets is a named refusal
+        rather than a wrong piece.
+
+        The trigger is `_truncate_template_for_coda`'s forced tonic, the
+        `bass_degree=0` on its last kept slot. At the four bars every
+        reachable coda has, that slot is usually the zero-bar phantom
+        `apply_final_cadence` leaves behind and nothing plays it — but a
+        one-bar pattern cuts the coda into one-bar slots, so the pin *sounds*
+        as the coda's second bar and the bass walk writes a non-chord tone
+        there. No other pattern in the vocabulary's own range reaches it.
+
+        **A witness, not an endorsement.** The defect is the pin on a slot
+        that can sound, and it belongs to the coda rather than to this knob.
+        The day it is fixed this test fails, and the right answer is to delete
+        it rather than to widen it.
+        """
+        with pytest.raises(CompositionEngineError) as raised:
+            self._compose(harmonic_rhythm=(1,))
+        assert raised.value.code == EngineErrorCode.LINT_FAILED
+        assert [issue.code for issue in raised.value.lint_issues] == [
+            LintCode.CHORD_TONE_VIOLATION
+        ], (
+            "the refusal is no longer the chord-tone violation the forced-slot pin produces, "
+            "so this test's account of the cause is wrong"
+        )
+
+    def _coda_bass_onsets(self, output: EngineOutput) -> tuple[int, ...]:
+        """Every bass onset in the coda, in ticks from the coda's first bar."""
+        ticks = bar_ticks(_CODA_SPEC.time_signature.value)
+        start = self._coda_start(output) * ticks
+        return tuple(
+            sorted(
+                note.tick - start
+                for note in output.notation_score.notes
+                if note.tick >= start and note.voice_id == VOICE_BASS
+            )
         )
 
     def test_the_coda_is_lifted_by_the_plans_offset(self) -> None:
