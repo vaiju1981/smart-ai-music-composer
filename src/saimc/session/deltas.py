@@ -43,10 +43,11 @@ a score the linter refused, and it fires where the notes are made.
 **The vocabulary is bounded by what the plan actually carries**, which is the
 design's own scope rule rather than a shortfall of this module. The design
 named `SetHarmonicRhythm`, `SetSwing`, `SetDrumEntry` and `SetRegister`; the
-plan has since grown a knob for the first of them — `harmonic_rhythm`, the
-durations a progression's chords are re-cut into — and the other three are in
-`UNCARRIED` by name with what to ask for instead, because a request the engine
-cannot honour must not be answered with "I did not understand you": the
+plan has since grown a knob for each of the first three — the durations a
+progression's chords are re-cut into, the ratio the kit's offbeat eighths are
+divided by, and the bar the kit may sound from — and what is left in
+`UNCARRIED` is named there with what to ask for instead, because a request the
+engine cannot honour must not be answered with "I did not understand you": the
 request was understood, and it is unbuilt.
 
 Where a refusal can name a nearest legal request it does, and the bound is
@@ -639,6 +640,25 @@ class SetDrumStyle(Delta):
 
 
 @dataclass(frozen=True)
+class SetSwing(Delta):
+    """How the kit's offbeat eighths are divided — 1.0 straight, 2.0 triplet.
+
+    The share of the beat its first eighth takes, so 1.0 leaves the pair
+    even and 2.0 is the ratio every jazz method writes. It moves the hits
+    the pattern already writes on the offbeat rather than writing new ones,
+    so a request for swing is a request for the *feel* of the vocabulary the
+    piece already has — and the plan refuses a ratio outside 1.0..2.0, where
+    the offbeat is no longer a swing but a dotted rhythm the pattern tables
+    write directly.
+    """
+
+    ratio: float
+
+    def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
+        return {"swing_ratio": self.ratio}
+
+
+@dataclass(frozen=True)
 class SetPercussionRest(Delta):
     """Which section a long piece's kit rests for, counting from zero."""
 
@@ -688,6 +708,7 @@ DELTA_TYPES: Final[dict[str, type[Delta]]] = {
     "SetModulation": SetModulation,
     "SetIntroBars": SetIntroBars,
     "SetSectionEnergy": SetSectionEnergy,
+    "SetSwing": SetSwing,
     "SetDrumStyle": SetDrumStyle,
     "SetPercussionRest": SetPercussionRest,
     "SetDrumEntry": SetDrumEntry,
@@ -726,11 +747,6 @@ UNCARRIED: Final[tuple[Uncarried, ...]] = (
             "on its own"
         ),
         instead="SetMelodyBand, the window the tune is written in, or SetHarmonyClearance",
-    ),
-    Uncarried(
-        request="SetSwing",
-        why="a swing ratio needs a triplet grid, which the engine does not have",
-        instead="SetDrumStyle, for the styles it does carry",
     ),
     Uncarried(
         request="ExtendSection",
@@ -1035,6 +1051,7 @@ __all__ = [
     "SetPercussionRest",
     "SetSectionClose",
     "SetSectionEnergy",
+    "SetSwing",
     "SetTempo",
     "SetTimeSignature",
     "Terrace",

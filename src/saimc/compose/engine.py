@@ -91,10 +91,12 @@ from saimc.compose.percussion import (
     DEFAULT_DRUM_KIT,
     DRUM_CRASH,
     DRUM_KICK,
+    PERCUSSION_KICK_VELOCITY,
     PERCUSSION_NOTE_TICKS,
     PERCUSSION_VELOCITY_MAX,
     DrumKit,
     rotation_index,
+    swing_pattern,
 )
 from saimc.compose.plan import CompositionPlan, resolve_plan
 from saimc.compose.score import (
@@ -740,6 +742,9 @@ def _build_score(
                 seed=rng_base_seed,
                 rest_bars=frozenset(rest_bars),
                 entry_bar=entry_bar,
+                # The bass is already written, so the kit is written knowing
+                # where it attacks — see `_generate_percussion`.
+                bass_onsets=_bass_onsets_by_bar(notes, bar_ticks(time_signature)),
                 arc=arc,
             )
         )
@@ -3451,6 +3456,25 @@ def _melody_bar(
     return notes
 
 
+def _bass_onsets_by_bar(
+    notes: Sequence[NoteEvent], ticks_per_bar: int
+) -> dict[int, tuple[int, ...]]:
+    """The bass's attacks, by bar, as bar-relative ticks.
+
+    The percussion pass is written after the bass and reads this, so the
+    kick can land with the note that states the harmony instead of against
+    it. A tie is one attack, because a tie is one note event; two bass
+    notes at the same tick are one onset, because the kit has one kick.
+    """
+    onsets: dict[int, set[int]] = {}
+    for note in notes:
+        if note.voice_id != VOICE_BASS:
+            continue
+        bar, offset = divmod(note.tick, ticks_per_bar)
+        onsets.setdefault(bar, set()).add(offset)
+    return {bar: tuple(sorted(bar_onsets)) for bar, bar_onsets in onsets.items()}
+
+
 def _generate_percussion(
     *,
     kit: DrumKit = DEFAULT_DRUM_KIT,
@@ -3461,6 +3485,7 @@ def _generate_percussion(
     seed: int,
     rest_bars: frozenset[int] = frozenset(),
     entry_bar: int = 0,
+    bass_onsets: Mapping[int, tuple[int, ...]] = {},
     arc: SectionArc = DEFAULT_SECTION_ARC,
 ) -> list[NoteEvent]:
     """Generate the percussion voice for a drum-set piece.
@@ -3484,6 +3509,14 @@ def _generate_percussion(
     mark the first section gets on a piece with an intro: the intro rests,
     so the crash that belongs to bar 0 is silent, and without the entrance
     mark the piece's first cymbal waited for bar `form_bars`.
+
+    The kit and the bass are one rhythm section, so the kick follows the
+    bass: an attack the pattern does not already mark gets a kick under it,
+    at the quietest kick the pattern writes — a drummer doubling a walking
+    bass feathers it, and the groove's own accent stays where the style put
+    it. The bass leads because it is the voice stating the harmony, which
+    is the fixed precedence the layers already use: the kit settles under
+    the line that carries the piece.
 
     A per-bar seeded jitter of a few velocity points keeps repeated
     bars from sounding machine-stamped. The kit is silent below
@@ -3523,6 +3556,7 @@ def _generate_percussion(
             )
         if pattern is None:
             continue
+        pattern = swing_pattern(pattern, kit.swing_ratio)
         bar_rng = random.Random(seed + bar)
         bar_start = bar * ticks_per_bar
         for hit in pattern:
@@ -3535,6 +3569,34 @@ def _generate_percussion(
                     voice_id=VOICE_PERCUSSION,
                     pitch_midi=hit.key,
                     tick=bar_start + hit.offset_ticks,
+                    duration_ticks=PERCUSSION_NOTE_TICKS,
+                    velocity=min(PERCUSSION_VELOCITY_MAX, max(1, velocity)),
+                )
+            )
+        kick_offsets = {hit.offset_ticks for hit in pattern if hit.key == DRUM_KICK}
+        follow_level = min(
+            (hit.velocity for hit in pattern if hit.key == DRUM_KICK),
+            default=PERCUSSION_KICK_VELOCITY,
+        )
+        # One decision, because the bar's downbeat is a kick the bass must
+        # not ask for twice: a groove that does not open with one gets it
+        # marked below, and a style that writes no kick anywhere — the swing
+        # kit does — would otherwise be handed two at tick 0 and fail lint.
+        downbeat_kick = (section_start or bar == entry_bar) and 0 not in kick_offsets
+        if downbeat_kick:
+            kick_offsets.add(0)
+        for offset in bass_onsets.get(bar, ()):
+            if offset in kick_offsets:
+                continue
+            jitter = bar_rng.uniform(0.92, 1.06)
+            velocity = round(
+                follow_level * style.velocity_scale * mood_scale * terrace * jitter
+            )
+            notes.append(
+                NoteEvent(
+                    voice_id=VOICE_PERCUSSION,
+                    pitch_midi=DRUM_KICK,
+                    tick=bar_start + offset,
                     duration_ticks=PERCUSSION_NOTE_TICKS,
                     velocity=min(PERCUSSION_VELOCITY_MAX, max(1, velocity)),
                 )
@@ -3556,14 +3618,17 @@ def _generate_percussion(
                     velocity=min(PERCUSSION_VELOCITY_MAX, max(1, crash_velocity)),
                 )
             )
-            if not any(h.offset_ticks == 0 and h.key == DRUM_KICK for h in pattern):
+            if downbeat_kick:
                 notes.append(
                     NoteEvent(
                         voice_id=VOICE_PERCUSSION,
                         pitch_midi=DRUM_KICK,
                         tick=bar_start,
                         duration_ticks=PERCUSSION_NOTE_TICKS,
-                        velocity=min(PERCUSSION_VELOCITY_MAX, max(1, round(84 * mood_scale))),
+                        velocity=min(
+                            PERCUSSION_VELOCITY_MAX,
+                            max(1, round(PERCUSSION_KICK_VELOCITY * mood_scale)),
+                        ),
                     )
                 )
     return notes

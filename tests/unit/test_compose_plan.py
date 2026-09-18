@@ -183,6 +183,9 @@ _MUTATIONS: dict[str, Any] = {
     # Later than the floor: the kit's entrance and its crash move down two
     # bars, and the bars between take no hit at all.
     "percussion_entry_bar": 4,
+    # The base is straight, so the triplet is the change: every offbeat the
+    # pattern writes moves a third of a beat later.
+    "swing_ratio": percussion.SWING_RATIO_TRIPLET,
 }
 """One valid, different value per field.
 
@@ -355,13 +358,20 @@ class TestTheStoredPlanIsReadBack:
 
     def test_the_refusal_names_the_document_it_could_not_read(self) -> None:
         """The plan type's own rule: refused *with a reason*. A reader
-        holding a file needs to know which version it is holding."""
+        holding a file needs to know which version it is holding.
+
+        The version is read off the constant rather than written out, for
+        the reason the parametrisation above spells: a hardcoded "the next
+        version" stops testing anything once it becomes this build's own,
+        which is what happened here one field after it was written.
+        """
+        untagged = f"{PLAN_FORMAT_PREFIX}:{PLAN_SCHEMA_VERSION + 1}"
         document = _base().to_canonical_dict()
-        document["format"] = "CompositionPlan:7"
+        document["format"] = untagged
         with pytest.raises(PlanError) as exc_info:
             CompositionPlan.from_canonical_dict(document)
         message = str(exc_info.value)
-        assert "CompositionPlan:7" in message
+        assert untagged in message
         assert PLAN_FORMAT in message
 
     def test_a_dropped_field_is_not_replaced_by_a_default(self) -> None:
@@ -403,6 +413,7 @@ class TestTheDefaultsDescribeTodaysEngine:
         assert plan.harmony_melody_clearance == voices.HARMONY_MELODY_CLEARANCE
         assert plan.rotation_cycle == percussion.ROTATION_CYCLE
         assert plan.section_crash_velocity == percussion.SECTION_CRASH_VELOCITY
+        assert plan.swing_ratio == percussion.SWING_RATIO_STRAIGHT
         assert plan.cadence_degree == forms.cadence_degree_for("calming")
 
     @pytest.mark.parametrize("mood", MOODS)
@@ -643,6 +654,11 @@ class TestAPlanThatCannotBeHonouredIsRefused:
             ({"percussion_velocity_scale": 0.0}, "positive"),
             ({"section_crash_velocity": 0}, "1..127"),
             ({"section_crash_velocity": 128}, "1..127"),
+            # Each end names what it means rather than only the number, so
+            # the fragments are the meanings: the two bounds refuse for two
+            # different musical reasons.
+            ({"swing_ratio": 0.5}, "even eighths"),
+            ({"swing_ratio": 2.5}, "dotted rhythm"),
             ({"format": "SomethingElse:1"}, "CompositionPlan"),
         ],
     )

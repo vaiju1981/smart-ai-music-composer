@@ -76,7 +76,10 @@ from saimc.compose.motif import (
 from saimc.compose.percussion import (
     DEFAULT_DRUM_KIT,
     DRUM_CRASH,
+    DRUM_KICK,
     DRUM_STYLES,
+    EIGHTH,
+    SWING_RATIO_TRIPLET,
     DrumKit,
     rotation_index,
 )
@@ -1707,6 +1710,9 @@ _DRUM_KNOBS: dict[str, Any] = {
     # entrance and its crash move two bars down, so the bars between take
     # no hits at all.
     "percussion_entry_bar": 4,
+    # The triplet: rock writes an offbeat eighth on every beat, so every one
+    # of them lands a third of a beat later.
+    "swing_ratio": SWING_RATIO_TRIPLET,
 }
 
 _DRUM_KIT_FIELDS = frozenset(
@@ -1716,9 +1722,10 @@ _DRUM_KIT_FIELDS = frozenset(
         "percussion_velocity_scale",
         "section_crash_velocity",
         "percussion_entry_bar",
+        "swing_ratio",
     }
 )
-"""The plan's `--- Percussion ---` block, which reads these five.
+"""The plan's `--- Percussion ---` block, which reads these six.
 
 `percussion_rest_section` stays in the sections group and is covered
 there, although both blocks are read by the same pass.
@@ -1803,6 +1810,7 @@ def _kit_notes(
     repetition_count: int = 2,
     seed: int = 7,
     entry_bar: int = 0,
+    bass_onsets: Mapping[int, tuple[int, ...]] = {},
 ) -> list[NoteEvent]:
     """Two sections of a 4/4 bar, written by the percussion pass at this kit.
 
@@ -1815,6 +1823,9 @@ def _kit_notes(
     `entry_bar` defaults to 0 so the cases written before the kit had an
     entry read the pass as it behaved then — bar 0 is the first section's
     downbeat and carries its crash either way.
+
+    `bass_onsets` defaults to empty for the same reason: the kick only
+    follows a bass that was written.
     """
     return _generate_percussion(
         kit=kit,
@@ -1824,6 +1835,7 @@ def _kit_notes(
         total_bars=total_bars,
         seed=seed,
         entry_bar=entry_bar,
+        bass_onsets=bass_onsets,
     )
 
 
@@ -1832,6 +1844,11 @@ def _hits(notes: list[NoteEvent]) -> list[tuple[int, int]]:
     return [
         (note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH
     ]
+
+
+def _is_offbeat_eighth(tick: int) -> bool:
+    """Whether a tick is the second eighth of its beat, the one a swing moves."""
+    return tick % PPQ == EIGHTH
 
 
 def _crashes(notes: list[NoteEvent]) -> list[tuple[int, int]]:
@@ -1974,6 +1991,125 @@ class TestTheDrumWritersReadTheirShape:
         assert filled[0], "the first section's fill bar is empty"
         assert filled[1], "the first section's fill bar is empty"
         assert filled[0] != filled[1]
+
+    def test_the_swing_ratio_moves_the_offbeat_eighths_and_nothing_else(self) -> None:
+        """The ratio reaches the pass as a displacement of the pattern.
+
+        Every hit that moves is on a beat's second eighth and lands on the
+        triplet; a hit on a beat, on a sixteenth or on a dotted value is
+        where the style put it. Read as the whole note set rather than a
+        count, because a displacement that also *dropped* a hit would slip
+        past a count.
+        """
+        straight = DrumKit(style=DRUM_STYLES["rock"])
+        swung = DrumKit(style=DRUM_STYLES["rock"], swing_ratio=SWING_RATIO_TRIPLET)
+        before, after = _kit_notes(straight), _kit_notes(swung)
+        assert [n for n in before if _is_offbeat_eighth(n.tick)], (
+            "this style writes no offbeat eighth, so the ratio is unobservable "
+            "here and the assertions below prove nothing"
+        )
+        assert len(before) == len(after)
+        for was, now in zip(before, after, strict=True):
+            assert was.pitch_midi == now.pitch_midi
+            assert was.velocity == now.velocity
+            if _is_offbeat_eighth(was.tick):
+                assert now.tick == was.tick - was.tick % PPQ + 2 * PPQ // 3, (
+                    "an offbeat eighth has to land on the triplet"
+                )
+                assert now.tick > was.tick
+            else:
+                assert now.tick == was.tick, (
+                    "a swing displaces the offbeat eighth and nothing else"
+                )
+
+    def test_a_bar_marked_on_its_downbeat_is_given_one_kick_not_two(self) -> None:
+        """The bar's downbeat kick is one decision, not two.
+
+        The bass asks for a kick under every attack the pattern does not
+        already mark, and a marked downbeat is a kick the bar is about to
+        carry — so the two are decided together. The swing kit writes no
+        kick at all, which is what makes the collision reachable: with the
+        two decisions made apart, tick 0 is handed two kicks and the piece
+        fails lint rather than sounding.
+        """
+        swing = DrumKit(style=DRUM_STYLES["swing"])
+        assert swing.style is not None
+        assert not [
+            h.offset_ticks for h in swing.style.variants["4/4"][0] if h.key == DRUM_KICK
+        ], "this style writes its own downbeat kick, so the collision cannot happen"
+        notes = _kit_notes(swing, bass_onsets=dict.fromkeys(range(8), (0, 480, 960, 1440)))
+        assert [n for n in notes if n.tick == 0 and n.pitch_midi == DRUM_KICK], (
+            "the downbeat was not marked at all"
+        )
+        assert len(notes) == len({(n.tick, n.pitch_midi) for n in notes}), (
+            "the pass wrote the same drum at the same tick twice"
+        )
+
+    def test_the_kick_follows_every_bass_onset_the_pattern_leaves_unmarked(self) -> None:
+        """The rhythm section is one section: the bass leads, the kit follows.
+
+        The bass is the voice stating the harmony, so a bar with a bass in
+        it has a kick under each of its attacks — and one under each of
+        them, since the kit has one kick.
+        """
+        onsets = dict.fromkeys(range(8), (0, 480, 960, 1440))
+        notes = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]), bass_onsets=onsets)
+        ticks_per_bar = 4 * PPQ
+        kicks = {n.tick % ticks_per_bar for n in notes if n.pitch_midi == DRUM_KICK}
+        assert set(onsets[0]) <= kicks, "a bass attack was left without a kick"
+        # Both of the bass's offbeat attacks are the kit's own additions:
+        # rock's pattern marks only the downbeat and the third beat.
+        assert {480, 1440} <= kicks - {0, 960}
+
+    def test_the_follow_kick_is_the_quietest_kick_the_pattern_writes(self) -> None:
+        """A drummer doubling the bass feathers it, so the groove's own
+        accent keeps its place: the added kick takes the pattern's
+        quietest kick level, not its loudest.
+
+        Read on the ballad, whose two 4/4 kicks differ by a fifth of their
+        velocity (72 and 60) — a gap wider than the pass's jitter band, so
+        the two readings are distinguishable. On a style whose kicks share
+        a level they are the same music and nothing could tell them apart.
+        """
+        kit = DrumKit(style=DRUM_STYLES["ballad"])
+        assert kit.style is not None
+        variant = kit.style.pattern(
+            "4/4", rotation_index(0, 2, cycle=kit.rotation_cycle, seed=0)
+        )
+        assert variant is not None
+        levels = {h.velocity for h in variant if h.key == DRUM_KICK}
+        assert len(levels) == 2, (
+            "this bar's pattern writes one kick level, so quietest and loudest "
+            "are the same reading"
+        )
+        quiet, loud = min(levels), max(levels)
+        notes = _kit_notes(
+            kit,
+            total_bars=1,
+            form_bars=1,
+            repetition_count=1,
+            seed=0,
+            bass_onsets={0: (480, 960, 1440)},
+        )
+        ticks_per_bar = 4 * PPQ
+        followed = [
+            n.velocity
+            for n in notes
+            if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar in (480, 960, 1440)
+        ]
+        accented = [
+            n.velocity
+            for n in notes
+            if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar == 0
+        ]
+        assert len(followed) == 3, "the bass's three attacks did not all draw a kick"
+        assert len(accented) == 1, "the pattern's own downbeat kick is missing"
+        # The bar is shared, so the only difference between the two is the
+        # level they were written at and the jitter band around it.
+        assert max(followed) < min(accented), (
+            f"the follow kick ({max(followed)}) is not the pattern's quietest "
+            f"level ({quiet} against {loud})"
+        )
 
 
 class TestTheCodaBranchReadsThePlan:

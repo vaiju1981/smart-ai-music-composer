@@ -70,7 +70,7 @@ from saimc.compose.forms import (
 )
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
-from saimc.compose.percussion import DRUM_STYLES
+from saimc.compose.percussion import DRUM_KICK, DRUM_STYLES
 from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     VOICE_BASS,
@@ -3444,8 +3444,13 @@ class TestHarmonyVoice:
                 86,
             ),
             VOICE_PERCUSSION: (
-                "c28644637555965a6ad16fe0554e705db44f4535420f6dd7bc0bc0a79e1a1645",
-                191,
+                # Re-earned at F5b, which changed the kit on purpose: the kick
+                # now follows the bass's attacks, so the count moved 191 -> 205
+                # and the digest with it. The bass and melody pins above did
+                # *not* move, and that is the evidence the change stayed inside
+                # the kit rather than reaching the rest of the arrangement.
+                "f06fbb1acd90dd95cd2649d50084de0afc347e049c3787019cff17f066fc0fda",
+                205,
             ),
         }
         for voice_id, (digest, count) in pinned.items():
@@ -3454,51 +3459,70 @@ class TestHarmonyVoice:
             payload = json.dumps(events, sort_keys=True)
             assert hashlib.sha256(payload.encode()).hexdigest() == digest, voice_id
 
-    def test_the_close_moves_the_harmony_and_the_tune_and_never_the_kit(self) -> None:
-        """Three closes, one kit: what F3's knob may and may not move.
+    @pytest.mark.parametrize(
+        ("close", "bass_root_motion"),
+        [
+            ("half", True),
+            ("half", False),
+            ("full", True),
+            ("full", False),
+        ],
+    )
+    def test_the_close_moves_the_kit_only_where_it_moves_the_bass(
+        self, close: str, bass_root_motion: bool
+    ) -> None:
+        """F3's knob reaches the kit through the walking line, and nowhere else.
 
-        `hold` leaves a template's own ending alone, so it reproduces the
-        music of the build before the closes existed — measured, not assumed:
-        the pins in the test above are all `hold`'s. The other two rewrite
-        each section's last two bars, and the bass and the tune move with
-        them. The kit reads neither, which is F2a's decoupling read one knob
-        over: its events are byte-identical under all three closes and under
-        either bass policy, so a close can never make the drums wrong by
-        accident. That is the assertion worth having, because a knob that can
-        move the rhythm section is a knob whose effect the critics cannot
-        attribute.
+        A close rewrites each section's last two bars, so the harmony and the
+        tune move with it — and since F5b the kit's kick follows the bass's
+        attacks, so the kit moves too. The claim worth having is that it moves
+        *exactly as far as the bass does and no further*: every hat, snare and
+        pattern kick reads identical, and the kicks that differ are precisely
+        the ticks the bass line moved. A knob that moved the rhythm section any
+        other way is a knob whose effect the critics cannot attribute.
         """
         spec = _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set", key="C")
 
-        def digests(close: str, *, bass_root_motion: bool = True) -> dict[int, str]:
+        def kit(
+            close: str, *, bass_root_motion: bool
+        ) -> tuple[set[tuple[int, int]], set[int], set[int]]:
             plan = replace(
                 default_plan(spec), section_close=close, bass_root_motion=bass_root_motion
             )
-            out = compose(spec, plan=plan)
-            return {
-                voice: hashlib.sha256(
-                    json.dumps(
-                        [asdict(n) for n in out.performance_plan.notes if n.voice_id == voice],
-                        sort_keys=True,
-                    ).encode()
-                ).hexdigest()
-                for voice in (VOICE_BASS, VOICE_MELODY, VOICE_HARMONY, VOICE_PERCUSSION)
+            notes = compose(spec, plan=plan).notation_score.notes
+            others = {
+                (n.tick, n.pitch_midi)
+                for n in notes
+                if n.voice_id == VOICE_PERCUSSION and n.pitch_midi != DRUM_KICK
             }
+            kicks = {
+                n.tick
+                for n in notes
+                if n.voice_id == VOICE_PERCUSSION and n.pitch_midi == DRUM_KICK
+            }
+            bass = {n.tick for n in notes if n.voice_id == VOICE_BASS}
+            return others, kicks, bass
 
-        held = digests("hold")
-        half = digests("half")
-        full = digests("full")
-        # The premise: the two rewritten closes really do write different
-        # music, so "the kit did not move" is being read against a matrix in
-        # which something did.
-        assert held[VOICE_BASS] != half[VOICE_BASS] != full[VOICE_BASS]
-        assert held[VOICE_MELODY] != half[VOICE_MELODY] != full[VOICE_MELODY]
-        for close in ("hold", "half", "full"):
-            assert digests(close)[VOICE_PERCUSSION] == held[VOICE_PERCUSSION], close
-            assert (
-                digests(close, bass_root_motion=False)[VOICE_PERCUSSION]
-                == held[VOICE_PERCUSSION]
-            ), close
+        def tune(close: str) -> str:
+            """The melody's digest under one close — the premise's observable."""
+            plan = replace(default_plan(spec), section_close=close)
+            events = [
+                asdict(n)
+                for n in compose(spec, plan=plan).performance_plan.notes
+                if n.voice_id == VOICE_MELODY
+            ]
+            return hashlib.sha256(json.dumps(events, sort_keys=True).encode()).hexdigest()
+
+        held_others, held_kicks, held_bass = kit("hold", bass_root_motion=True)
+        # The premise: the close really does move the tune, so "the kit did not
+        # move any further" is being read against a matrix in which something did.
+        assert tune(close) != tune("hold"), close
+
+        others, kicks, bass = kit(close, bass_root_motion=bass_root_motion)
+
+        assert others == held_others, (close, bass_root_motion)
+        assert bass ^ held_bass, "the walking line did not move, so nothing here was tested"
+        assert kicks ^ held_kicks == bass ^ held_bass, (close, bass_root_motion)
 
     def test_sidecar_round_trips_voice_instruments(self) -> None:
         out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="flute"))

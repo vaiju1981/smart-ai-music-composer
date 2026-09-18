@@ -1025,12 +1025,12 @@ class TestDeltas:
         created = _drafts(client, model)
         client.app.state.session_llm = None
 
-        response = self._deltas(client, created, feedback="swing it", sketch=False)
+        response = self._deltas(client, created, feedback="up an octave", sketch=False)
 
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "SetSwing" in detail
-        assert "SetDrumStyle" in detail
+        assert "SetRegister" in detail
+        assert "SetMelodyBand" in detail
 
     def test_a_sentence_read_whole_answers_with_the_refusal_and_nothing_else(
         self, client: TestClient, model: ScriptedModel
@@ -1039,19 +1039,19 @@ class TestDeltas:
 
         `_nothing_read` composes three parts — the refusals, the words nothing
         named, and the reader's own note — and this is the case where the first
-        is the only one to report: the table understood every word of "swing
-        feel" and the engine can honour none of it. Saying "nothing in these
+        is the only one to report: the table understood every word of "up an
+        octave" and the engine can honour none of it. Saying "nothing in these
         words names a change" would be the collapse `translator.py` refuses,
         because the user's words *were* understood.
         """
         created = _drafts(client, model)
         client.app.state.session_llm = None
 
-        response = self._deltas(client, created, feedback="swing feel", sketch=False)
+        response = self._deltas(client, created, feedback="up an octave", sketch=False)
 
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "SetSwing" in detail
+        assert "SetRegister" in detail
         assert "nothing in" not in detail
 
     def test_a_model_that_only_calls_a_tool_leaves_the_refusal_to_speak_alone(
@@ -1065,13 +1065,13 @@ class TestDeltas:
         act on, rather than the reader's commentary about itself.
         """
         created = _drafts(client, model)
-        model.replies = [_reply(_call("SetSwing"))]
+        model.replies = [_reply(_call("SetRegister"))]
 
-        response = self._deltas(client, created, feedback="swing feel", sketch=False)
+        response = self._deltas(client, created, feedback="up an octave", sketch=False)
 
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "SetSwing" in detail
+        assert "SetRegister" in detail
         assert "nothing in" not in detail
         assert "no language model" not in detail
 

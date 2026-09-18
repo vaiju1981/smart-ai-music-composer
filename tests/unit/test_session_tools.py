@@ -892,20 +892,21 @@ class TestRevise:
     ) -> None:
         """ "Understood and unbuilt" is a different answer from "not understood".
 
-        A swing ratio is a real musical request the engine cannot yet honour, so
-        it refuses by name with the alternative that does exist rather than as a
-        misspelling — which is what `refuse_uncarried` is for and what a user's
-        own words turn into.
+        A register shift is a real musical request the engine cannot yet honour,
+        so it refuses by name with the alternative that does exist rather than as
+        a misspelling — which is what `refuse_uncarried` is for and what a user's
+        own words turn into. `SetSwing` was this case until F5b, when the plan
+        grew `swing_ratio` and the knob stopped being unbuilt.
         """
         _ready(ctx)
         _drafts(ctx)
 
-        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetSwing"}])
+        invocation = _call(ctx, "revise", draft_id="draft-0", deltas=[{"knob": "SetRegister"}])
 
         assert invocation.outcome == "refused"
         assert invocation.error_code == "unknown_knob"
-        assert "SetSwing" in invocation.result, "the request, named"
-        assert "SetDrumStyle" in invocation.result, "and what it can do instead"
+        assert "SetRegister" in invocation.result, "the request, named"
+        assert "SetMelodyBand" in invocation.result, "and what it can do instead"
 
     def test_a_value_the_request_cannot_hold_is_refused_rather_than_crashed(
         self, ctx: ToolContext

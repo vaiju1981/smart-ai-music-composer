@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from saimc.compose.motif import BassMotion
+from saimc.compose.percussion import SWING_RATIO_TRIPLET
 from saimc.llm.base import ChatRequest, ChatResult, LLMError, ToolCall
 from saimc.session import translator
 from saimc.session.deltas import (
@@ -47,6 +48,7 @@ from saimc.session.deltas import (
     SetHumanization,
     SetMood,
     SetSectionClose,
+    SetSwing,
     apply_deltas,
 )
 from saimc.session.translator import KEYWORD_TABLE, REQUEST_TOOL, Phrase, translate
@@ -207,9 +209,6 @@ class TestTheKeywordTableReadsWhatItClaims:
             "an octave lower",
             "register",
             "harmonic rhythm",
-            "swing",
-            "swung",
-            "swing feel",
             "drums in at",
             "drum entry",
             "drums enter",
@@ -223,7 +222,6 @@ class TestTheKeywordTableReadsWhatItClaims:
         }
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
-            "SetSwing",
             "ExtendSection",
         }
 
@@ -241,22 +239,28 @@ class TestTheKeywordTableReadsWhatItClaims:
 class TestAnUnbuiltRequestIsRefusedByIdent:
     """The distinction `UNCARRIED` exists for: understood, and not built."""
 
-    def test_swing_refuses_and_says_what_to_ask_for_instead(self) -> None:
+    def test_swing_left_this_class_when_the_plan_grew_the_ratio(self) -> None:
+        """The phrase is now a request, and this is where that is witnessed.
+
+        "Add some swing" was refused here until F5b, when the plan grew
+        `swing_ratio` and `SetSwing` moved out of `UNCARRIED`. A ratchet rather
+        than a story: the words have to read as the request *and* the request has
+        to move the plan, so a phrase left pointing at a refusal — or a knob the
+        engine does not carry — fails here instead of quietly telling a listener
+        the engine cannot do what it now can.
+        """
         translation = _read("can you add some swing please")
-        assert translation.deltas == ()
-        assert [refusal.request for refusal in translation.refusals] == ["SetSwing"]
-        refusal = translation.refusals[0]
-        assert refusal.reason == "unknown_knob"
-        assert "triplet grid" in refusal.message
-        assert refusal.nearest is not None
-        assert "SetDrumStyle" in refusal.nearest
+        assert translation.refusals == ()
+        assert translation.deltas == (SetSwing(SWING_RATIO_TRIPLET),)
         assert translation.unread == ("can you add some please",)
+        application = apply_deltas(_SPEC, translation.deltas)
+        assert application.ok, application.refused
+        assert application.plan.swing_ratio == SWING_RATIO_TRIPLET
 
     @pytest.mark.parametrize(
         ("text", "knob"),
         [
             ("up an octave", "SetRegister"),
-            ("swing feel", "SetSwing"),
             ("extend the chorus", "ExtendSection"),
         ],
     )
@@ -590,14 +594,16 @@ class TestTheModelPath:
     def test_a_model_that_asks_for_an_unbuilt_knob_gets_the_vocabularys_refusal(self) -> None:
         """The two paths refuse the same thing in the same words.
 
-        A model naming `SetSwing` is asking for exactly what the user asking for
-        swing is asking for, and the sentence that comes back is `UNCARRIED`'s
-        rather than one written here.
+        A model naming `SetRegister` is asking for exactly what the user asking
+        for one is asking for, and the sentence that comes back is `UNCARRIED`'s
+        rather than one written here. `SetSwing` was the knob this case used
+        until F5b; it now reads as a request, which is why the case names a knob
+        the engine still has no field for.
         """
-        client = _Model(_calls(("SetSwing", {"ratio": 0.6})))
-        translation = _read("add some swing", client=client)
-        assert [refusal.request for refusal in translation.refusals] == ["SetSwing"]
-        assert "triplet grid" in translation.refusals[0].message
+        client = _Model(_calls(("SetRegister", {"semitones": 12})))
+        translation = _read("up an octave", client=client)
+        assert [refusal.request for refusal in translation.refusals] == ["SetRegister"]
+        assert "no knob that moves one voice's register" in translation.refusals[0].message
         assert translation.unread == ()
 
     def test_a_model_that_invents_a_knob_is_refused_by_name(self) -> None:

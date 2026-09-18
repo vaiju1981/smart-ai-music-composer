@@ -93,6 +93,8 @@ from saimc.compose.percussion import (
     PERCUSSION_REST_SECTION,
     ROTATION_CYCLE,
     SECTION_CRASH_VELOCITY,
+    SWING_RATIO_STRAIGHT,
+    SWING_RATIO_TRIPLET,
     DrumKit,
     style_name_for,
 )
@@ -108,7 +110,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 6
+PLAN_SCHEMA_VERSION: Final[int] = 7
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -474,6 +476,16 @@ class CompositionPlan:
     """The mood's scaling of every drum hit's velocity."""
     section_crash_velocity: int
     """The velocity of the crash that marks a section downbeat."""
+    swing_ratio: float
+    """How the kit's offbeat eighths are divided, 1.0 straight.
+
+    The share of the beat the first eighth takes, so 1.0 leaves the pair
+    even and 2.0 puts the offbeat on the triplet. It displaces the written
+    pattern rather than re-writing it (`percussion.swing_offset`), so a
+    straight piece is byte-identical to the one this engine wrote before
+    the knob existed, and the piece's *bass* stays on the quarters it
+    states the harmony with.
+    """
 
     def __post_init__(self) -> None:
         _require(
@@ -657,6 +669,22 @@ class CompositionPlan:
             "section_crash_velocity is a MIDI velocity, so it must sit in 1..127; "
             f"got {self.section_crash_velocity}",
         )
+        # Two bounds rather than one range, for `section_crash_velocity`'s
+        # reason: a refusal is a sentence the user reads, and each end of
+        # this range means something different.
+        _require(
+            self.swing_ratio >= SWING_RATIO_STRAIGHT,
+            "swing_ratio divides the beat into a first eighth and a second, so it "
+            f"cannot be below {SWING_RATIO_STRAIGHT} (even eighths); got "
+            f"{self.swing_ratio}",
+        )
+        _require(
+            self.swing_ratio <= SWING_RATIO_TRIPLET,
+            "swing_ratio cannot exceed "
+            f"{SWING_RATIO_TRIPLET}, where the offbeat lands exactly on the "
+            "triplet; past that the feel is a dotted rhythm, which the pattern "
+            f"tables write directly; got {self.swing_ratio}",
+        )
 
     def compute_hash(self) -> str:
         """The plan's canonical digest. Two identical plans hash alike."""
@@ -721,6 +749,7 @@ class CompositionPlan:
             "percussion_entry_bar": self.percussion_entry_bar,
             "percussion_velocity_scale": self.percussion_velocity_scale,
             "section_crash_velocity": self.section_crash_velocity,
+            "swing_ratio": self.swing_ratio,
         }
 
     @classmethod
@@ -806,6 +835,7 @@ class CompositionPlan:
             percussion_entry_bar=payload["percussion_entry_bar"],
             percussion_velocity_scale=payload["percussion_velocity_scale"],
             section_crash_velocity=payload["section_crash_velocity"],
+            swing_ratio=payload["swing_ratio"],
         )
 
     def arrangement_knobs(self) -> ArrangementKnobs:
@@ -888,13 +918,14 @@ class CompositionPlan:
         *name*: a `DrumStyle` is a table of bar templates, which no
         canonical document can carry. So the plan stores the name the
         meter and mood resolve to (`style_name_for`) and this is where it
-        becomes the style, with the three values beside it.
+        becomes the style, with the four values beside it.
         """
         return DrumKit(
             style=DRUM_STYLES.get(self.drum_style_name) if self.drum_style_name else None,
             rotation_cycle=self.rotation_cycle,
             velocity_scale=self.percussion_velocity_scale,
             crash_velocity=self.section_crash_velocity,
+            swing_ratio=self.swing_ratio,
         )
 
 
@@ -972,6 +1003,13 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         percussion_entry_bar=PERCUSSION_ENTRY_BAR,
         percussion_velocity_scale=MOOD_VELOCITY_SCALE.get(mood, 1.0),
         section_crash_velocity=SECTION_CRASH_VELOCITY,
+        # Every default piece is straight. The knob exists so a request can
+        # swing it — and so a critic can drive it — and the swing style
+        # itself is reached only by `SetDrumStyle`, which writes a style and
+        # not a feel: the two are separate requests on purpose, because a
+        # user who names the swing kit has asked for its *vocabulary* and a
+        # user who asks for swing has asked for its time feel.
+        swing_ratio=SWING_RATIO_STRAIGHT,
     )
 
 

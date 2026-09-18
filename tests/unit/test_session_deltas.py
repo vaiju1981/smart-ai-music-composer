@@ -39,6 +39,7 @@ import pytest
 from saimc.compose.duration import DurationArrangement, arrange_for_duration
 from saimc.compose.engine import compose
 from saimc.compose.motif import FIGURES_BY_MOTION, BassMotion
+from saimc.compose.percussion import SWING_RATIO_TRIPLET
 from saimc.compose.plan import CompositionPlan, default_plan
 from saimc.session import deltas
 from saimc.session.deltas import (
@@ -69,6 +70,7 @@ from saimc.session.deltas import (
     SetPercussionRest,
     SetSectionClose,
     SetSectionEnergy,
+    SetSwing,
     SetTempo,
     SetTimeSignature,
     Texture,
@@ -124,6 +126,7 @@ _EXAMPLES: dict[str, Delta] = {
     "SetDrumStyle": SetDrumStyle(name="funk"),
     "SetPercussionRest": SetPercussionRest(section=2),
     "SetDrumEntry": SetDrumEntry(bar=6),
+    "SetSwing": SetSwing(ratio=SWING_RATIO_TRIPLET),
 }
 """One request per registered knob, and every one of them differs from the default.
 
@@ -160,6 +163,7 @@ _PLAN_EFFECTS: dict[str, dict[str, object]] = {
     "SetDrumStyle": {"drum_style_name": "funk"},
     "SetPercussionRest": {"percussion_rest_section": 2},
     "SetDrumEntry": {"percussion_entry_bar": 6},
+    "SetSwing": {"swing_ratio": SWING_RATIO_TRIPLET},
 }
 """What each plan delta writes. The three whose value is *derived* are exempt.
 
@@ -712,6 +716,28 @@ class TestARefusalNamesItsReason:
         assert "SetIntroBars(bars=16)" in refusal.message
         assert "must be shorter than the shortest form" in refusal.message
 
+    @pytest.mark.parametrize(
+        ("ratio", "phrase"),
+        [
+            (0.5, "even eighths"),
+            (3.0, "dotted rhythm"),
+        ],
+    )
+    def test_each_end_of_the_swing_range_refuses_with_its_own_meaning(
+        self, ratio: float, phrase: str
+    ) -> None:
+        """Two bounds rather than one range, because the two ends differ.
+
+        Below 1.0 there is no pair of eighths for a ratio to divide; above 2.0
+        the offbeat has passed the triplet and the feel is a dotted rhythm the
+        pattern tables write directly. A single "must be in 1..2" sentence would
+        tell the user the bound and not which side of it they were asking for.
+        """
+        (refusal,) = apply_deltas(_SPEC, [SetSwing(ratio=ratio)]).refused
+        assert refusal.reason == "violates_the_plan"
+        assert f"SetSwing(ratio={ratio})" in refusal.message
+        assert phrase in refusal.message
+
     def test_a_plan_refusal_whose_message_names_the_alternative_offers_no_nearest(self) -> None:
         (refusal,) = apply_deltas(_SPEC, [SetDrumStyle(name="polka")]).refused
         assert refusal.reason == "violates_the_plan"
@@ -798,16 +824,16 @@ class TestTheUnbuiltKnobs:
             "an alternative that names no request is not an alternative"
         )
 
-    def test_the_unbuilt_requests_are_the_three_the_scope_rule_left_out(self) -> None:
+    def test_the_unbuilt_requests_are_the_two_the_scope_rule_left_out(self) -> None:
         # A ratchet, not evidence: the design's Tier-2 list named these, the plan has
         # no knob for them, and re-opening or shortening the table should be a
         # declared edit rather than a quiet one. `SetHarmonicRhythm` left this table
-        # in F3c, when the plan grew `harmonic_rhythm`, and `SetDrumEntry` left it in
-        # F5a, when the plan grew `percussion_entry_bar` — which is why the count in
-        # this test's name is a fact to re-read rather than a constant to trust.
+        # in F3c, when the plan grew `harmonic_rhythm`; `SetDrumEntry` left it in
+        # F5a, and `SetSwing` in F5b, when the plan grew `percussion_entry_bar` and
+        # `swing_ratio` — which is why the count in this test's name is a fact to
+        # re-read rather than a constant to trust.
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
-            "SetSwing",
             "ExtendSection",
         }
 

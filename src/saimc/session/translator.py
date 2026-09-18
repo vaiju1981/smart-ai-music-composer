@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Final, TypeAlias
 
 from saimc.compose.motif import BassMotion
+from saimc.compose.percussion import SWING_RATIO_TRIPLET
 from saimc.llm.base import ChatClient, ChatRequest, Message, ToolCall, ToolSpec
 from saimc.session.conductor import spec_line
 from saimc.session.deltas import (
@@ -60,6 +61,7 @@ from saimc.session.deltas import (
     SetHumanization,
     SetMood,
     SetSectionClose,
+    SetSwing,
     delta_from_dict,
     refuse_uncarried,
 )
@@ -374,7 +376,7 @@ KEYWORD_TABLE: Final[tuple[Phrase, ...]] = (
         ),
         _fixed(SetHarmonicRhythm((2, 1, 1))),
     ),
-    Phrase(("swing", "swung", "swing feel"), _unbuilt("SetSwing")),
+    Phrase(("swing", "swung", "swing feel"), _fixed(SetSwing(SWING_RATIO_TRIPLET))),
     # The knob exists as of F5a and the words name it without saying where the
     # kit should come in — `direction_unnamed`'s case exactly, and the *bar* is
     # the direction here. The model path can read a number out of the sentence

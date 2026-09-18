@@ -27,7 +27,7 @@ soundfont (FluidR3_GM, MIT) — no dedicated drum font is needed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 
 from saimc.compose.score import PPQ
@@ -346,12 +346,16 @@ SWING = DrumStyle(
     name="swing",
     variants={
         "4/4": (
-            # A: ride on the quarters, foot-hihat on 2 and 4. The swung
-            # eighths ride pattern belongs to a triplet grid, so the
-            # quarters carry the pulse until the swing ratio displaces
-            # an offbeat onto one.
+            # A: ride on the quarters with the "and" of 2 and 4 answered on
+            # the same cymbal, foot-hihat on 2 and 4. The offbeat ride is
+            # written where a *straight* eighth sits, and `swing_ratio` is
+            # what moves it onto the triplet — so this is the swung ride at
+            # 2.0 and an even eighth ride at 1.0, which is why the quarter
+            # pulse no longer has to wait for a triplet grid.
             _hits(
                 *[(o, DRUM_RIDE, 64) for o in range(0, BAR_4_4, BEAT)],
+                (BEAT + EIGHTH, DRUM_RIDE, 54),
+                (3 * BEAT + EIGHTH, DRUM_RIDE, 54),
                 (480, DRUM_PEDAL_HIHAT, 56),
                 (3 * BEAT, DRUM_PEDAL_HIHAT, 56),
             ),
@@ -571,6 +575,62 @@ opened on a crash cymbal over bar one, which is the loudest possible first
 impression for a sleep ballad.
 """
 
+PERCUSSION_KICK_VELOCITY: int = 84
+"""The kit's own kick level, for the places no pattern names one.
+
+Two places need a kick the template tables do not write: the downbeat mark,
+and the kick that follows the bass. Both are the kit playing its own
+accent rather than a chosen note, so they share one number.
+"""
+
+SWING_RATIO_STRAIGHT: float = 1.0
+"""A piece whose eighth notes are even. The identity of `swing_offset`."""
+
+SWING_RATIO_TRIPLET: float = 2.0
+"""The ratio that puts a beat's second eighth on the triplet.
+
+A swing ratio is the share of the beat the *first* eighth takes, so 1.0
+leaves the pair even, 1.5 is a light swing, and 2.0 is the triplet every
+jazz method writes. Past 2.0 the offbeat is later than the triplet, which
+is a dotted rhythm rather than a swing — and a dotted rhythm is something
+the pattern tables write directly, so the plan's bound stops here.
+"""
+
+
+def swing_offset(offset: int, ratio: float = SWING_RATIO_STRAIGHT) -> int:
+    """Where a swing lands a hit the pattern wrote on a beat's second eighth.
+
+    The ratio divides the *beat*, not the bar: its first eighth takes
+    `ratio / (ratio + 1)` of the beat and the second the rest, so 1.0
+    leaves the hit where it was written and 2.0 lands it on the triplet.
+    Everything else is untouched — a hit on the beat, on a sixteenth, or on
+    a dotted value is where the pattern put it, and the offbeat eighth is
+    the one position a swing displaces. That is why the arithmetic needs no
+    triplet grid: the grid would only decide where the offbeat goes, and
+    the ratio decides exactly that.
+    """
+    beat_start = offset - offset % PPQ
+    if offset - beat_start != EIGHTH:
+        return offset
+    return beat_start + round(PPQ * ratio / (ratio + 1.0))
+
+
+def swing_pattern(
+    pattern: tuple[DrumHit, ...], ratio: float = SWING_RATIO_STRAIGHT
+) -> tuple[DrumHit, ...]:
+    """A bar template with its offbeat eighths displaced by the ratio.
+
+    Returns the pattern itself at `SWING_RATIO_STRAIGHT`, which is what
+    makes a straight piece byte-identical to the one this module wrote
+    before a ratio existed. A displacement moves a hit later inside its own
+    beat and never across a beat line, so the pattern's order survives.
+    """
+    if ratio == SWING_RATIO_STRAIGHT:
+        return pattern
+    return tuple(
+        replace(hit, offset_ticks=swing_offset(hit.offset_ticks, ratio)) for hit in pattern
+    )
+
 
 def rotation_index(
     section_idx: int,
@@ -613,7 +673,7 @@ class DrumKit:
     One-way bridge, for B2's reason: the engine's percussion pass takes no
     plan, and a plan cannot hold a `DrumStyle` — a style is a table of bar
     templates, and the plan is a canonical JSON document. So the plan
-    carries the style's *name* and the three values beside it, and this
+    carries the style's *name* and the four values beside it, and this
     is where the name becomes the style.
 
     A style with no template for the piece's meter writes no drums at
@@ -630,6 +690,7 @@ class DrumKit:
     rotation_cycle: tuple[int, ...] = ROTATION_CYCLE
     velocity_scale: float = 1.0
     crash_velocity: int = SECTION_CRASH_VELOCITY
+    swing_ratio: float = SWING_RATIO_STRAIGHT
 
 
 DEFAULT_DRUM_KIT: DrumKit = DrumKit()
@@ -733,6 +794,7 @@ __all__ = [
     "MOOD_STYLES_4_4",
     "MOOD_VELOCITY_SCALE",
     "PERCUSSION_ENTRY_BAR",
+    "PERCUSSION_KICK_VELOCITY",
     "PERCUSSION_NOTE_TICKS",
     "PERCUSSION_REST_SECTION",
     "PERCUSSION_VELOCITY_MAX",
@@ -742,6 +804,8 @@ __all__ = [
     "SHUFFLE",
     "SIXTEENTH",
     "SWING",
+    "SWING_RATIO_STRAIGHT",
+    "SWING_RATIO_TRIPLET",
     "WALTZ",
     "DrumHit",
     "DrumKit",
@@ -749,4 +813,6 @@ __all__ = [
     "rotation_index",
     "style_for",
     "style_name_for",
+    "swing_offset",
+    "swing_pattern",
 ]
