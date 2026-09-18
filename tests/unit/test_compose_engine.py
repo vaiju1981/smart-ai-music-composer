@@ -23,6 +23,7 @@ from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
+    _aim_leap,
     _answer_leaps,
     _answered,
     _apex_starts,
@@ -1370,10 +1371,53 @@ class TestMelodyWalk:
         leaves it — a passing tone between the chord tones either side."""
         assert _answer_leaps([0, 4, 5, 6]) == [0, 4, 3, 2]
 
-    def test_a_leap_that_lands_off_the_chord_is_undone(self) -> None:
+    def test_a_leap_that_lands_off_the_chord_is_re_aimed_at_it(self) -> None:
         """A non-chord tone is entered by a step or not at all, so a leap
-        landing off the harmony keeps the bar's contour and loses the leap."""
-        assert _answer_leaps([0, 5, 6]) == [0, -1, -2]
+        that would land off the harmony is re-aimed at it instead of being
+        undone. The chord scale puts a chord tone either side of the
+        landing and the far side is a degree wider, so the drawn fifth
+        lands on the fifth rather than on the fourth scale degree — and
+        the bar it produces is the bar the consonant leap produces, which
+        is what says the leap was kept rather than repaired.
+
+        A leap of a third is the case that cannot be, and it is checked
+        beside this one: re-aimed either way it is no longer a leap.
+        """
+        assert _answer_leaps([0, 5, 6, 7]) == [0, 4, 3, 2]
+        assert _answer_leaps([0, 5, 6, 7]) == _answer_leaps([0, 4, 5, 6])
+
+    def test_a_re_aimed_leap_reaches_further_rather_than_nearer(self) -> None:
+        """A chord built in thirds puts a chord tone on both sides of a
+        landing whenever the two residues are a degree apart — and then the
+        harmony has no preference and the line has one, so the far side is
+        what the choice reaches for. It keeps the leap the motif drew, where
+        the near side shortens it: a shortened leap is the fault this pass
+        exists to remove, wearing the licence it was repaired with.
+        """
+        landing, back = 8, -1
+        remainders = (0, 2, 4)
+        wide, narrow = landing - back, landing + back
+        assert {wide % 7, narrow % 7} <= set(remainders), (
+            "both sides have to be chord tones, or the harmony made the choice"
+        )
+        assert _aim_leap(landing, back, remainders=remainders) == wide
+
+        # The same choice seen from the bar, once where the far side widens
+        # a drawn fourth into a fifth, and once where the near side would
+        # take the leap below the size this pass recognises as one, leaving
+        # the caller to undo it altogether.
+        assert _answer_leaps([4, 8, 7, 6]) == [4, 9, 8, 7]
+        assert _answer_leaps([4, 1, 1, 1]) == [4, 0, 1, 2]
+
+    def test_a_leap_no_re_aiming_can_save_is_undone(self) -> None:
+        """A third from the chord's third lands a degree off the harmony,
+        and both sides of that landing are a third from where the line
+        came from — so the leap cannot be re-aimed into anything the
+        licence admits, and the line keeps its shape and loses the leap,
+        which is what this pass did with every off-chord landing before.
+        """
+        assert LEAP_DEGREES == 3, "the case below is built on the default size"
+        assert _answer_leaps([2, 5, 6]) == [2, 1, 0]
 
     def test_a_leap_with_no_room_after_it_is_answered_from_before(self) -> None:
         """The landing is where the bar has to be, so the note before it

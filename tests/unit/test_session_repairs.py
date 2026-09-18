@@ -79,24 +79,29 @@ two kept requests. The "both candidates leave the same remaining" half is what
 fixture where only one candidate cleared the bar would satisfy the two-round
 case and quietly stop testing that.
 """
-_ELECTRIC_90_17 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=17, key="C")
+_ELECTRIC_90_14 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=14, key="C")
 """The engine refuses the leap bar's first request here.
 
-Found by sweeping the vocabulary's magnitudes over a grid rather than by
-reusing the piece this role had before `bass_root_motion`: the old
-`electrifying/120s/1` no longer produces an unplayable score at band 9,
-and a fixture that stopped raising would leave the trial above passing as
-`kept`. Band 5 still refuses that piece, which is how the sweep says the
-outcome is alive rather than that the arm is dead.
+Re-found by sweeping the grid again once Phase F4's leap floor moved the
+melody: the piece this role had before, `electrifying/90s/17`, no longer
+breaches the leap bar at all, so the round that was here to show a refusal had
+nothing left to refuse. This piece reproduces the role exactly — band 9 is
+still refused on the bare piece, the chain is
+`[SetMotifVariation(0.5), SetAccompanimentDensity(1440)]`, and the piece comes
+out clean in those two moves.
 
-It is also the fixture the refusal arm and the clearing arm meet on, and the
-one that says what a refusal *costs*: band 9 is refused on the bare piece and
-honoured only once the variation is halved, so the loop spends a move working
-around a refusal before it can clear the bars behind it. The chain is
-`[SetMotifVariation(0.5), SetMelodyBand(9)]` — two moves where it was four
-before the apex-entrance fix, because the piece now carries three bars rather
-than five and the band binds a round earlier. Two is what the case reads: the
-refusal is recorded rather than fatal, and the piece still comes out clean.
+The refusal is worked around rather than waited out. Band 9 and the halving are
+the leap bar's *two* candidates, so the loop does not spend a move discovering
+that the band cannot be had: the halving clears the leap bar in the round the
+band is refused in, and the second move is the bed's. Two is what the case
+reads — the refusal is recorded rather than fatal, and the piece still ends
+clean.
+
+It is also the piece the corpus `repairs.py` names cannot witness: that corpus
+holds no 90-second piece, and over its 66 trials nothing the loop tries is
+refused at all, because at 30, 60 and 120 seconds the bars that breach are the
+bed's. So the arm is reachable and the corpus is not where it shows, which is
+why this fixture is named by its spec rather than counted.
 """
 _CALM_60_13 = CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=13, key="C")
 """The two candidates pull strictly opposite ways, which the old one no longer did.
@@ -116,27 +121,28 @@ that helps, and `revise_draft`'s ratchet would then refuse the repair as a
 regression — the wrong answer arriving as a refused turn rather than as bad
 music.
 """
-_ELECTRIC_180_17 = CompositionSpec(
-    mood=Mood.ELECTRIFYING, duration_seconds=180, seed=17, key="C"
+_ELECTRIC_90_31 = CompositionSpec(
+    mood=Mood.ELECTRIFYING, duration_seconds=90, seed=31, key="C"
 )
-"""The deepest chain the music needs, and therefore the reason the bound is six.
+"""The deepest chain the music needs, and therefore the reason the bound is four.
 
 A corpus of 90 pieces cannot bound a search over 90 pieces, so the depth was
 measured on a wider grid — three moods, seven durations and forty seeds, every
-piece pinned to C — where the deepest chain was five kept requests, here and at
-`electrifying/300s/17` and `600s/14`. This is the cheapest of the three, so it
-is the one that carries the ratchet.
+piece pinned to C — where the deepest chain was three kept requests, here and at
+`electrifying/300s/25`. This is the cheaper of the two, so it carries the
+ratchet.
 
-It is also the piece that shows what the deepest chains *are*. The chain is
-`[SetMotifVariation(0.5)] * 3 + [SetMelodyBand(9), SetAccompanimentDensity(1440)]`
-— the same request three times, not three different ones. Each halving is a
-different request from the one before it, because the delta multiplies the
-operation weights rather than replacing them, and the band is `no_gain` in the
-first three rounds and kept in the fourth because it only binds once the motif
-is stable enough for it. So the loop is converging rather than spinning; what
-it is *trading* is melodic variation for a smaller worst leap, and that is
-recorded in `repairs.py` against Phase F4's goal of measurable motivic
-development rather than fixed here.
+It is also the piece that shows what the deepest chains *are*, and that is the
+half Phase F4's leap floor rewrote. The chain is three *different* requests —
+`[SetMotifVariation(0.5), SetMelodyBand(9), SetAccompanimentDensity(1440)]`,
+and the same three in the other order at 300 seconds. Each is a move the one
+before it exposed: the band is `no_gain` in the round before it binds, because
+it only narrows the leap bar once the motif is stable enough for it to. This
+role used to be `electrifying/180s/17`, whose chain was `SetMotifVariation(0.5)`
+three deep and then two more — one request applied three times, which is the
+grinding `repairs.py` recorded against Phase F4's goal of measurable motivic
+development. That piece now needs one request where it needed five, and the
+deepest chains that remain are three bars rather than one bar thrice.
 """
 _ELECTRIC_90_2 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=2, key="C")
 """The piece on which the report's order and the arbiter's disagree."""
@@ -371,7 +377,7 @@ class TestTheUnplayableTrial:
         """Without this the case below is evidence of nothing: if the engine
         stopped raising, `unplayable` would go on passing as `kept`."""
         candidate = _REPAIRS["max_leap_semitones"][0]
-        application = apply_deltas(_ELECTRIC_90_17, [candidate])
+        application = apply_deltas(_ELECTRIC_90_14, [candidate])
         assert application.applied == (candidate,)
         with pytest.raises(CompositionEngineError):
             compose(application.spec, plan=application.plan)
@@ -379,13 +385,13 @@ class TestTheUnplayableTrial:
     def test_a_candidate_the_engine_refuses_is_recorded_and_skipped(self) -> None:
         """A loop that let the engine's refusal propagate would turn a candidate
         it cannot use into a failed turn."""
-        outcome = _repair(_ELECTRIC_90_17, maximum=4)
+        outcome = _repair(_ELECTRIC_90_14, maximum=4)
         assert [(a.metric, a.outcome) for a in outcome.attempts][:2] == [
             ("max_leap_semitones", "unplayable"),
             ("max_leap_semitones", "kept"),
         ]
         assert outcome.added[0] == SetMotifVariation(factor=0.5)
-        assert _after(_ELECTRIC_90_17, (), outcome).findings() == ()
+        assert _after(_ELECTRIC_90_14, (), outcome).findings() == ()
         assert len(outcome.added) == 2, "one move to work around the refusal, one to clear"
 
 
@@ -498,21 +504,23 @@ class TestTheBound:
 
         A corpus of 90 pieces cannot bound a search over 90 pieces, so the depth
         is measured on a wider grid — three moods, seven durations and forty
-        seeds, every piece pinned to C. The deepest chain there is five kept
-        requests, at `_ELECTRIC_180_17` and its counterparts at 300 and 600
-        seconds, and the bound is one above it. Equal would not do: at four, all
-        three of those pieces came back with a bar still missed that a fifth
-        move clears, which is a backstop being *reached* rather than a search
+        seeds, every piece pinned to C, 840 pieces. The deepest chain there is
+        three kept requests, at `_ELECTRIC_90_31` and its counterpart at 300
+        seconds, and the bound is one above it. Equal would not do, and the
+        measurement says so from the other side: at the depth that grid used to
+        need — five, before Phase F4's leap floor moved the melody — the pieces
+        with the longest chains came back with a bar still missed that one more
+        move cleared. That is a backstop being *reached* rather than a search
         ending on its own.
 
-        The assertion is `>` rather than `==`, so a later phase that deepens the
-        music past the bound fails here rather than quietly shipping a piece
-        with a bar left missed — and lowering the budget below the measurement
-        fails here too, which is the half a test on the fixture alone cannot
-        see.
+        The assertion is `==` on the measurement and `<` on the bound, so a
+        later phase that deepens the music past the bound fails here rather than
+        quietly shipping a piece with a bar left missed — and lowering the
+        budget below the measurement fails here too, which is the half a test on
+        the fixture alone cannot see.
         """
-        deepest = _repair(_ELECTRIC_180_17, maximum=MAX_REPAIRS_PER_TURN)
-        assert len(deepest.added) == 5, [delta.describe() for delta in deepest.added]
+        deepest = _repair(_ELECTRIC_90_31, maximum=MAX_REPAIRS_PER_TURN)
+        assert len(deepest.added) == 3, [delta.describe() for delta in deepest.added]
         assert deepest.remaining == ()
         assert len(deepest.added) < MAX_REPAIRS_PER_TURN
 
@@ -583,7 +591,7 @@ class TestTheAim:
         """Every kept chain has already moved the arbiter's order down — the
         same comparison the ratchet makes — so no repair this loop returns can
         be refused as a regression by the tool that applies it."""
-        for spec in (_ELECTRIC_30_0, _ELECTRIC_180_14, _ELECTRIC_90_17, _CALM_60_13):
+        for spec in (_ELECTRIC_30_0, _ELECTRIC_180_14, _ELECTRIC_90_14, _CALM_60_13):
             outcome = _repair(spec, maximum=4)
             assert musical_order(_after(spec, (), outcome), lint_passed=True) <= (
                 musical_order(_quality(spec), lint_passed=True)

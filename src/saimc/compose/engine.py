@@ -1910,10 +1910,25 @@ def _answer_leaps(
     The leap itself is kept whenever it can be: a leap the licence can
     cover lands *on* the harmony — three degrees from the chord's fifth
     is its root — and a leap that lands off it cannot be licensed at all,
-    because a non-chord tone is entered by a step or not at all. That
-    second leap is not answered but undone: the landing steps back to
-    where the line came from, which leaves the bar's contour intact and
-    one leap poorer rather than one dissonance richer.
+    because a non-chord tone is entered by a step or not at all. So a leap
+    whose landing is off the harmony is re-aimed at it rather than undone.
+    The chord scale puts a chord tone on either side of any landing, the
+    side further along the leap is a degree wider than the motif drew it,
+    and a degree is the whole of the change — where the motif drew a
+    fourth the bar sounds a fifth, and the leap it drew is heard. Only a
+    landing with no chord tone beyond it narrows, and one with neither is
+    undone as it always was: the landing steps back to where the line came
+    from, which leaves the bar's contour intact and one leap poorer rather
+    than one dissonance richer.
+
+    Re-aiming happens here rather than where the motif is drawn, and the
+    reason is the frame: `_draw_step` chooses a step from the motif's own
+    start, and the chord tones it can see are the ones congruent to *that*
+    degree, while this pass reads a landing against the bar's anchor — a
+    different chord tone, so a landing the draw called consonant is one
+    this pass calls a dissonance. Constraining the draw to chord tones
+    measured at half the leaps drawn and *fewer* of them rendered, because
+    the two frames disagree in one case in three.
 
     `fixed_tail` is how many of the bar's last slots the answer may not
     move — the closing gesture's note, which has to land where it lands.
@@ -1945,20 +1960,31 @@ def _answer_leaps(
         back = -1 if leap > 0 else 1
         landing = index + 1
         if not settled[landing]:
-            if out[landing] % 7 not in remainders:
-                # The landing needs the licence and cannot have it: a step
-                # is the only way into a non-chord tone. The line keeps its
-                # shape and loses the leap instead.
-                out[landing] = out[index] + back
-                if index + 2 <= last_mutable and not settled[index + 2]:
-                    out[index + 2] = out[landing] + back
-                index += 1
-                continue
-            if (
+            room = (
                 index + 3 <= last_mutable
                 and not settled[index + 2]
                 and not settled[index + 3]
-            ):
+            )
+            if out[landing] % 7 not in remainders:
+                # The landing needs the licence and cannot have it where it
+                # sits: a step is the only way into a non-chord tone. Re-aim
+                # it at the harmony, one degree out, and the leap is kept —
+                # but only where the answer that licenses it has room to
+                # follow, because a leap the bar cannot answer is the fault
+                # this pass exists to remove, and keeping one here would be
+                # that fault rather than a repair of it.
+                aimed = _aim_leap(out[landing], back, remainders=remainders) if room else None
+                if aimed is None or abs(aimed - out[index]) < shape.leap_degrees:
+                    # Neither side of the landing is a chord tone the leap
+                    # survives on — a third from the chord's third is the
+                    # case — so the line keeps its shape and loses the leap.
+                    out[landing] = out[index] + back
+                    if index + 2 <= last_mutable and not settled[index + 2]:
+                        out[index + 2] = out[landing] + back
+                    index += 1
+                    continue
+                out[landing] = aimed
+            if room:
                 # Landing on a chord tone, with room for the whole answer.
                 out[index + 2] = out[landing] + back
                 out[index + 3] = out[index + 2] + back
@@ -1975,6 +2001,25 @@ def _answer_leaps(
         settled[index] = True
         index = max(index - 1, 0)
     return out
+
+
+def _aim_leap(landing: int, back: int, *, remainders: tuple[int, ...]) -> int | None:
+    """The chord degree a leap is re-aimed at, or `None` if there is none.
+
+    A chord built in thirds puts a chord tone on either side of any degree,
+    so this is a choice between two and not a search. `back` is the
+    direction the line came from, so `landing - back` is the side further
+    along the leap and is always the one a leap wants: it is a degree
+    wider than the motif drew, so the leap survives by construction. The
+    nearer side is the fallback, and it is the caller's to check — one
+    degree in can shorten a fourth to a third, and a leap that is no
+    longer a leap is the fault this pass exists to answer.
+    """
+    wide = landing - back
+    if wide % 7 in remainders:
+        return wide
+    narrow = landing + back
+    return narrow if narrow % 7 in remainders else None
 
 
 def _licit_line(

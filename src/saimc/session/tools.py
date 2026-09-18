@@ -142,7 +142,7 @@ name a parent that names a parent that names the first one, and an unbounded
 walk would not return.
 """
 
-MAX_REPAIRS_PER_TURN: Final[int] = 6
+MAX_REPAIRS_PER_TURN: Final[int] = 4
 """How many requests one `repair` call may keep.
 
 A repair composes each candidate it tries to measure it, so this is the loop's
@@ -150,18 +150,25 @@ backstop in the same sense `MAX_CANDIDATES_PER_DRAFT` is the fan-out's: it
 bounds a width, and it is read by the tool rather than counted in the ledger
 because a compose is arithmetic. The worst case stays around a second.
 
-Six is one round above the deepest chain the music needs, and the two numbers
+Four is one round above the deepest chain the music needs, and the two numbers
 come from different sweeps on purpose. Over the 90-piece corpus `repairs.py`
-names, the widest chain a piece needed was three kept requests; over a wider
-grid — three moods, seven durations, forty seeds, every piece pinned to C —
-the deepest was **five**, at `electrifying/180s/17`. The corpus is 90 pieces
-and the grid is 840, so the grid is the one that bounds the default.
+names, the widest chain a piece needed was two kept requests; over a wider grid
+— three moods, seven durations, forty seeds, every piece pinned to C — the
+deepest was **three**, at `electrifying/90s/31` and `electrifying/300s/25`. The
+corpus is 90 pieces and the grid is 840, so the grid is the one that bounds the
+default.
+
+Both depth numbers were re-measured once Phase F4's leap floor moved the
+melody, and the deepest chain fell from five to three: the grid's
+`max_leap_semitones` breaches fell from 125 to 78 in the same pass, so the
+leap bar needs working around in far fewer pieces and the longest surviving
+chains are the bed's.
 
 It is one *above* the deepest rather than equal to it because a backstop that
 is reached is not a backstop: `repair_chain` states the same principle from
 the other side ("`maximum` is the fourth and it is a backstop rather than the
-usual end"), and at four the three five-move pieces of that grid came back
-with a bar still missed that a fifth move would have cleared.
+usual end"), and at the depth the grid used to need, the pieces with the
+longest chains came back with a bar still missed that one more move cleared.
 """
 
 
