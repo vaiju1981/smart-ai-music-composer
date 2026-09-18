@@ -12,9 +12,9 @@ piece come out clean.
 
 What the measurement says, and it is the whole design:
 
-- **Four metrics breach at all, and 32 of the 90 pieces breach something.**
+- **Four metrics breach at all, and 33 of the 90 pieces breach something.**
   `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
-  `leap_recovery_ratio` (2) and `max_leap_semitones` (1). So a repair loop is
+  `leap_recovery_ratio` (4) and `max_leap_semitones` (1). So a repair loop is
   a loop over four bars in practice, and the other eight have no entry because
   nothing asked for them by *that* corpus — not because they cannot be reached.
   A sweep of four requests over the same 90 pieces — a 24- and a 60-semitone
@@ -36,18 +36,18 @@ What the measurement says, and it is the whole design:
   fail rather than a restatement of `findings()[0]`. (The one-semitone arm is
   the one reading above the 90-piece corpus no longer carries: it holds no
   90-second piece, and of the pieces a one-semitone band does reach, the linter
-  refuses three before a bar can be read and none of the rest breaches the
+  refuses four before a bar can be read and none of the rest breaches the
   range. So the witness the test uses is named by its own spec rather than
   counted here — a refusal is not a breach, and counting the two together would
   be counting pieces nothing measured.)
 - **`harmonic_rhythm_variety` is reachable, and it is the one bar this table must
   not answer.** Measured across the golden corpus under each of the plan's three
   section closes: under `hold` — sections that run on, so every chord lasts the
-  template's uniform two bars — 36 of 81 pieces breach it, and under the shipped
+  template's uniform two bars — 27 of 81 pieces breach it, and under the shipped
   default `half` and under `full`, none of 81 do. So it is not a bar nothing
   reaches; it is a bar the plan reaches *by asking for it*. Every request in the
-  vocabulary was then measured against those 36 pieces and not one moved any of
-  them, while `SetSectionClose("half")` clears 36 of 36. The only delta that
+  vocabulary was then measured against those 27 pieces and not one moved any of
+  them, while `SetSectionClose("half")` clears 27 of 27. The only delta that
   clears the bar is the one that undoes the request that made the piece breach —
   and a repair is the product's own arithmetic over the piece, which may change
   how the material is placed and never what the user asked for. So this absence
@@ -58,24 +58,25 @@ What the measurement says, and it is the whole design:
   pad bar in 30 of 30 pieces and the texture bar in 30 of 30, and
   `SetAccompanimentDensity(step_ticks=1440)`, an arpeggio that steps once per
   three beats instead of once per beat, measures *identically* on all 30: the
-  two readings are the same 29 pieces out clean and 1 piece whose other bar —
-  the tune's leap bar — was already missing. They are both "let the bed hold
-  rather than
+  two readings are the same 28 pieces out clean and 2 whose other bar was
+  already missing — the tune's leap bar on one and `leap_recovery_ratio` on the
+  other. They are both "let the bed hold rather than
   flurry", and the density move is the one that works when the figure is not the
   broken chord. Those are single-candidate readings, taken to *choose* the
   table; what the loop does with them is the next bullet.
 - **The tune's leap bar is only partly repairable, and both readings of that
-  are measured.** The bar is the grid's commonest tune defect — 78 of its 840
-  pieces breach it, down from 125 before Phase F4's leap floor — and neither
+  are measured.** The bar is the grid's commonest tune defect — 51 of its 840
+  pieces breach it, down from 78 before the seam fix kept the leaps a bar's last
+  slot cannot answer and 125 before Phase F4's leap floor — and neither
   request the table holds for it is dominant.
   `SetMelodyBand(semitones=9)`, the narrowest band the range bar allows, clears
-  it in 55 of the 78 and leaves the whole piece clean in 25, but the linter
-  *refuses* it on 9. `SetMotifVariation(factor=0.5)` clears it in 31 and leaves
-  the piece clean in 10, and is never refused. So the table keeps both rather
+  it in 41 of the 51 and leaves the whole piece clean in 19, but the linter
+  *refuses* it on 2. `SetMotifVariation(factor=0.5)` clears it in 18 and leaves
+  the piece clean in 7, and is never refused. So the table keeps both rather
   than one: the band clears more and the variation never writes a collision, and
-  65 of the 78 clear the bar on one move where 13 clear it on neither.
+  46 of the 51 clear the bar on one move where 5 clear it on neither.
 
-  Those 13 are what the hint is about without meaning to — it asks for a change
+  Those 5 are what the hint is about without meaning to — it asks for a change
   to `motif.py`'s walk, and no request in the vocabulary is that change. So the
   bar is repairable where a knob can reach it and reported where one cannot, and
   the loop keeps the best of what it tried rather than claiming a move it does
@@ -83,24 +84,30 @@ What the measurement says, and it is the whole design:
 - **A trial the engine refuses is skipped, not fatal.** `compose` raises on a
   lint failure (C4's finding 1), and a repair loop that let that propagate would
   turn a candidate it cannot use into a failed turn, so `unplayable` is a
-  recorded outcome. The 360-request sweep above is refused 3 times, all of them
+  recorded outcome. The 360-request sweep above is refused 4 times, all of them
   a one-semitone band writing dissonant collisions. What the *corpus* cannot
-  reach is the bare reading of the arm — over its 90 pieces and 66 trials,
+  reach is the bare reading of the arm — over its 90 pieces and 70 trials,
   nothing the loop tries is refused at all — and that is a fact about its
   durations rather than about the arm: at 30, 60 and 120 seconds the bars that
   breach are the bed's, whose candidates never write a collision, so the leap
-  bar that does need a refusal needs a slower piece to appear.
+  bar that does need a refusal needs a slower piece to appear. And the seam fix
+  narrowed the band further by keeping the leaps the bar's last slot could not
+  answer, so the collision a refusal needs is rarer still: over a wider grid of
+  three moods, seven durations and a hundred seeds, only twelve pieces refuse
+  the band at all, and the seeds that do sit above ninety, where the corpus does
+  not run.
   `SetMelodyBand(semitones=9)` is refused on the bare piece at
-  `electrifying/90s/14`, which is outside the corpus and is where the test that
+  `electrifying/300s/47`, which is outside the corpus and is where the test that
   reads the arm names its fixture. So the corpus is not evidence the arm is
   dead, and `test_session_repairs.py` is where the two are told apart.
 - **The deepest chains are three different requests, and each is a bar of its
   own.** `electrifying/90s/31` — the deepest chain the wider grid needs — keeps
   `SetMotifVariation(factor=0.5)`, then `SetMelodyBand(semitones=9)`, then
   `SetAccompanimentDensity(step_ticks=1440)`; `electrifying/300s/25` keeps the
-  same three in the other order. Each is a move the one before it exposed —
-  halving the motif brings the leap bar inside the band the second request
-  narrows to, and clearing that leaves the bed's bars, which is the third — and
+  same three with the first two the other way round. Each is a move the one
+  before it exposed — halving the motif brings the leap bar inside the band the
+  second request narrows to, and clearing that leaves the bed's bars, which is
+  the third — and
   each measures strictly better than the piece in hand. The band is skipped as
   `no_gain` in the round before it binds, which is what says the loop is
   converging rather than guessing: the request is *tried*, measured and
@@ -108,12 +115,13 @@ What the measurement says, and it is the whole design:
   anything.
 
   This used to be one request applied three times (`SetMotifVariation(0.5)`
-  three deep at `electrifying/180s/17`), and Phase F4's leap floor is what
-  removed that shape: a third fewer pieces breach `max_leap_semitones` over the
-  grid (78 rather than 125), so the leap bar needs working around in far fewer
-  of them, `electrifying/180s/17` now needs one request where it needed five,
-  and the chains that survive are three different bars rather than one bar
-  thrice. So the specific grinding the item Phase F4 left open was about — the
+  three deep at `electrifying/180s/17`), and two changes removed that shape.
+  Phase F4's leap floor took the grid's leap-bar breaches from 125 to 78, and
+  the seam fix took them to 51 — so the leap bar needs working around in half as
+  many pieces as it did, `electrifying/180s/17` now needs one request where it
+  needed five (and no longer breaches the leap bar at all), and the chains that
+  survive are three different bars rather than one bar thrice. So the specific
+  grinding the item Phase F4 left open was about — the
   loop paying a piece's melodic variation for a smaller worst leap, once per
   round — is gone from the deepest chains, and what is left is three requests
   a musician would follow.
@@ -129,12 +137,13 @@ What the measurement says, and it is the whole design:
   branch stays without a case to reach it.
 
 **What the loop does to that corpus**, which is the number the table above was
-chosen for rather than a claim about it — 58 of the 90 pieces are clean before
-it runs, 31 of the 32 breaching ones come out clean, and one is left as it was.
-Thirty of the repaired pieces need one kept request and one needs two, so
-`maximum` never binds *here*; across all 66 trials, 64 outcomes are `kept` and
-2 are `no_gain`. No piece is improved and still missing a bar, which is the
-outcome this corpus stopped producing once the melody moved.
+chosen for rather than a claim about it — 57 of the 90 pieces are clean before
+it runs, 32 of the 33 breaching ones come out clean, and one is left as it was.
+Thirty of the repaired pieces need one kept request, two need two, and the one
+left as it was needs none, so `maximum` never binds *here*; across all 70
+trials, 67 outcomes are `kept` and 3 are `no_gain`. No piece is improved and
+still missing a bar, which is the outcome this corpus stopped producing once
+the melody moved.
 
 The corpus is not the whole picture, and the gap between the two is worth the
 sentence. A corpus of 90 pieces says nothing about a piece it does not contain,

@@ -1425,6 +1425,27 @@ class TestMelodyWalk:
         assert _answer_leaps([0, 4, 6]) == [3, 4, 6]
         assert _answer_leaps([0, 4, 5, 6], fixed_tail=1) == [3, 4, 5, 6]
 
+    def test_a_leap_into_the_last_slot_is_left_to_the_next_bar(self) -> None:
+        """A bar's last note is a note the *seam* answers, not one the bar
+        has to. `_entry_answer` turns the next bar's opening step back the
+        way the leap came, and the placement ranks an answered entrance
+        above an unanswered one — so a leap into the bar's last slot is
+        kept, and re-aimed at the harmony when it lands off it, rather than
+        undone for want of room the bar was never going to have.
+
+        What undoing it did is worth reading off the two cases: a chord
+        tone landing made the whole bar walk down to a step-run, and an
+        off-chord one dropped the last note to a repeat of the first — so
+        the pass was not preserving the bar's shape either, which is the
+        argument it made for itself. The third case is the fixed tail,
+        where the note *is* pinned and the old repair is still the one that
+        applies.
+        """
+        assert _answer_leaps([0, 1, 5]) == [0, 1, 4]
+        assert _answer_leaps([0, 1, 4]) == [0, 1, 4]
+        assert _answer_leaps([0, 1, 5], fixed_tail=1) == [0, 1, 0]
+        assert _answer_leaps([0, 1, 4], fixed_tail=1) == [2, 3, 4]
+
     def test_a_leap_the_bar_cannot_answer_is_left_to_the_next_bar(self) -> None:
         """The pass settles a slot as the approach to its pair, and a
         settled slot is never written again — a bar whose answer has to come

@@ -1441,38 +1441,44 @@ class TestRepair:
     repair aimed at the arbiter's worst bar has three to work through and the
     "one kept request" this case reads is not the shape it takes.
     """
-    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=60, seed=14)
+    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=300, seed=13)
     """A piece one move cannot finish, which is what the bound needs.
 
     Measured over three moods, seven durations and forty seeds at
     `max_repairs=1`: this one leaves `max_leap_semitones`,
     `texture_hierarchy` and `harmony_pad_coverage` all still missed after a
-    single move, and it is the cheapest piece that does. The three-bar
-    remainder is what the case reads — one move applied, three bars named in
-    `remaining` — and it is three rather than one because the leap bar's own
-    requests are partly repairable at best (see `repairs.py`'s table for the
-    reading), which is the reason a bound has anything to report here at all.
+    single move. The three-bar remainder is what the case reads — one move
+    applied, three bars named in `remaining` — and it is three rather than one
+    because the leap bar's own requests are partly repairable at best (see
+    `repairs.py`'s table for the reading), which is the reason a bound has
+    anything to report here at all.
 
     The key is unset on purpose, which is the one fixture in this class where
     that is true: the case is about the budget rather than about the piece
     staying put, so it wants the piece the product would produce for this brief
-    rather than one pinned to a key the sweep happened to measure. Seed 27 at
-    180 seconds carries the same report and the same one-move chain, so the
-    choice between the two is cost — a 60-second compose rather than a
-    180-second one — and not a property only one of them has.
+    rather than one pinned to a key the sweep happened to measure. That is also
+    why it is a 300-second piece where its predecessor was a 60-second one. The
+    seam fix kept the leaps a bar's last slot cannot answer and handed them to
+    the bar after it, and that took the leap bar out of the reach of a single
+    move at the short durations: over the same grid with the key unset, every
+    piece this role has left starts at 300 seconds. Pinning C would buy a
+    shorter compose at 90 seconds, and the trade is not worth it — the property
+    is what the case reads, and a pinned key would make this the second fixture
+    in the class measuring a piece the sweep chose rather than the brief.
 
-    What it replaced was `electrifying/180s/4`, which no longer leaves the leap
-    bar missing after one move; and before that a 30-second piece at seed 3,
-    which the key pool moved onto a key whose leap bar one move does clear. So
-    this is re-measured rather than re-keyed: the *property* the case asserts is
-    what the sweep is for, and pinning a key to preserve a seed's old behaviour
-    would leave the file measuring a path the product no longer takes.
+    What it replaced was `electrifying/60s/14`, which the seam fix left with only
+    the bed's two bars after a single move, so the `remaining` the case reads no
+    longer held the leap bar; and before that `electrifying/180s/4` and a
+    30-second piece at seed 3, moved on by the key pool and then by the leap
+    floor. So this is re-measured rather than re-keyed: the *property* the case
+    asserts is what the sweep is for, and pinning a key to preserve a seed's old
+    behaviour would leave the file measuring a path the product no longer takes.
     """
     _OUT_OF_TABLE = CompositionSpec.model_validate(
         {
             "mood": Mood.SLEEP,
             "duration_seconds": 30,
-            "seed": 2,
+            "seed": 35,
             "time_signature": "3/4",
             "instrumentation": [
                 {"role": VoiceRole.MELODY.value, "instrument": "glockenspiel"},
@@ -1483,12 +1489,16 @@ class TestRepair:
     )
     """A bar the table holds no request for, reached by the spec alone.
 
-    Seven of the arbiter's eleven bars have no entry, because the 90-piece corpus
+    Eight of the arbiter's twelve bars have no entry, because the 90-piece corpus
     that chose the table never breached them — the table is measured rather than
     reasoned, so a bar nothing breached is a bar with nothing to measure. One of
     them is reachable from a spec a brief can carry: a slow waltz for a
     glockenspiel, a harp and a tuba misses `step_ratio`, how much of the tune
-    moves by step, which no 4/4 corpus piece does.
+    moves by step, which no 4/4 corpus piece does. This seed is the one of that
+    shape whose *only* finding it is: the seam fix kept the leaps a bar's last
+    slot cannot answer, and that moved the rest of the sweep's waltzes onto the
+    bed's bars or onto a refusal, where the loop would aim at a table bar and
+    reach a different sentence.
 
     The clearance route this case used to take does not work. Widening the
     harmony clearance far enough to push the bed under the tune does create the
@@ -1586,15 +1596,17 @@ class TestRepair:
         """The other empty: requests were tried and none was kept. Same code,
         opposite sentence, and the difference is what the attempts recorded.
 
-        The piece is the one a sweep of three moods, five durations and forty
-        seeds finds with this property at sixty seconds, and there is exactly
-        one of them — the key pool moved every mood's pieces onto their own keys
-        and took the older fixture's leap bar from unrepairable to repairable
-        with it, so the case is re-measured rather than re-pinned. What it
+        The piece is one of five a sweep of three moods, seven durations and
+        forty seeds finds with this property, and the only one at thirty
+        seconds. Every one of them is pinned to C, which is what makes this the
+        one fixture in the class that has to be: with the key left unset the
+        sweep finds *none*, because the key pool hands this brief a key whose
+        leap-recovery bar the table's two bands between them do clear — the
+        property is real and it now needs the key named to appear. What the case
         asserts is the sentence, and the sentence names the bar the attempts
         aimed at.
         """
-        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=18))
+        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=28, key="C"))
         _drafts(ctx)
 
         invocation = _call(ctx, "repair", draft_id="draft-0")
