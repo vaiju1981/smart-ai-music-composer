@@ -539,23 +539,38 @@ def draw_bass_figures(
 
 
 def _op_dotted(slots: list[list[int]], *, remainders: tuple[int, ...]) -> list[BarSlot]:
-    """Long-short: two quarters become a dotted quarter + eighth.
+    """Long-short: an even pair becomes a dotted note and its short partner.
 
-    The lengthened note has to be a chord tone: a dotted quarter is half
+    Two quarters make a dotted quarter and an eighth — the figure's own
+    size, and the one the mood's `dotted` weight is written for. The
+    lengthened note has to be a chord tone there: a dotted quarter is half
     again a quarter, and the passing-tone licence admits a non-chord tone
     only for a quarter or less. Shortening the *second* note of the pair
-    would be the dotted figure heard upside down, so a bar with no
-    chord-tone quarter in that position keeps its straight rhythm.
+    would be the dotted figure heard upside down, so such a pair is passed
+    over rather than inverted.
+
+    A bar whose cells are all eighths has no quarter pair to make it from,
+    and it makes it from its eighths instead: a dotted eighth and a
+    sixteenth. *Drawing the figure and hearing nothing* is the one outcome
+    the mood's weight cannot mean — `dotted` is a third of a calm bar and
+    three tenths of an electrifying one, and the bars it could not fire on
+    were the short ones, so a piece whose motif cells are eighths lost the
+    figure entirely. Measured: a 30-second piece drew it on every other bar
+    (a quarter of its bars), heard it on none, and closed with two note
+    values in the whole piece. The licence asks nothing of the lengthened
+    note here, because a dotted eighth is shorter than a quarter — the
+    chord-tone test above is a fact about the dotted quarter, not about the
+    figure.
     """
-    for i in range(len(slots) - 1):
-        if (
-            slots[i][1] == PPQ
-            and slots[i + 1][1] == PPQ
-            and slots[i][2] % 7 in remainders
-        ):
-            slots[i][1] = PPQ + PPQ // 2
-            slots[i + 1][1] = PPQ // 2
-            break
+    for length in (PPQ, PPQ // 2):
+        for i in range(len(slots) - 1):
+            if slots[i][1] != length or slots[i + 1][1] != length:
+                continue
+            if length == PPQ and slots[i][2] % 7 not in remainders:
+                continue
+            slots[i][1] = length + length // 2
+            slots[i + 1][1] = length // 2
+            return _reflow(slots)
     return _reflow(slots)
 
 

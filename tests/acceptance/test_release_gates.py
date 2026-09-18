@@ -196,18 +196,22 @@ def _solo_melody(pitches: list[int]) -> NotationScore:
     )
 
 
-# A stepwise major scale over an octave: every interval is a step, no
-# leap to recover from, no repeat, three note values.
-_STEPWISE = _solo_melody([60, 62, 64, 65, 67, 69, 71, 72])
+# A well-shaped line over an octave: mostly steps, with a leap up to the
+# octave in it that the next note answers by step, no repeat, three note
+# values. It has to carry the leap: a line of nothing but steps now measures
+# `step_ratio` 1.00 against a cap of 0.90 and `leap_ratio` 0.00 against a
+# floor of 0.01, so the scale this fixture used to be was a clean corpus only
+# while the scorecard could see neither fault.
+_SHAPED = _solo_melody([60, 62, 64, 65, 72, 71, 72, 74])
 
 
 class TestMusicalQualityGate:
-    def test_a_stepwise_corpus_clears_every_threshold(self) -> None:
-        result = gate_musical_quality([_STEPWISE])
+    def test_a_well_shaped_corpus_clears_every_threshold(self) -> None:
+        result = gate_musical_quality([_SHAPED])
         assert result.passed, result.detail
 
     def test_the_gate_is_active_not_vacuous(self) -> None:
-        """A leaping line must fail the same gate the stepwise one passes.
+        """A leaping line must fail the same gate the shaped one passes.
 
         Without this, a gate that measured nothing — or measured the
         wrong voice — would report success on any input.
@@ -228,9 +232,9 @@ class TestMusicalQualityGate:
     def test_the_generator_clears_the_bar(self) -> None:
         """The gap this file pinned open, closed — read and asserted.
 
-        `saimc.quality` measures ten properties of the music and this gate
-        is the claim that a corpus clears every one of them. When the gate
-        landed the engine missed seven. The melody rewrite closed six: the
+        `saimc.quality` measures thirteen properties of the music and this
+        gate is the claim that a corpus clears every one of them. When the
+        gate landed the engine missed seven. The melody rewrite closed six: the
         line moves by step, answers its leaps, is held in a C4-B5 band
         across the whole piece and repeats itself rarely, so `step_ratio`,
         `leap_recovery_ratio`, `repeat_ratio`, `range_semitones`,

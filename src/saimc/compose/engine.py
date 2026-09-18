@@ -55,6 +55,7 @@ from saimc.compose.duration import (
 )
 from saimc.compose.ensemble import Ensemble, resolve_ensemble
 from saimc.compose.forms import (
+    BREATH_TICKS,
     LEAP_MIN_SEMITONES,
     PHRASE_BARS,
     STEP_MAX_SEMITONES,
@@ -469,6 +470,7 @@ def _build_score(
         band_semitones=shape.line_band_semitones,
         clearance=voices.melody_clearance,
     )
+    bass = _bass_register(ensemble.bass)
     measures: list[Measure] = []
     notes: list[NoteEvent] = []
     chord_bars: list[tuple[int, ...]] = []
@@ -552,6 +554,7 @@ def _build_score(
             rng=section_rng,
             seed_for_variation=rng_base_seed + section_idx,
             band=band,
+            bass=bass,
             shape=shape,
             voices=voices,
             figures=bass_figures,
@@ -637,6 +640,7 @@ def _build_score(
             rng=coda_rng,
             seed_for_variation=rng_base_seed + arrangement.repetition_count,
             band=band,
+            bass=bass,
             shape=shape,
             voices=voices,
             figures=bass_figures,
@@ -791,6 +795,66 @@ BASS_WALK_LOW_MIDI: int = 21
 BASS_WALK_HIGH_MIDI: int = 60
 
 
+@dataclass(frozen=True)
+class BassRegister:
+    """Where the bass voice may sound: the window its walk lands in, and the
+    ceiling its figures climb to.
+
+    Two numbers with one source — the compass of whoever is playing it — so
+    they travel together and cannot be narrowed apart. `BASS_WALK_LOW_MIDI`
+    and `BASS_HIGH_MIDI` are both the piano's, because the left hand was
+    written for one before `instruments.py` gave every voice its own.
+    """
+
+    window: MelodyBand
+    ceiling: int
+
+
+def _bass_register(instrument: str | None) -> BassRegister:
+    """The piano's bass register, narrowed to the compass of the voice that plays it.
+
+    The window is A0 to C4 and the ceiling C4 plus a fifth, which is the
+    register the left hand was written for before `instruments.py` gave every
+    voice its own. A cello's floor is C2, so the walk's own bottom is a note no
+    cello has, and the only thing that kept the bass out of it was that the
+    roots it lands on sit above it — until the final repetition is lifted
+    *down*. `modulation_offset=-12` is a legal plan (the plan refuses only
+    beyond the octave) and it reached the window's floor: 24 of the 144 pieces
+    of a 3-mood x 4-duration x 12-seed sweep failed lint at the bound, all of
+    them the bass below its own instrument's range. That is the one thing the
+    plan states it cannot do — a bound whose far end is a plan the engine
+    refuses.
+
+    The ceiling is the same defect reached the other way, and it is why 48 of
+    the 66 instruments in the table cannot hold down the bass on this engine.
+    A tuba's compass stops at Bb3, so a rung written between C4 and G4 is a
+    note no tuba has; the ceiling is what the loop that takes a too-high rung
+    an octave lower compares against.
+
+    Narrowing cannot move a note that composed. A landing tone or a rung
+    outside the compass is a lint failure whichever window or ceiling chose
+    it, so the candidates this removes are exactly the ones that used to
+    raise, and the nearest-tone choice is unchanged whenever the tone it
+    picked survives the narrowing.
+    """
+    if instrument is None:
+        # No voice was named for the bass, so no compass is known and the
+        # linter falls back to its own wide range: the walk's own numbers are
+        # what is left to say where it may land and how high it may climb.
+        return BassRegister(
+            window=MelodyBand(low_midi=BASS_WALK_LOW_MIDI, high_midi=BASS_WALK_HIGH_MIDI),
+            ceiling=BASS_HIGH_MIDI,
+        )
+    compass = range_for(instrument)
+    return BassRegister(
+        window=MelodyBand(
+            low_midi=max(BASS_WALK_LOW_MIDI, compass.low_midi),
+            high_midi=min(BASS_WALK_HIGH_MIDI, compass.high_midi),
+        ),
+        ceiling=min(BASS_HIGH_MIDI, compass.high_midi),
+    )
+
+
 def _bass_ladder(
     anchor: int, *, chord_root: int, chord_tones: tuple[int, ...]
 ) -> tuple[int, ...]:
@@ -814,12 +878,18 @@ def _bass_ladder(
 
 
 def _bass_figure_pitches(
-    figure: BassFigure, *, anchor: int, chord_root: int, chord_tones: tuple[int, ...]
+    figure: BassFigure,
+    *,
+    anchor: int,
+    chord_root: int,
+    chord_tones: tuple[int, ...],
+    ceiling: int,
 ) -> tuple[tuple[int, int, int], ...]:
     """Resolve a figure's rungs into the bass register above the anchor.
 
     Returns `(start, length, pitch)` per sounding note, still in
-    sixteenths of the bar. A rung that would climb past the bass ceiling
+    sixteenths of the bar. A rung that would climb past `ceiling` — the
+    bass register's own, narrowed to the compass of the voice playing it —
     is taken an octave lower, and one that still lands below the bar's
     landing tone is dropped: the figure is written for the harmony, not
     for the register the walk happened to land in, and a note under the
@@ -832,7 +902,7 @@ def _bass_figure_pitches(
     resolved: list[tuple[int, int, int]] = []
     for start, length, rung in figure:
         pitch = ladder[min(rung, len(ladder) - 1)]
-        while pitch > BASS_HIGH_MIDI:
+        while pitch > ceiling:
             pitch -= 12
         if pitch >= anchor:
             resolved.append((start, length, pitch))
@@ -848,6 +918,7 @@ def _generate_section(
     rng: random.Random,
     seed_for_variation: int,
     band: MelodyBand,
+    bass: BassRegister,
     figures: tuple[BassFigure, ...],
     bass_root_motion: bool,
     voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
@@ -879,7 +950,11 @@ def _generate_section(
     the chord's root, so the walk states the harmony where it changes
     and still joins the last bar by the smallest step the octave grid
     allows; the stepwise-through-inversions rule above is what `False`
-    keeps. The melody carries too, through `prev_melody` and
+    keeps. Every landing tone is drawn from `bass.window` and every rung
+    resolves under `bass.ceiling` — the walk's own register, narrowed to
+    the compass of the instrument that plays it (`_bass_register`), so
+    neither the walk nor a figure can write a bar the player cannot
+    sound. The melody carries too, through `prev_melody` and
     `prev_melody_leap`: a section opens on the line the last one left
     off rather than restarting it. The melody develops the section's
     motif: every bar
@@ -931,8 +1006,21 @@ def _generate_section(
     tonic_midi = key_root_midi(key)
     ticks_per_bar = bar_ticks(time_signature)
     section_ticks = template.bars * ticks_per_bar
-    # The melodic apex sits near the 60% mark, never on the final bar.
-    apex_bar = min(int(template.bars * shape.apex_position), template.bars - 2)
+    # The melodic apex sits at the fraction asked for, rounded *up*, and
+    # never on the final bar — the closing gesture is the last bar's, so
+    # the peak has to arrive with a bar left after it to be left by.
+    #
+    # Rounding up rather than truncating is the whole of the placement's
+    # correctness at the section sizes the arrangement actually picks. A
+    # fraction of 0.6 truncates to bar 4 of an eight-bar section, which is
+    # its *middle* bar: the peak arrived at 50%, not 60%, and the phrase
+    # was a rise and a fall rather than a climb. Measured over the 960
+    # sections of the 3-mood x 7-duration x 10-seed grid, rounding up
+    # lifts the share of sections whose highest note lands in the later
+    # third — the section's bars from `2 * form // 3` on — from 62.2% to
+    # 77.6%, and the share whose highest note is in the apex bar itself
+    # from 23.7% to 45.4%.
+    apex_bar = min(math.ceil(template.bars * shape.apex_position), template.bars - 2)
     motif = generate_motif(rng, bar_ticks=ticks_per_bar, shape=shape)
 
     # Pre-resolve each slot's chord so a bar can pick up into the next
@@ -1018,7 +1106,7 @@ def _generate_section(
                 in_register = [
                     p
                     for p in (pinned - 12, pinned, pinned + 12)
-                    if BASS_WALK_LOW_MIDI <= p <= BASS_WALK_HIGH_MIDI
+                    if bass.window.low_midi <= p <= bass.window.high_midi
                 ]
                 last_bass = prev_bass
                 bass_pitch = min(
@@ -1041,7 +1129,9 @@ def _generate_section(
                 for octaves in (1, 2)
             ]
             candidates = [
-                c for c in candidates if BASS_WALK_LOW_MIDI <= c <= BASS_WALK_HIGH_MIDI
+                c
+                for c in candidates
+                if bass.window.low_midi <= c <= bass.window.high_midi
             ]
             if not candidates:
                 bass_pitch = _octave_down(chord_root, octaves=2)
@@ -1059,6 +1149,7 @@ def _generate_section(
             anchor=bass_pitch,
             chord_root=chord_root,
             chord_tones=chord_tones,
+            ceiling=bass.ceiling,
         )
 
         chord_root_tick = section_start_tick + cursor
@@ -1079,6 +1170,7 @@ def _generate_section(
                     anchor=bass_pitch,
                     chord_root=chord_root,
                     chord_tones=chord_tones,
+                    ceiling=bass.ceiling,
                 )
             for figure_index, (offset16, length16, pitch) in enumerate(figure):
                 onset = offset16 * ticks_per_bar // 16
@@ -1113,14 +1205,57 @@ def _generate_section(
             # the loop-leaked `degree` here meant a half cadence could
             # only ever fall on a form whose final slot was the dominant.
             is_half_cadence = slot.degree == 4 and bar_index % 4 == 3 and not is_final_bar
-            breathe = (
-                not is_final_bar and not is_half_cadence and rng.random() < 0.18
-            )
+            breathe = not is_final_bar and not is_half_cadence and rng.random() < 0.18
             # The breath is a guarantee, not a coin toss: when the
             # melody has run `PHRASE_BARS` bars without a gap (counting
             # the previous section's trailing run), this bar must lift
             # off early. A half cadence already leaves the rest.
-            if not is_final_bar and not is_half_cadence and bar_index - last_gap_bar >= PHRASE_BARS:
+            #
+            # The apex is not a bar the guarantee may land on, and the
+            # reason is the span rather than the peak: deferring the
+            # breath past the apex leaves the run one bar over the limit
+            # and `PHRASE_GAP_MISSING` then refuses the whole piece. So
+            # when the turn falls on the bar before the apex it is taken a
+            # bar early, which is also the better phrase: the line closes,
+            # then climbs to the peak. Measured over the 3-mood x 7-duration
+            # x 10-seed grid, dropping this look-ahead refuses exactly one
+            # piece of 210 — `sleep/600/seed 5`, whose run reaches 4.9 bars
+            # against the 4-bar span — and leaves the peak readings on the
+            # 240-section matrix a wash: the share of sections entering their
+            # apex bar from a breath falls from 60.0% to 56.7%, and the share
+            # whose apex bar holds the section's top is 53.3% against 52.9%.
+            # So the span is what the look-ahead is for, and it is pinned as
+            # such by
+            # `test_the_breath_guarantee_takes_the_turn_before_the_apex`.
+            #
+            # The coin toss is *not* vetoed at the apex, deliberately. A bar
+            # that reaches the top of its phrase and then lifts off is
+            # idiomatic, and the veto was dropped on a measurement. Re-taken
+            # over the 960-section grid: vetoing the toss at the apex raises
+            # the share of sections whose apex bar stops short from 54.6% to
+            # 57.9% and lowers the share whose apex bar holds the section's
+            # top from 45.4% to 42.1%. It buys nothing — and costs a little
+            # — so the toss keeps the meaning it always had. (The numbers
+            # this comment first carried were taken before the apex moved to
+            # `ceil` and before the look-ahead above; both flipped the
+            # sign of the effect, which is why they are re-stated here
+            # rather than dropped.)
+            #
+            # The condition below carries no `is_apex` clause, and it does
+            # not need one: the apex bar can never be *due*. The bar before
+            # it either takes the deferred turn — which sets this bar's run
+            # to one — or had a run of at most two, so the run at the apex
+            # is at most three against a span of four. Confirmed by removal:
+            # dropping the `not is_apex` this condition used to carry leaves
+            # all 1080 pieces of a 3-mood x 9-duration x 40-seed sweep
+            # byte-identical. The guarantee is kept off the apex by the
+            # look-ahead above, which is the mechanism the paragraph is
+            # about, not by a clause repeated here.
+            run = bar_index - last_gap_bar
+            due = run >= PHRASE_BARS or (
+                bar_index + 1 == apex_bar and run + 1 >= PHRASE_BARS
+            )
+            if not is_final_bar and not is_half_cadence and due:
                 breathe = True
             if is_half_cadence or breathe:
                 last_gap_bar = bar_index
@@ -1958,10 +2093,14 @@ def _answer_leaps(
     entrance above an unanswered one. So the leap is kept, re-aimed at
     the harmony if it needs to be, and handed over — which is what makes
     the seam's own machinery reachable at all. Measured over the 840-piece
-    grid, the pass keeps 58% of the leaps the motif draws where it kept
-    39%, the pieces whose melody never leaps fall from thirteen to nine,
-    and the pieces carrying an interval wider than an octave fall from
-    78 to 51.
+    grid (3 moods x 7 durations x 40 seeds), counting the pass at its own
+    boundary so "keeps" is its share rather than a re-derivation of it:
+    it keeps 58% of the leaps the motif draws where it kept 34%, the
+    pieces whose melody ends with no leap in any bar fall from 254 to
+    194, and the pieces carrying a move wider than an octave between
+    onsets fall from 101 to 83. The direction is the durable claim — the
+    counts move with the melody written above this pass, so they are
+    recorded with their measure rather than kept as a target.
     """
     out = list(degrees)
     last_mutable = len(out) - fixed_tail - 1
@@ -2261,6 +2400,10 @@ def _legal_slots(
     if count == 0:
         return slots
     tied = [bool(slot[3]) for slot in slots]
+    # A tie is a group of two, and the caller's line ends inside the bar:
+    # a forward tie on the last slot names a partner that is not there,
+    # and the group's walk below would take a degree from past the end.
+    assert not tied[-1], "a tie on the bar's last slot holds into no slot"
     remainders = chord_tone_degrees(tone_count)
 
     def pitch_class(index: int) -> int:
@@ -2672,19 +2815,55 @@ def _place_bar(
     chord), so what is left for the octave here is only the band. What
     it weighs, after the band and the collision: a bounded entrance,
     then the smallest displacement that fits, then whether the entrance
-    is answered, then the height, then the entrance's grade. Weighing
-    the entrance above the displacement is the one key that differs from
-    every other bar's order, and it is a correction rather than a
-    refinement: it used to sit below the displacement, which made the
-    apex the one bar per section that would rather speak from the
-    register it was written in than enter quietly from an octave away. A
-    36-piece sweep of the corpus found 19 intervals wider than an octave
-    before the key moved and 8 after, and the body's own wide placements
-    did not fall — they rose — so every one the change removed was the
-    apex's. The interval it may not be bought with is still the one
-    wider than any answer can cover, and the band and a rub still
-    outrank the entrance both: the tessitura is a fact about the
-    instrument and a collision is a linter refusal.
+    is answered, then the height, then the entrance's grade, then the
+    smallest entrance.
+
+    Weighing the displacement *before* the entrance's own grade and size
+    is the one key that differs from every other bar's order, and it is a
+    correction rather than a refinement: it used to sit last, the way it
+    does for every other bar, which made the apex the one bar per section
+    that would rather speak from the register it was written in than
+    enter quietly from an octave away. Re-measured over the 210 pieces of
+    the 3-mood x 7-duration x 10-seed grid by putting the displacement
+    back last, counting the moves of more than an octave taken *across a
+    rest* — the entrances a breath frames, which is where a misplaced
+    apex is heard: they rise from 10 to 46, carried by 10 pieces instead
+    of 42. Every one of them lands in the body rather than the apex — the
+    apex bar carries none in either tree, and none on any of the 60
+    accepted specs of the parser corpus either
+    — because what the apex's own entrance decides is the register the
+    section's later bars are written from. The interval it may not be
+    bought with is still the one wider than any answer can cover, and the
+    band and a rub still outrank the entrance both: the tessitura is a
+    fact about the instrument and a collision is a linter refusal.
+
+    The height used to be weighed above the displacement here, on the
+    argument that an apex is *built* rather than fitted: among the
+    octaves that fit the band, clear the bass and enter within the
+    octave, the highest is the one the phrase is climbing to. That is
+    true of the bar's *start*, and it is why `_apex_starts` draws it
+    from the lattice above the anchor rather than taking it as drawn.
+    For the octave it was measured and reverted, and it is left reverted
+    here on a trade rather than on the reading that first settled it.
+    Swapping the two keys over the 960 sections of the 3-mood x
+    7-duration x 10-seed grid *raises* all three peak readings the
+    displacement-first order was kept for: the apex bar holds the
+    section's top in 54.7% of sections against 45.4%, the section's own
+    top rises from 79.89 to 80.10 on a band running 63..84, and the
+    share whose top lands in the section's later third (its bars from
+    `2 * form // 3` on) goes from 77.6% to 82.1%. That contradicts the
+    reading the revert was argued from — 43.5% / 75.9% / 79.59 — and
+    dates it: it was taken before the breathing bar was written a breath
+    short, and that change reversed its effect, because the tail a
+    breathing bar gives up is often the part of its line that was
+    highest. What the swap costs is the recovery, and that is what the
+    order is kept for now: over the same grid the leap-recovery ratio
+    falls from 0.8297 to 0.7776 and the pieces breaching its floor rise
+    from 13 to 21 of 210 — the peak bought with the breath this phase
+    wrote to answer the leaps. Until that trade is decided, the octave
+    goes back to the smallest displacement that fits, and the height
+    stays the last word it always was among the placements everything
+    else has already admitted.
 
     Whether the entrance *is* answered is weighed before the height,
     though, and that is not the same key as the entrance's grade: a
@@ -2871,12 +3050,18 @@ def _melody_bar(
       velocity lift — the section's melodic peak;
     - a `half_cadence` bar ends early on the chord's root, leaving a
       rest (the phrase breathes on the V);
-    - a breathing bar shortens its last note into a rest;
+    - a breathing bar is written a breath short of its bar line, so the
+      rest the phrase ends on is room the bar never wrote into (the
+      length, and why it is a named one, is below);
     - the `is_final_bar` of the piece resolves onto the tonic or its
       third, held to the bar line;
     - when the bar leaves at least an eighth of space at its end and
       `pickup` is given (the next bar's root and tones), an anacrusis
       pickup note sounds on the last eighth, leading into the next bar.
+      A bar that breathes or half-closes is the exception, and it is the
+      shape rather than an oversight: the room at its end *is* the
+      phrase's rest, so a pickup there puts a note where the rest is
+      (the read says what the lint cannot see about the run that makes).
 
     `prev_leap` is the interval the previous bar ended on, when it was a
     leap: this bar's entrance is the note that answers it, so the choice
@@ -2897,9 +3082,29 @@ def _melody_bar(
     # before any pitch is spelled — walked, answered, and landed on a
     # chord tone, which is what most of the passing-tone licence needs
     # and what the rhythm library then dresses.
+    #
+    # A bar that ends its phrase is a breath shorter than its bar line,
+    # and it is *written* that short: the walk, the rhythm library and
+    # the closing gesture all see `written_ticks`, so the phrase's own
+    # ending is inside the room the phrase has. Truncating a full bar
+    # afterwards was the earlier shape of this and it took that ending
+    # with it — the walk answers a leap with the note after it, so a bar
+    # whose last slot was dropped ended on whatever interval was left
+    # over. Re-measured over the 3-mood x 7-duration x 10-seed grid by
+    # reconstructing the truncation: it drops 1444 slots the rhythm
+    # library had voiced across 4311 bars, and leaves the mean
+    # `leap_recovery_ratio` at 0.8256 against 0.8297 written short, with
+    # the same 13 pieces of 210 below the bar. So the reason to write the
+    # bar short is the dropped notes rather than where the ratio lands — a
+    # note the bar never plays is a note the phrase never had.
+    written_ticks = (
+        bar_ticks - BREATH_TICKS
+        if not is_final_bar and (half_cadence or breathe)
+        else bar_ticks
+    )
     degrees, durations = _walk_shape(
         variant,
-        bar_ticks=bar_ticks,
+        bar_ticks=written_ticks,
         tone_count=len(chord_tones),
         closing_degree=closing_degree,
         shape=shape,
@@ -2928,16 +3133,42 @@ def _melody_bar(
         )
 
     # The gesture's durations are the last word on the bar, so they are
-    # taken after the rhythm library has re-voiced it.
+    # taken after the rhythm library has re-voiced it — and for the bar
+    # that ends the piece, so is the bar's length.
+    #
+    # A bar that half-closes or breathes has to leave silence the ear
+    # reads as air, and the silence is a named length rather than a
+    # fraction of whatever the bar happened to end on. Halving the last
+    # slot was the first shape of this and it left the breath to the
+    # rhythm library's mercy: a bar closing on a 32nd left a 32nd of
+    # rest, which is a seam, not a breath. The marking pass recorded the
+    # phrase as ended and the listener heard it run straight on. The
+    # named length is now the room `written_ticks` leaves, and the rest
+    # is what is left over — nothing is removed after the bar is written,
+    # so every note the rhythm library voiced is a note the bar plays.
     closing_ticks: int | None = None
     if rhythm_slots:
-        last_offset, last_duration, _last_degree, _last_tie = rhythm_slots[-1]
+        last_offset, _last_duration, _last_degree, _last_tie = rhythm_slots[-1]
         if is_final_bar:
             # Held to the bar line.
             closing_ticks = bar_ticks - last_offset
-        elif half_cadence or breathe:
-            # Lifted early, so a rest follows.
-            closing_ticks = last_duration // 2
+        # A tie on the bar's last slot holds it into a slot the bar does
+        # not have: the tie that crosses a bar line is drawn later, by
+        # the pass that pairs one bar's last note with the next bar's
+        # first. Left set, the licence pass reads a tie as a group of
+        # two, so the walk leaves the bar looking for a slot beyond it.
+        #
+        # Measured: the rhythm library does not currently produce one.
+        # `_op_tie` marks only the head of a pair, so the final slot is
+        # never a head; removing this clearing leaves all 1080 pieces of
+        # a 3-mood x 9-duration x 40-seed sweep byte-identical, and no
+        # plan rhythm weighting tried made it fire either. It is kept as
+        # the normalisation that makes the bar well-formed by
+        # construction — `_legal_slots`' assert is the matching invariant
+        # — rather than as a repair for a fault that is being reached.
+        if rhythm_slots[-1][3]:
+            offset, duration, degree, _tie = rhythm_slots[-1]
+            rhythm_slots[-1] = (offset, duration, degree, False)
 
     # An apex bar is placed by height, not by its approach: it is the
     # section's peak, and the top of the band is worth a wide interval
@@ -3155,9 +3386,25 @@ def _melody_bar(
 
     # Anacrusis: the bar left room at its end, so an eighth-note pickup
     # on the next chord leads into the next downbeat.
+    #
+    # A bar that breathes, or that half-closes, is the one case where the
+    # room is the point rather than the opportunity. Its notes stop a
+    # breath before the bar line so the phrase can end on silence, and a
+    # pickup on that bar's last eighth puts a note where the rest is: the
+    # closing was marked, the gap was not, and the phrase ran on unbroken.
+    # Measured over the 3-mood x 7-duration x 10-seed grid with the
+    # suppression removed, 313 of 960 sections carry a run longer than
+    # `PHRASE_BARS`, out to 15.9 bars — and *no* piece is refused for it,
+    # because `_is_anacrusis_pickup` excludes the pickup from the linter's
+    # run grouping. So the run the ear hears is one the lint cannot see,
+    # which is why the suppression is written here rather than left to the
+    # span rule to catch. The rest is what the ear hears the phrase end
+    # on, and the pickup belongs to a bar that is still going somewhere.
     if (
         pickup is not None
         and not is_final_bar
+        and not breathe
+        and not half_cadence
         and notes
         and notes[-1].tick + notes[-1].duration_ticks <= start_tick + bar_ticks - PPQ // 2
     ):

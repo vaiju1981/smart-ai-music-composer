@@ -182,7 +182,9 @@ def _draft_line(draft: Any) -> str:
 
     The *findings* are reported rather than the raw metrics. A finding is the
     part that says what is wrong with a candidate, which is what a next decision
-    is about; the ten measurements behind it are what `critique` is for.
+    is about; the measurements behind it are what `critique` is for —
+    "the" rather than a count, because this line said ten while the scorecard
+    grew to thirteen and nothing failed when it went stale.
 
     A revision says which draft it came from, because that is what makes it a
     revision: a model choosing what to do next needs to know that two of the

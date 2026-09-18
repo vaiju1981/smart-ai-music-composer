@@ -45,7 +45,9 @@ and a rock groove whose rotation the plan switched off repeats it through
 across the palette grid and seven mutations of the melody's vocabulary the
 share of turning points stays inside 0.37-0.55. What a contour complaint is
 actually about — a line that only steps, a leap that is never answered —
-is `step_ratio` and `leap_recovery_ratio`. The defects behind the first
+is `step_ratio`, which is now missed in either direction, `leap_ratio` for
+the line that never leaves the step, and `leap_recovery_ratio`. The defects
+behind the first
 two are reported too: one bass figure for a whole piece is
 `bass_onset_patterns`, and a kit with too few bars to play is the style's
 vocabulary, not a bar that would call a waltz wrong.
@@ -55,7 +57,7 @@ rather than in the session that reads them. `QualityThreshold.axis` names
 the part of the piece a remedy for the bar would move — the melody's line,
 the accompaniment under it, the bass beneath that, or the progression they
 are all drawn from — so the critics can be asked one part at a time rather
-than all twelve numbers at once. `localize` then says
+than all thirteen numbers at once. `localize` then says
 *where*: the bars the finding's own counted events sit in, so a
 `repeat_ratio` miss arrives as "the melody answers itself in bars 3-6 and
 11" rather than as a piece-wide number with no address. Bars and not
@@ -70,14 +72,18 @@ deliberately is *not* is the metric re-taken over each bar. A bar of a
 four-note melody reads 0.00, 0.33 or 0.50, and a bar-level breach would
 fire on legal bars: measured, a 120-second calming piece whose own
 `step_ratio` clears its bar at 0.71 has six of its thirty bars with moves
-below 0.45. Four metrics have no localisation at all, and the rule that
-excludes them is what admits the other eight — the metric's counted *thing*
-has to land in a bar. `range_semitones` counts semitones between two
+below 0.45. Five metrics have no localisation at all, and the rule that
+excludes them is what admits the other nine — the metric's counted *thing*
+has to land in a bar *as a fault*. `range_semitones` counts semitones
+between two
 extreme notes, `distinct_durations` counts note values, and
 `register_separation_semitones` and `tessitura_overlap_semitones` count
 semitones and pitches across two voices' ranges: a difference or a relation
 between the whole piece's extremes rather than an event, so there is no bar
-to name and neither of them reports one.
+to name and neither of them reports one. `leap_ratio` counts an event, and
+is excluded for the other side of the same rule: a floor is missed by the
+bars a leap is *not* in, and every one of those is a bar the piece is
+entitled to.
 """
 
 from __future__ import annotations
@@ -113,6 +119,34 @@ and scored separately by `repeat_ratio`, so a stuck generator cannot
 earn conjunct-motion credit for standing still. A singable line moves
 mostly by step; one built from thirds and fifths has nothing to sing.
 Roughly half is the conventional floor for tonal melody.
+"""
+
+QUALITY_STEP_RATIO_MAX: float = 0.90
+"""At most this share of the melody's *moving* intervals may be steps.
+
+The other side of the floor above, and a different statement. A floor says
+the line is not built from thirds and fifths; a cap says it is not built
+from seconds alone. A line whose every move is a scale step has a
+direction and no shape — nothing to sing, because nothing in it ever opens
+a gap — and the floor cannot see that: 1.00 clears 0.45 comfortably. Nor
+is the share left over all leaps, because thirds sit between the two
+definitions and are neither, so a line can clear this cap and leap
+nowhere; that reading is `QUALITY_LEAP_RATIO_MIN`'s. Measured over the
+palette grid (three moods x six durations x twelve seeds), the corpus
+averages 0.72 and the steppiest piece, a 30-second calming one, measures
+0.93.
+"""
+
+QUALITY_LEAP_RATIO_MIN: float = 0.01
+"""At least this share of the melody's *moving* intervals must be leaps.
+
+A leap is a fourth or wider (`LEAP_MIN_SEMITONES`), which is what makes
+this a separate bar from the cap above: 90% steps and 10% thirds clears
+the cap and leaps nowhere. One move in a hundred is a floor and not a
+target — what it fails is a line that *never* leaps, which is the other
+half of what a shape is — and the corpus sits well clear of it at 0.058.
+Measured, one piece of that grid is under: a 30-second calming one with
+eighteen moving intervals and no leap in any of them.
 """
 
 QUALITY_LEAP_RECOVERY_MIN: float = 0.60
@@ -280,13 +314,29 @@ QUALITY_THRESHOLDS: tuple[QualityThreshold, ...] = (
     QualityThreshold(
         metric="step_ratio",
         minimum=QUALITY_STEP_RATIO_MIN,
-        maximum=None,
-        rationale="a singable line moves mostly by step",
+        maximum=QUALITY_STEP_RATIO_MAX,
+        rationale="a singable line moves mostly by step, and not only by step",
         hint=(
             "the melody's interval vocabulary is set in "
             "saimc/compose/motif.py by STEP_CHOICES/STEP_WEIGHTS, which "
             "walk CHORD-TONE INDICES: a step of 1 is a third and 2 is a "
-            "fifth in semitones. Weight the walk in semitones instead."
+            "fifth in semitones. Weight the walk in semitones instead, and "
+            "the cap moves the other way — a vocabulary that carries a leap "
+            "at all is what keeps the line under it."
+        ),
+        axis="melody",
+    ),
+    QualityThreshold(
+        metric="leap_ratio",
+        minimum=QUALITY_LEAP_RATIO_MIN,
+        maximum=None,
+        rationale="a line that never leaps has no contour",
+        hint=(
+            "the melody's interval vocabulary is set in "
+            "saimc/compose/motif.py by STEP_CHOICES/STEP_WEIGHTS, and the "
+            "weights the walk draws from decide how far apart its notes "
+            "land. A vocabulary whose every draw is a step or a third "
+            "cannot leap, at any seed."
         ),
         axis="melody",
     ),
@@ -492,6 +542,7 @@ class PieceQuality:
     melody_notes: int
     melody_bars: int
     step_ratio: float | None
+    leap_ratio: float | None
     repeat_ratio: float | None
     leap_recovery_ratio: float | None
     max_leap_semitones: int | None
@@ -512,6 +563,7 @@ class PieceQuality:
         """
         measured: dict[str, int | float | None] = {
             "step_ratio": self.step_ratio,
+            "leap_ratio": self.leap_ratio,
             "repeat_ratio": self.repeat_ratio,
             "leap_recovery_ratio": self.leap_recovery_ratio,
             "max_leap_semitones": self.max_leap_semitones,
@@ -624,6 +676,7 @@ def score_piece(score: NotationScore, *, piece: str = "piece") -> PieceQuality:
         melody_notes=len(melody),
         melody_bars=_bars_covered(score, melody),
         step_ratio=_ratio(sum(1 for step in moves if abs(step) <= STEP_MAX_SEMITONES), len(moves)),
+        leap_ratio=_ratio(sum(1 for step in moves if abs(step) >= LEAP_MIN_SEMITONES), len(moves)),
         repeat_ratio=_ratio(len(intervals) - len(moves), len(intervals)),
         leap_recovery_ratio=_leap_recovery(intervals),
         max_leap_semitones=max((abs(step) for step in moves), default=None),
@@ -1174,30 +1227,55 @@ def _uniform_rhythm_bars(score: NotationScore) -> set[int]:
     }
 
 
-_LOCALISERS: dict[str, Callable[[NotationScore], set[int]]] = {
-    "step_ratio": lambda score: _interval_bars(
-        score, lambda delta: abs(delta) > STEP_MAX_SEMITONES
-    ),
-    "repeat_ratio": lambda score: _interval_bars(score, lambda delta: delta == 0),
-    "leap_recovery_ratio": _unrecovered_leap_bars,
-    "max_leap_semitones": lambda score: _interval_bars(
+def _step_ratio_bars(score: NotationScore, finding: QualityFinding) -> set[int]:
+    """The bars that count against the step reading, in the direction it missed.
+
+    The bar is two-sided, so which intervals are the offenders depends on
+    which side was missed. A floor miss counts the moves wider than a step
+    — the bars dragging the share down — and that is the reading that was
+    always here. A cap miss counts the bars where *every* move is a step,
+    which is where there is nothing to sing; they are the bars with moves
+    minus the ones a floor miss names, and the two readings coincide only
+    for a piece that never leaves the step. Naming the wide intervals for a
+    cap miss would point at the bars where the line is at its best.
+    """
+    if finding.direction != "max":
+        return _interval_bars(score, lambda delta: abs(delta) > STEP_MAX_SEMITONES)
+    moved = {
+        bar for bar, delta in _melody_intervals_by_bar(score) if bar is not None and delta != 0
+    }
+    return moved - _interval_bars(score, lambda delta: abs(delta) > STEP_MAX_SEMITONES)
+
+
+_LOCALISERS: dict[str, Callable[[NotationScore, QualityFinding], set[int]]] = {
+    "step_ratio": _step_ratio_bars,
+    "repeat_ratio": lambda score, _finding: _interval_bars(score, lambda delta: delta == 0),
+    "leap_recovery_ratio": lambda score, _finding: _unrecovered_leap_bars(score),
+    "max_leap_semitones": lambda score, _finding: _interval_bars(
         score, lambda delta: abs(delta) > QUALITY_MAX_LEAP_MAX
     ),
-    "texture_hierarchy": _outcounted_bars,
-    "harmony_pad_coverage": _unsustained_bars,
-    "bass_onset_patterns": _looping_bass_bars,
-    "harmonic_rhythm_variety": _uniform_rhythm_bars,
+    "texture_hierarchy": lambda score, _finding: _outcounted_bars(score),
+    "harmony_pad_coverage": lambda score, _finding: _unsustained_bars(score),
+    "bass_onset_patterns": lambda score, _finding: _looping_bass_bars(score),
+    "harmonic_rhythm_variety": lambda score, _finding: _uniform_rhythm_bars(score),
 }
 """The metrics whose counted events land in a bar, and how to find them.
 
-The four absent from this table are absent for one reason, which is the
-same reason three readings are absent from this module's own docstring: the
-metric counts a relation rather than an event, so naming bars for it would
-name the bars where the piece is *legal*. `range_semitones` counts
-semitones between the whole line's two extreme notes, `distinct_durations`
-counts note values, and `register_separation_semitones` and
-`tessitura_overlap_semitones` count semitones and pitches across two
-voices' ranges.
+Every localiser is handed the finding as well as the score, and all but
+`step_ratio`'s ignore it: only a bar with offenders on *both* sides has to
+be asked which side was missed. A localiser that read the finding for
+anything else would be a second way of taking the metric, which is the one
+thing this table must not become.
+
+The five absent from it are absent for one of two reasons, and both end
+the same way: naming bars for them would name the bars where the piece is
+*legal*. Four count a relation rather than an event — `range_semitones`
+counts semitones between the whole line's two extreme notes,
+`distinct_durations` counts note values, and
+`register_separation_semitones` and `tessitura_overlap_semitones` count
+semitones and pitches across two voices' ranges. The fifth, `leap_ratio`,
+counts the *absence* of an event: its offenders are the bars a leap is
+not in, and every one of those is a bar the piece is entitled to.
 """
 
 
@@ -1226,12 +1304,16 @@ def localize(
     block of numbers: it does not carry the notes, so nothing in it can say
     where the offenders are. A metric with no localiser keeps its finding
     unchanged with empty bars rather than being handed a bar that would be
-    an invention.
+    an invention. The finding is handed to the localiser for the one bar
+    that is missed in two directions, so the bars it names are the bars the
+    miss is *about* rather than the bars of its best reading.
     """
     localized: list[QualityFinding] = []
     for finding in findings:
         locate = _LOCALISERS.get(finding.metric)
-        localized.append(replace(finding, bars=() if locate is None else _spans(locate(score))))
+        localized.append(
+            replace(finding, bars=() if locate is None else _spans(locate(score, finding)))
+        )
     return tuple(localized)
 
 
@@ -1242,12 +1324,14 @@ __all__ = [
     "QUALITY_DISTINCT_DURATIONS_MIN",
     "QUALITY_HARMONIC_RHYTHM_VARIETY_MIN",
     "QUALITY_HARMONY_PAD_COVERAGE_MIN",
+    "QUALITY_LEAP_RATIO_MIN",
     "QUALITY_LEAP_RECOVERY_MIN",
     "QUALITY_MAX_LEAP_MAX",
     "QUALITY_MELODIC_RANGE_MAX",
     "QUALITY_MELODIC_RANGE_MIN",
     "QUALITY_REGISTER_SEPARATION_MIN",
     "QUALITY_REPEAT_RATIO_MAX",
+    "QUALITY_STEP_RATIO_MAX",
     "QUALITY_STEP_RATIO_MIN",
     "QUALITY_TESSITURA_OVERLAP_MAX",
     "QUALITY_TEXTURE_HIERARCHY_MIN",

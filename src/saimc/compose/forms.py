@@ -27,12 +27,27 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from saimc.compose.score import KeySignature
+from saimc.compose.score import PPQ, KeySignature
 from saimc.spec import WesternKey
 
 PHRASE_BARS: int = 4
 """The phrase unit: the melody breathes at least once per phrase, and
 the CC11 swells ride one rise-and-fall per phrase."""
+
+BREATH_TICKS: int = PPQ // 2
+"""How long the melody's phrase-ending rest lasts: an eighth note.
+
+An eighth is the shortest silence an ear reads as air rather than as
+articulation, and it is deliberately the same length as the anacrusis
+pickup the breathing bar would otherwise have carried — *the bar either
+leads into the next one or breathes for exactly that long*, so the two
+are the same slot spent two ways rather than two independent numbers
+that can drift apart.
+
+The bar's own rhythm is what gets truncated to make the room (see
+`engine._melody_bar`): halving the last slot instead let a bar that
+closed on a 16th leave a 60-tick rest, which is a 32nd — measured as a
+breath by the marking pass and heard as nothing at all."""
 
 
 class ChordSlot(NamedTuple):

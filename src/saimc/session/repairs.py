@@ -12,23 +12,33 @@ piece come out clean.
 
 What the measurement says, and it is the whole design:
 
-- **Four metrics breach at all, and 33 of the 90 pieces breach something.**
+- **Five metrics breach at all, and 45 of the 90 pieces breach something.**
   `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
-  `leap_recovery_ratio` (4) and `max_leap_semitones` (1). So a repair loop is
-  a loop over four bars in practice, and the other eight have no entry because
-  nothing asked for them by *that* corpus — not because they cannot be reached.
+  `leap_recovery_ratio` (8), `leap_ratio` (7) and `step_ratio` (1). So a repair
+  loop is a loop over five bars in practice — three the table holds a request
+  for and two it does not — and the other eight of the thirteen metrics the
+  scorecard measures have no entry because nothing asked for them by *that*
+  corpus, which is not the same as their being unreachable. Three of the five
+  predate Phase F4 and two are its own, and the count rose from 33 to 45 because
+  of those two: a floor under the line's leaps and a ceiling over its steps hold
+  it to a shape it did not have before, so pieces the old set of bars passed now
+  miss a bar that did not exist. `max_leap_semitones` runs the other way — the
+  one bar whose entry predates the phase, it no longer breaches the corpus at
+  all.
   A sweep of four requests over the same 90 pieces — a 24- and a 60-semitone
   harmony clearance and a 500- and a 1-semitone melody band, reached through
-  the delta vocabulary rather than through a mood and a seed — reaches three of
-  them: `register_separation_semitones` (59 pieces under the 24-semitone
-  clearance, 88 under 60 — the bed pushed down under the tune),
-  `tessitura_overlap_semitones` (50 under 24, 52 under 60 — the bed's window
-  taking the tune inside it) and `range_semitones` (67 under the 500-semitone
-  band). All three land on `unmapped`, which is the outcome the next bullet's
-  design has to be able to say out loud. `range_semitones` earns its place
-  twice
-  over: under a *one*-semitone band it arrives at `electrifying/90s/2`, each
-  time alongside
+  the delta vocabulary rather than through a mood and a seed — reaches ten
+  bars, six of which no entry in this table holds. Three of those six are the
+  ones the loop aims at *first*, and they are the reading this paragraph exists
+  for: `register_separation_semitones` (58 pieces under the 24-semitone
+  clearance, 89 under 60 — the bed pushed down under the tune),
+  `tessitura_overlap_semitones` (52 under 24, 53 under 60 — the bed's window
+  taking the tune inside it) and `range_semitones` (65 under the 500-semitone
+  band), which the loop aims at first and stops on — `unmapped` — on 31, 53 and
+  57 pieces respectively. That is the outcome the next bullet's design has to be
+  able to say out loud.
+  `range_semitones` earns its place twice over: under a *one*-semitone band it
+  arrives at `electrifying/90s/2`, each time alongside
   `max_leap_semitones`, and that pair is one on which the quality report's order
   and the arbiter's tier order **disagree** — the report lists
   `range_semitones` first and the arbiter ranks `max_leap_semitones` higher — so
@@ -43,11 +53,11 @@ What the measurement says, and it is the whole design:
 - **`harmonic_rhythm_variety` is reachable, and it is the one bar this table must
   not answer.** Measured across the golden corpus under each of the plan's three
   section closes: under `hold` — sections that run on, so every chord lasts the
-  template's uniform two bars — 27 of 81 pieces breach it, and under the shipped
+  template's uniform two bars — 36 of 81 pieces breach it, and under the shipped
   default `half` and under `full`, none of 81 do. So it is not a bar nothing
   reaches; it is a bar the plan reaches *by asking for it*. Every request in the
-  vocabulary was then measured against those 27 pieces and not one moved any of
-  them, while `SetSectionClose("half")` clears 27 of 27. The only delta that
+  vocabulary was then measured against those 36 pieces and not one moved any of
+  them, while `SetSectionClose("half")` clears 36 of 36. The only delta that
   clears the bar is the one that undoes the request that made the piece breach —
   and a repair is the product's own arithmetic over the piece, which may change
   how the material is placed and never what the user asked for. So this absence
@@ -58,68 +68,94 @@ What the measurement says, and it is the whole design:
   pad bar in 30 of 30 pieces and the texture bar in 30 of 30, and
   `SetAccompanimentDensity(step_ticks=1440)`, an arpeggio that steps once per
   three beats instead of once per beat, measures *identically* on all 30: the
-  two readings are the same 28 pieces out clean and 2 whose other bar was
-  already missing — the tune's leap bar on one and `leap_recovery_ratio` on the
-  other. They are both "let the bed hold rather than
+  two readings are the same 29 pieces out clean and one whose other bar was
+  already missing — the tune's recovery bar. They are both "let the bed hold
+  rather than
   flurry", and the density move is the one that works when the figure is not the
   broken chord. Those are single-candidate readings, taken to *choose* the
   table; what the loop does with them is the next bullet.
-- **The tune's leap bar is only partly repairable, and both readings of that
-  are measured.** The bar is the grid's commonest tune defect — 51 of its 840
-  pieces breach it, down from 78 before the seam fix kept the leaps a bar's last
-  slot cannot answer and 125 before Phase F4's leap floor — and neither
-  request the table holds for it is dominant.
-  `SetMelodyBand(semitones=9)`, the narrowest band the range bar allows, clears
-  it in 41 of the 51 and leaves the whole piece clean in 19, but the linter
-  *refuses* it on 2. `SetMotifVariation(factor=0.5)` clears it in 18 and leaves
-  the piece clean in 7, and is never refused. So the table keeps both rather
-  than one: the band clears more and the variation never writes a collision, and
-  46 of the 51 clear the bar on one move where 5 clear it on neither.
+- **The tune has two bars and neither is dominant, which is what makes the
+  chains long.** `max_leap_semitones` is breached by 44 of the grid's 840
+  pieces — it was 78 before the seam fix that kept the leaps a bar's last slot
+  cannot answer, and 125 before Phase F4's leap floor — and the table's two
+  requests for it split the work: `SetMelodyBand(semitones=9)`, the narrowest
+  band the range bar allows, clears it in 39 of the 44 and leaves the whole
+  piece clean in 19, and the linter *refuses* it on one of them;
+  `SetMotifVariation(factor=0.5)` clears it in 22 and leaves the piece clean in
+  12, and is never refused. So 41 of the 44 clear the bar on one move and **the
+  three that clear it on neither are exactly the grid's three deepest chains** —
+  `electrifying/90s/15`, `120s/15` and `180s/15`. On those, the pair is the
+  repair and neither half is: narrowing the band brings the leap under the bar
+  and the halving is what keeps it there, which is why the loop needs two moves
+  a musician would follow rather than one it could take twice.
 
-  Those 5 are what the hint is about without meaning to — it asks for a change
-  to `motif.py`'s walk, and no request in the vocabulary is that change. So the
-  bar is repairable where a knob can reach it and reported where one cannot, and
-  the loop keeps the best of what it tried rather than claiming a move it does
-  not have. The bound in `tools.py` is set from the chains this leaves.
+  `leap_recovery_ratio` is the commoner of the two and the harder — 51 of the
+  840, its candidates are `SetMelodyBand(14)` and `SetMelodyBand(9)`, and 39 of
+  the 51 clear it on one move, 27 come out clean and 12 clear it on neither,
+  with nothing refused. Those 12 are what the hint is about without meaning to:
+  it asks for a change to `motif.py`'s walk, and no request in the vocabulary is
+  that change. So each bar is repairable where a knob can reach it and reported
+  where one cannot, and the loop keeps the best of what it tried rather than
+  claiming a move it does not have. The bound in `tools.py` is set from the
+  chains this leaves.
+
+  **The two bars pull against each other, and the table's candidates are where
+  that shows.** A floor under the leaps and a bar on how well they are recovered
+  want opposite things of the line — the first asks it for a leap, the second
+  asks it to answer the leap well — so a band narrow enough to satisfy the
+  recovery bar can drop the same line under the floor. That is measured in the
+  next paragraph's sweep rather than reasoned here, and it is why the corpus
+  ends with one piece improved and still missing a bar.
 - **A trial the engine refuses is skipped, not fatal.** `compose` raises on a
   lint failure (C4's finding 1), and a repair loop that let that propagate would
   turn a candidate it cannot use into a failed turn, so `unplayable` is a
   recorded outcome. The 360-request sweep above is refused 4 times, all of them
   a one-semitone band writing dissonant collisions. What the *corpus* cannot
-  reach is the bare reading of the arm — over its 90 pieces and 70 trials,
+  reach is the bare reading of the arm — over its 90 pieces and 86 trials,
   nothing the loop tries is refused at all — and that is a fact about its
-  durations rather than about the arm: at 30, 60 and 120 seconds the bars that
-  breach are the bed's, whose candidates never write a collision, so the leap
-  bar that does need a refusal needs a slower piece to appear. And the seam fix
-  narrowed the band further by keeping the leaps the bar's last slot could not
-  answer, so the collision a refusal needs is rarer still: over a wider grid of
-  three moods, seven durations and a hundred seeds, only twelve pieces refuse
-  the band at all, and the seeds that do sit above ninety, where the corpus does
-  not run.
+  durations rather than about the arm: the collision a refusal needs belongs to
+  the narrow band, and the corpus's own bars are the bed's and the two the
+  melody's floor and cap added, whose candidates never write one.
   `SetMelodyBand(semitones=9)` is refused on the bare piece at
-  `electrifying/300s/47`, which is outside the corpus and is where the test that
-  reads the arm names its fixture. So the corpus is not evidence the arm is
-  dead, and `test_session_repairs.py` is where the two are told apart.
+  `electrifying/90s/32`, which is outside the corpus and is where the test that
+  reads the arm names its fixture. Over the wider grid of three moods, seven
+  durations and forty seeds the band is refused on 24 of its 840 pieces, and the
+  loop *asks* for the band on exactly one of them — this one. The two counts have
+  to be told apart rather than added: a refusal on a piece whose worst bar is
+  something else is a request the loop never makes, so the arm would be
+  unwitnessed there and the 24 would be a number about nothing. So the corpus is
+  not evidence the arm is dead, and `test_session_repairs.py` is where the two
+  are told apart.
 - **The deepest chains are three different requests, and each is a bar of its
-  own.** `electrifying/90s/31` — the deepest chain the wider grid needs — keeps
-  `SetMotifVariation(factor=0.5)`, then `SetMelodyBand(semitones=9)`, then
-  `SetAccompanimentDensity(step_ticks=1440)`; `electrifying/300s/25` keeps the
-  same three with the first two the other way round. Each is a move the one
-  before it exposed — halving the motif brings the leap bar inside the band the
-  second request narrows to, and clearing that leaves the bed's bars, which is
-  the third — and
-  each measures strictly better than the piece in hand. The band is skipped as
-  `no_gain` in the round before it binds, which is what says the loop is
-  converging rather than guessing: the request is *tried*, measured and
-  declined, and kept only once the motif is stable enough for it to move
-  anything.
+  own.** `electrifying/90s/15` — one of the grid's three deepest chains — keeps
+  `SetMelodyBand(semitones=9)`, then `SetMotifVariation(factor=0.5)`, then
+  `SetAccompanimentDensity(step_ticks=1440)`; `electrifying/180s/15` takes the
+  same order, and `electrifying/120s/15` the same three with the first two the
+  other way round. Each is a move the one before it exposed — narrowing the band
+  brings the leap bar inside it, halving the motif is what keeps the leap under
+  the bar, and clearing that leaves the bed's bars, which is the third — and
+  each measures strictly better than the piece in hand.
+
+  **These three are exactly the pieces the previous bullet's pair cannot finish
+  alone**, which is the whole reason they are three deep: on every other piece
+  that breaches the leap bar, one of its two candidates clears it by itself. So
+  the depth is not the loop grinding — it is the one place where two bars have to
+  be satisfied by two moves instead of one.
+
+  Two of the three also record a `no_gain` in their middle round, and it is the
+  opposite of a wasted move: the band is *re-tried* in a round after the chain
+  already carries it, so it is folded onto a chain that already states it, the
+  plan does not change, the piece measures identical, and a tie is not strictly
+  better. `electrifying/120s/15` records none, because its first two requests are
+  decided the other way round and its middle round is a `kept`.
 
   This used to be one request applied three times (`SetMotifVariation(0.5)`
   three deep at `electrifying/180s/17`), and two changes removed that shape.
   Phase F4's leap floor took the grid's leap-bar breaches from 125 to 78, and
   the seam fix took them to 51 — so the leap bar needs working around in half as
   many pieces as it did, `electrifying/180s/17` now needs one request where it
-  needed five (and no longer breaches the leap bar at all), and the chains that
+  needed five and no longer breaches the leap bar at all (its remaining misses
+  are the bed's two), and the chains that
   survive are three different bars rather than one bar thrice. So the specific
   grinding the item Phase F4 left open was about — the
   loop paying a piece's melodic variation for a smaller worst leap, once per
@@ -137,31 +173,55 @@ What the measurement says, and it is the whole design:
   branch stays without a case to reach it.
 
 **What the loop does to that corpus**, which is the number the table above was
-chosen for rather than a claim about it — 57 of the 90 pieces are clean before
-it runs, 32 of the 33 breaching ones come out clean, and one is left as it was.
-Thirty of the repaired pieces need one kept request, two need two, and the one
-left as it was needs none, so `maximum` never binds *here*; across all 70
-trials, 67 outcomes are `kept` and 3 are `no_gain`. No piece is improved and
-still missing a bar, which is the outcome this corpus stopped producing once
-the melody moved.
+chosen for rather than a claim about it — 53 of the 90 pieces are clean before
+it runs, 36 of the 45 breaching ones come out clean, and 9 are left as they
+were. Thirty-six of the repaired pieces need one kept request and one needs two,
+so `maximum` never binds *here*; across all 86 trials, 72 outcomes are `kept`, 6
+are `no_gain` and 8 are `unmapped`.
+
+The 8 `unmapped` are worth naming as a set, because they are what Phase F4 did
+to this loop: they are attempts aimed at `leap_ratio` and `step_ratio`, the two
+bars the phase added and the two no request in this table moves. So two of the
+five bars this corpus breaches cannot be repaired by anything the vocabulary
+contains, and the loop's refusals are no longer all of the bed-and-tune kind the
+table was built for.
 
 The corpus is not the whole picture, and the gap between the two is worth the
 sentence. A corpus of 90 pieces says nothing about a piece it does not contain,
 so the depth was re-measured over a wider grid — three moods, seven durations
 and forty seeds, every piece pinned to C, 840 pieces — where the deepest chain
-needed **three** kept requests and two pieces needed it. That is what
+needed **three** kept requests and three pieces needed it. That is what
 `MAX_REPAIRS_PER_TURN` is set from, and it is one above rather than equal to it
 for the reason this module states about `maximum`: a backstop that is reached is
-not a backstop.
+not a backstop. Nothing on the grid reaches it — no piece ends with a bar still
+missed because it ran out of rounds, and the three deepest chains all finish
+clean at a bound of three.
 
-**Both `no_gain` trials left the bar they aimed at still missed**, in all 360
-requests swept, which is worth stating because the other reading is the one
-that sounds more likely: a candidate that clears its bar and still loses on the
-piece as a whole. Nothing writes a sentence about that case — not because it is
-impossible, but because a sweep wide enough to find it did not, and a message
-branch describing a state nothing has reached is a claim the tests cannot hold
-up. What the refusal says instead is what the attempts recorded: which requests
-were tried and that none was kept.
+The grid also shows what the corpus is too short to: **33 of its 840 pieces end
+stopped**, and the split is exact. Eighteen stop `unmapped` — `leap_ratio` on
+12, `step_ratio` on 5 and `distinct_durations` on 1 — and fifteen stop `no_gain`
+on `leap_recovery_ratio`, the only bar where both of the table's requests were
+tried and declined. So every stop is one of two things: a bar no request here
+holds, or the recovery bar's trade. One of the corpus's pieces is the smaller
+form of that second thing — `sleep/60s/8`, where the band is kept for the ground
+it gains and the recovery bar stays missed — and it is the corpus's one piece
+improved and still missing a bar.
+
+**A `no_gain` is not one failure but two**, and Phase F4 is what made the second
+one reachable. In the 360-request sweep, 26 trials are `no_gain`; 22 of them
+left the bar they aimed at still missed, and the other **4 cleared it and left a
+different bar in its place**. Those four are the trade the tune's two-bar bullet
+predicts: the candidate narrowed the band to satisfy the recovery bar and
+dropped the same line under the leap floor, so the worst bar *changed* rather
+than the piece improving. The reading the old version of this paragraph said a
+wide enough sweep had never found — "a candidate that clears its bar and still
+loses on the piece as a whole" — is now measured rather than hypothetical, and
+the two-sided pair is why: before the floor and the cap there was no bar whose
+satisfaction could break another. What the refusal says is what the attempts
+recorded: which requests were tried and that none was kept. It does not narrate
+the trade, because the trade is a property of the measurements rather than of
+the request, and the loop keeps the bar it started with rather than the one it
+was handed.
 
 The loop itself: aim at the worst miss by the arbiter's own tier order, try
 every request the table holds for that bar, keep the one that measures best on
@@ -172,7 +232,7 @@ spends no model calls and no audio. Its whole cost is bounded by `maximum`
 times the table's width in composes of arithmetic — eight composes, and four
 seconds, at the 600-second cap where a compose measures 0.53 s, and under a
 second at the durations the deep chains actually occur, since the deepest ones
-found are a 90- and a 300-second piece — which is the reason nothing here
+found are a 90-, a 120- and a 180-second piece — which is the reason nothing here
 touches the turn's ledger: the ledger counts what is expensive (sketches and
 model calls), not what is cheap.
 

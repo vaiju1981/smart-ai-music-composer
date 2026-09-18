@@ -48,6 +48,7 @@ _CLEAN: PieceQuality = PieceQuality(
     melody_notes=64,
     melody_bars=16,
     step_ratio=0.60,
+    leap_ratio=0.05,
     repeat_ratio=0.05,
     leap_recovery_ratio=0.80,
     max_leap_semitones=7,
@@ -213,6 +214,7 @@ def test_the_table_is_the_order_it_is_written_as() -> None:
     """
     assert METRIC_TIERS == (
         "step_ratio",
+        "leap_ratio",
         "leap_recovery_ratio",
         "max_leap_semitones",
         "range_semitones",

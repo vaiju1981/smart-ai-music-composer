@@ -100,7 +100,7 @@ from saimc.compose.voices import (
     HarmonyVoices,
 )
 from saimc.instruments import BedRegisters, MelodyBand, bed_window
-from saimc.spec import CompositionSpec
+from saimc.spec import CompositionSpec, Mood
 
 _SPEC = CompositionSpec(mood="calming", duration_seconds=180, seed=11)
 """Long enough that every arc knob is reachable: 180 s at this mood
@@ -1003,24 +1003,83 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
     `test_compose_plan.py`), so twelve is the far end of the range an
     editor is allowed to reach, and a bound the engine could not honour at
     its own limit would be a bound that refuses legal plans.
+
+    **That was false when it was written**, and the second case below is the
+    one that found it: a -12 lift takes the final repetition down an octave,
+    the bass's register was the piano's, and a cello or a contrabass asked to
+    play the walk's own floor refused the piece. 24 of the 432 cells of the
+    sweep were refused, every one of them at -12, and the bound's far end was
+    a plan the engine would not write.
     """
 
-    def test_the_extreme_compiles_and_moves_the_notes(self) -> None:
+    def test_the_extreme_compiles_and_leaves_the_key_alone(self) -> None:
         """`compose` lints and raises on an illegal piece, so composing at
         all is half the assertion. The other half needs a bar that is
         actually lifted: the last two bars of a section are its cadence and
         carry no offset (`slot_offset` in `_generate_section`), so the
         lifted key has to be read from the top of the final repetition —
-        and the notes have to move while the key does not."""
+        and it is the same key as the unlifted piece's, because an octave
+        away is the same key, which is why an octave is the bound the plan
+        states.
+
+        It does *not* assert that the notes move, and that is deliberate
+        rather than an omission. Every voice is placed into a register window,
+        so a whole-octave lift of a scale-degree line is recovered exactly
+        wherever nothing clamps — the placement *is* the identity on an
+        octave, and `_SPEC` is a piece where nothing clamps. The knob's
+        liveness is the seam's own case,
+        `test_a_non_default_plan_moves_the_output[modulation_offset]`, at the
+        default offset of 3: a lift of three is a different key and has to
+        move. Asserting it here as well would be asserting a property of the
+        octave that arithmetic does not have.
+        """
         unlifted = compose(_SPEC, plan=replace(default_plan(_SPEC), modulation_offset=0))
         lifted_bar = unlifted.arrangement.total_bars - unlifted.arrangement.form_bars
         for offset in (12, -12):
             lifted = compose(_SPEC, plan=replace(default_plan(_SPEC), modulation_offset=offset))
-            assert lifted.notation_score.compute_hash() != unlifted.notation_score.compute_hash()
             assert lifted.bar_keys[lifted_bar] == unlifted.bar_keys[lifted_bar], (
                 "an octave away is the same key, which is why an octave is the "
                 "bound the plan states"
             )
+
+    def test_no_piece_the_plan_admits_at_its_own_limit_is_refused(self) -> None:
+        """The sweep the paragraph above is a claim about.
+
+        A reading of the engine cannot establish what a sweep of it can: the
+        bound's far end is every mood, duration and seed the plan admits, and
+        the cell that breaks is whichever lift lands the bass somewhere its
+        instrument has no note — which depends on where the walk landed, not
+        on anything a single piece can show. 3 moods x 4 durations x 12 seeds
+        x ±12, every one of them composing and every one lifted bar in the
+        key it was in. Nothing about the lints changed to allow this: `compose`
+        still refuses a piece that fails them, and these pieces used to fail
+        one.
+        """
+        refused: list[str] = []
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            for duration in (30, 60, 120, 180):
+                for seed in range(12):
+                    spec = CompositionSpec(mood=mood, duration_seconds=duration, seed=seed)
+                    unlifted = compose(
+                        spec, plan=replace(default_plan(spec), modulation_offset=0)
+                    )
+                    lifted_bar = unlifted.arrangement.total_bars - unlifted.arrangement.form_bars
+                    for offset in (12, -12):
+                        try:
+                            lifted = compose(
+                                spec,
+                                plan=replace(default_plan(spec), modulation_offset=offset),
+                            )
+                        except CompositionEngineError as exc:
+                            refused.append(
+                                f"{mood.value}/{duration}s/seed {seed} {offset:+d}: {exc.code}"
+                            )
+                            continue
+                        assert lifted.bar_keys[lifted_bar] == unlifted.bar_keys[lifted_bar], (
+                            f"{mood.value}/{duration}s/seed {seed} {offset:+d}: the lifted "
+                            "bar is in another key, so this is a modulation and not a lift"
+                        )
+        assert not refused, refused[:4]
 
 
 _MELODY_KNOBS: dict[str, Any] = {

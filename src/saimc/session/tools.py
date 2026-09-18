@@ -153,16 +153,29 @@ because a compose is arithmetic. The worst case stays around a second.
 Four is one round above the deepest chain the music needs, and the two numbers
 come from different sweeps on purpose. Over the 90-piece corpus `repairs.py`
 names, the widest chain a piece needed was two kept requests; over a wider grid
-— three moods, seven durations, forty seeds, every piece pinned to C — the
-deepest was **three**, at `electrifying/90s/31` and `electrifying/300s/25`. The
+— three moods, seven durations, forty seeds, every piece pinned to C, 840
+pieces — the deepest was **three**, at `electrifying/90s/15`,
+`electrifying/120s/15` and `electrifying/180s/15`. The
 corpus is 90 pieces and the grid is 840, so the grid is the one that bounds the
 default.
+
+Nothing on that grid reaches the bound: no piece ends with a bar still missed
+because it ran out of rounds, and all three deepest chains finish clean at a
+bound of three. So four is headroom measured rather than assumed, and the
+reproducible guard is `test_session_repairs.py`'s assertion that the deepest
+chain's length is *less than* this number.
 
 Both depth numbers were re-measured once Phase F4's leap floor moved the
 melody, and the deepest chain fell from five to three: the grid's
 `max_leap_semitones` breaches fell from 125 to 78 in the same pass, so the
 leap bar needs working around in far fewer pieces and the longest surviving
 chains are the bed's.
+
+The three deepest chains are also the three pieces Phase F4's two-sided bars
+cannot be finished on by one move, which is the reason this number did not
+simply fall with the breach count: the phase removed the long chains that came
+from grinding one request and left the one kind that genuinely needs two moves
+plus the bed's.
 
 It is one *above* the deepest rather than equal to it because a backstop that
 is reached is not a backstop: `repair_chain` states the same principle from

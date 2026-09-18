@@ -61,7 +61,7 @@ from saimc.session.tools import (
 from saimc.spec import CompositionSpec, Mood, SpecError, VoiceRole
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
-_ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=16)
+_ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=17)
 """The piece whose bed breaches while the tune and the bass do not.
 
 The critique cases need an axis that is clean beside one that is not, so the
@@ -70,7 +70,16 @@ findings have to land on the accompaniment alone — and at seed 5 this mood's
 leaves `test_every_axis_is_reported_and_a_clean_one_says_so` asserting a state
 the piece is not in. Re-found by sweeping three moods, five durations and forty
 seeds for a piece whose findings are all on one axis rather than re-pinned by
-key, which is this file's precedent for a fixture F3a's music moved."""
+key, which is this file's precedent for a fixture F3a's music moved.
+
+Phase F4's two melody bars moved it by one seed. Of this mood's sixty
+thirty-second pieces all but nine put every finding on the accompaniment, so
+the property is common and the fixture only needs to sit beside the seed it
+had; 16 is one of the nine now — it misses `leap_recovery_ratio`, the same bar
+18, 20, 31 and 44 miss — and 17 is the next seed up that is clean on the
+tune. The key stays unset as it was, because leaving it unset is what makes
+this a piece from the brief's own pool rather than one pinned to hold a
+reading."""
 _SIXTY = CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=5)
 """The one length a tempo test needs, and it is a length rather than a mood.
 
@@ -1340,9 +1349,18 @@ class TestCompare:
         sixth element of the order exists for. The premise is asserted rather
         than trusted, because a spec that breached something would be decided by
         the breach and say nothing about the seed.
+
+        The seeds are 8 and 9 rather than the 5 and 6 this case used, and
+        Phase F4's two melody bars are why: the fan-out at 5 was clean at both
+        before they landed, and now the pair reads `.X` — 6 misses the step cap
+        at 0.93. Re-found by walking this brief's seeds for the next two-wide
+        window that is clean at both, which is 8 and 9; 3, 4, 6 and 7 each miss
+        something and 10 misses the leap-recovery bar. The key stays unset the
+        way the rest of this file leaves it, so the window is a fact about the
+        brief rather than about a key pinned to hold an old reading.
         """
         _ready(ctx)
-        _drafts(ctx, n=2, seed=5)
+        _drafts(ctx, n=2, seed=8)
 
         first, second = ctx.session.drafts
         assert musical_key(first) == musical_key(second), "the premise: neither breaches a bar"
@@ -1596,17 +1614,22 @@ class TestRepair:
         """The other empty: requests were tried and none was kept. Same code,
         opposite sentence, and the difference is what the attempts recorded.
 
-        The piece is one of five a sweep of three moods, seven durations and
-        forty seeds finds with this property, and the only one at thirty
-        seconds. Every one of them is pinned to C, which is what makes this the
-        one fixture in the class that has to be: with the key left unset the
-        sweep finds *none*, because the key pool hands this brief a key whose
-        leap-recovery bar the table's two bands between them do clear — the
-        property is real and it now needs the key named to appear. What the case
-        asserts is the sentence, and the sentence names the bar the attempts
-        aimed at.
+        The piece is one of nine a sweep of this brief's sixty seeds finds with
+        this property — its worst bar is one the table holds a request for, and
+        every request it holds measures no better. Four of the nine are thirty
+        seconds long, which is the half that matters here: the fan-out is one
+        candidate wide, and this is the cheapest of them.
+
+        The key is left unset, and that reverses what this case used to say. It
+        was found pinned to C with the note that *no* piece of the unpinned
+        sweep had the property, the key pool handing this brief a key the
+        table's two bands between them clear. That is no longer true — seeds 3,
+        18, 20 and 46 of the unpinned thirty-second pieces all have it — so the
+        named key went with the old reading rather than staying to hold it.
+        What the case asserts is the sentence, and the sentence names the bar
+        the attempts aimed at.
         """
-        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=28, key="C"))
+        _ready(ctx, CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=3))
         _drafts(ctx)
 
         invocation = _call(ctx, "repair", draft_id="draft-0")

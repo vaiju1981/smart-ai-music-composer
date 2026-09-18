@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, replace
 from itertools import pairwise
 
@@ -20,6 +21,7 @@ from saimc.compose.engine import (
     BASS_HIGH_MIDI,
     BASS_WALK_HIGH_MIDI,
     BASS_WALK_LOW_MIDI,
+    BassRegister,
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
@@ -29,6 +31,7 @@ from saimc.compose.engine import (
     _apex_starts,
     _bass_figure_pitches,
     _bass_ladder,
+    _bass_register,
     _bed_goes_above,
     _bound_walk,
     _can_clear_the_tune,
@@ -53,6 +56,7 @@ from saimc.compose.engine import (
     compose,
 )
 from saimc.compose.forms import (
+    BREATH_TICKS,
     MODULATION_OFFSET,
     PHRASE_BARS,
     SECTION_CLOSES,
@@ -83,6 +87,7 @@ from saimc.compose.score import (
 )
 from saimc.compose.voices import HARMONY_MELODY_CLEARANCE
 from saimc.instruments import (
+    INSTRUMENT_RANGES,
     LINE_BAND_SEMITONES,
     BedRegisters,
     MelodyBand,
@@ -1167,27 +1172,139 @@ class TestPhraseStructure:
                 f"bar's chord (degree {degree}, pcs {sorted(chord)})"
             )
 
-    def test_apex_rises_after_the_first_quarter_of_each_section(self) -> None:
-        out = compose(_spec(Mood.ELECTRIFYING, duration=180))
-        ticks_per_bar = out.notation_score.ppq * 4
-        melody = sorted(
-            (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
+    def test_a_sections_top_lands_in_the_phrase_the_shape_built(self) -> None:
+        """Four readings of where a section's highest note falls, as rates.
+
+        A section's "top" is its highest melody pitch and its "home" is the
+        set of bars that reach it, because a section may state its top more
+        than once. Over three moods x four durations x six seeds — 240
+        sections — each reading is a share of those sections:
+
+          the apex bar holds the top   >= 0.45   measured 0.529
+          the top is past the section's
+            midpoint                   >= 0.75   measured 0.854
+          the top is in the closing bar <= 0.25   measured 0.188
+          the top is only the entrance
+            note                        <= 0.12   measured 0.058
+
+        The apex bar is `ceil(form_bars * apex_position)`, capped at
+        `form_bars - 2`, and it is read back off the plan the engine
+        composed under rather than hardcoded, so a shape that moved its
+        apex would move what this measures. Before Phase F the same matrix
+        read 0.263 / 0.842 / 0.200 / 0.067: the bar the shape had built
+        held the section's top in a quarter of sections, and the closing
+        bar was as likely a home for it as the apex bar was.
+
+        This replaces a test that asserted `0.25 <= p <= 0.95` over the
+        peak positions of one piece. That window is not an engine property:
+        a section's top can be its entrance note, never returned to
+        (`entrance`), or its closing bar's cadence (`closing`), and 8.5% of
+        this matrix does one or the other even at HEAD — so the assertion
+        held on the one piece it examined without being true of the engine.
+        The two miss classes are named here rather than assumed away.
+        """
+        total = apex_holds = past_midpoint = closing = entrance = 0
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):
+            for duration in (30, 60, 120, 180):
+                for seed in range(6):
+                    out = compose(_spec(mood, duration=duration, seed=seed))
+                    score = out.notation_score
+                    ticks_per_bar = bar_ticks(score.time_signature)
+                    form = out.arrangement.form_bars
+                    section_len = form * ticks_per_bar
+                    apex_bar = min(
+                        math.ceil(form * out.plan.melody_shape().apex_position), form - 2
+                    )
+                    by_section: dict[int, list] = {}
+                    for note in score.notes:
+                        if note.voice_id == VOICE_MELODY:
+                            by_section.setdefault(note.tick // section_len, []).append(note)
+                    for index, notes in by_section.items():
+                        start = index * section_len
+                        top = max(n.pitch_midi for n in notes)
+                        tops = [n for n in notes if n.pitch_midi == top]
+                        positions = [(n.tick - start) / section_len for n in tops]
+                        bars = {(n.tick - start) // ticks_per_bar for n in tops}
+                        total += 1
+                        apex_holds += int(
+                            any((n.tick - start) // ticks_per_bar == apex_bar for n in tops)
+                        )
+                        past_midpoint += int(any(p >= 0.5 for p in positions))
+                        closing += int(form - 1 in bars)
+                        entrance += int(all(p < 0.25 for p in positions))
+
+        assert total == 240, "the matrix moved; the shares below are calibrated to it"
+        assert apex_holds / total >= 0.45, (
+            f"the apex bar holds the section's top in {apex_holds}/{total} sections"
         )
-        section_len = out.arrangement.form_bars * ticks_per_bar
-        by_section: dict[int, list] = {}
-        for note in melody:
-            by_section.setdefault(note.tick // section_len, []).append(note)
-        for section_idx, notes in by_section.items():
-            start = section_idx * section_len
-            peak = max(n.pitch_midi for n in notes)
-            # The apex bar sits at ~60% of the section, so the section's
-            # highest pitch must occur past its first quarter.
-            peak_positions = [
-                (n.tick - start) / section_len for n in notes if n.pitch_midi == peak
-            ]
-            assert any(0.25 <= p <= 0.95 for p in peak_positions), (
-                f"section {section_idx}: peak {peak} at positions {peak_positions}"
-            )
+        assert past_midpoint / total >= 0.75, (
+            f"the top is past the midpoint in {past_midpoint}/{total} sections"
+        )
+        assert closing / total <= 0.25, (
+            f"the top is in the closing bar in {closing}/{total} sections"
+        )
+        assert entrance / total <= 0.12, (
+            f"the top is only the entrance note in {entrance}/{total} sections"
+        )
+
+    def test_the_breath_guarantee_takes_the_turn_before_the_apex(self) -> None:
+        """The look-ahead is load-bearing, and one piece is what says so.
+
+        The guarantee holds a melody group to `PHRASE_BARS` bars, and the
+        apex is not a bar it may land on — so when the turn falls on the bar
+        *before* the apex it is taken a bar early, which is also the better
+        phrase: the line closes, then climbs to the peak. Removing that
+        look-ahead and composing the 3-mood x 7-duration x 10-seed grid
+        refuses exactly one piece of 210, `sleep/600/seed 5`, because the
+        breath lands one bar late and the run breaches the span the linter
+        allows. Nothing else about that grid moves.
+
+        So this test states the piece, the span, and the shape the look-ahead
+        gives it: it composes, no run in it exceeds the span, and six of its
+        seven sections reach their apex bar from a breath. The third is the
+        mechanism rather than a consequence of the first — a piece can
+        compose with every apex entered mid-run — and it is measured, not
+        asserted: the same piece without the look-ahead takes its breath
+        before none of them, since it stops composing at all.
+        """
+        out = compose(_spec(Mood.SLEEP, duration=600, seed=5))
+        score = out.notation_score
+        ticks_per_bar = bar_ticks(score.time_signature)
+        form = out.arrangement.form_bars
+        section_len = form * ticks_per_bar
+        apex_bar = min(math.ceil(form * out.plan.melody_shape().apex_position), form - 2)
+        melody = sorted(
+            (n for n in score.notes if n.voice_id == VOICE_MELODY), key=lambda n: n.tick
+        )
+
+        # The linter's own quantity: a run is the notes between two gaps,
+        # measured from its first onset to its last release.
+        longest = 0
+        run_start = melody[0].tick
+        prev = melody[0]
+        for note in melody[1:]:
+            if note.tick > prev.tick + prev.duration_ticks:
+                longest = max(longest, prev.tick + prev.duration_ticks - run_start)
+                run_start = note.tick
+            prev = note
+        longest = max(longest, prev.tick + prev.duration_ticks - run_start)
+        assert longest <= PHRASE_BARS * ticks_per_bar, (
+            f"a run of {longest / ticks_per_bar:.2f} bars breaches the span"
+        )
+
+        sections = sorted({n.tick // section_len for n in melody})
+        breathed = 0
+        for index in sections:
+            apex_start = index * section_len + apex_bar * ticks_per_bar
+            before = [n for n in melody if n.tick < apex_start]
+            after = [n for n in melody if n.tick >= apex_start]
+            if not before or not after:
+                continue
+            last_hold = max(n.tick + n.duration_ticks for n in before)
+            breathed += int(min(n.tick for n in after) - last_hold >= BREATH_TICKS)
+        assert breathed >= 6, (
+            f"{breathed} of {len(sections)} sections enter the apex bar from a breath"
+        )
 
 
 class TestBassFigures:
@@ -1199,6 +1316,11 @@ class TestBassFigures:
     the rungs into pitches on the chord the slot actually has, in the
     register the walk actually landed in. Each rule here is one the
     accompaniment pays for if it goes wrong.
+
+    The cases call the helper with `ceiling=BASS_HIGH_MIDI` — the piano's
+    own, which is what these rules were written against. What a piece
+    actually passes is `_bass_register(...).ceiling`, the same number
+    narrowed to the compass of the voice holding the bass.
     """
 
     def test_the_ladder_rises_through_the_chords_own_tones(self) -> None:
@@ -1215,7 +1337,11 @@ class TestBassFigures:
 
     def test_a_figure_resolves_to_chord_tones_above_its_landing_tone(self) -> None:
         resolved = _bass_figure_pitches(
-            PLAIN_BASS_FIGURE, anchor=48, chord_root=60, chord_tones=(0, 4, 7)
+            PLAIN_BASS_FIGURE,
+            anchor=48,
+            chord_root=60,
+            chord_tones=(0, 4, 7),
+            ceiling=BASS_HIGH_MIDI,
         )
         assert resolved == ((0, 8, 48), (8, 8, 52))
         assert min(pitch for _start, _length, pitch in resolved) == 48
@@ -1232,7 +1358,11 @@ class TestBassFigures:
         """
         driving = BASS_FIGURES["electrifying"][0]
         assert _bass_figure_pitches(
-            driving, anchor=60, chord_root=60, chord_tones=(0, 4, 7, 10)
+            driving,
+            anchor=60,
+            chord_root=60,
+            chord_tones=(0, 4, 7, 10),
+            ceiling=BASS_HIGH_MIDI,
         ) == ((0, 4, 60), (4, 4, 64), (8, 4, 67))
 
     def test_a_landing_above_the_ceiling_leaves_the_bar_with_nothing(self) -> None:
@@ -1242,8 +1372,12 @@ class TestBassFigures:
         anchor past the ceiling takes its own octave down, lands below
         itself, and every later rung goes the same way. A bar the walk landed
         there has no bass at all. The walk therefore keeps its landings inside
-        `BASS_WALK_LOW_MIDI`..`BASS_WALK_HIGH_MIDI`, which sits under the
-        ceiling on purpose, and this is the case that says why it has to.
+        the register's own window, and this is the case that says why it has
+        to. That window's top is `min(BASS_WALK_HIGH_MIDI, compass.high)` and
+        the ceiling's is `min(BASS_HIGH_MIDI, compass.high)`, so the first is
+        at or under the second for every instrument in the table — for free,
+        because `BASS_WALK_HIGH_MIDI < BASS_HIGH_MIDI` and the compass narrows
+        both the same way.
         """
         driving = BASS_FIGURES["electrifying"][0]
         assert (
@@ -1252,13 +1386,18 @@ class TestBassFigures:
                 anchor=BASS_HIGH_MIDI + 1,
                 chord_root=BASS_HIGH_MIDI + 1,
                 chord_tones=(0, 4, 7, 10),
+                ceiling=BASS_HIGH_MIDI,
             )
             == ()
         )
         # One semitone lower and the same figure still states its downbeat,
         # so the case is about the ceiling rather than about a high anchor.
         assert _bass_figure_pitches(
-            driving, anchor=BASS_HIGH_MIDI, chord_root=BASS_HIGH_MIDI, chord_tones=(0, 4, 7, 10)
+            driving,
+            anchor=BASS_HIGH_MIDI,
+            chord_root=BASS_HIGH_MIDI,
+            chord_tones=(0, 4, 7, 10),
+            ceiling=BASS_HIGH_MIDI,
         )[0] == (0, driving[0][1], BASS_HIGH_MIDI)
 
     def test_a_walk_landing_stays_inside_its_own_register(self) -> None:
@@ -1329,7 +1468,11 @@ class TestBassFigures:
             for figure in figures:
                 for anchor, (chord_root, tones) in zip((48, 55, 60), chords, strict=True):
                     resolved = _bass_figure_pitches(
-                        figure, anchor=anchor, chord_root=chord_root, chord_tones=tones
+                        figure,
+                        anchor=anchor,
+                        chord_root=chord_root,
+                        chord_tones=tones,
+                        ceiling=BASS_HIGH_MIDI,
                     )
                     assert resolved, (mood, figure, anchor)
                     assert resolved[0] == (0, figure[0][1], anchor)
@@ -1338,6 +1481,156 @@ class TestBassFigures:
                         pitch % 12 in {(chord_root + tone) % 12 for tone in tones}
                         for _start, _length, pitch in resolved
                     )
+
+
+class TestTheBassRegister:
+    """Both numbers the bass is written under are the player's compass.
+
+    The window its walk lands in and the ceiling its figures climb to were
+    the piano's, because the left hand was written for one before
+    `instruments.py` gave every voice its own. Each end was reachable from a
+    legal plan: a -12 lift takes the walk to the window's own floor (24 of the
+    432 pieces of a 3-mood x 4-duration x 12-seed x ±12 sweep were refused
+    there, every one of them the bass below its instrument's range), and the
+    figures climb to the piano's C4 whoever is playing.
+    """
+
+    def test_the_register_is_the_player_s_compass(self) -> None:
+        """One case per way the narrowing can go, against the real table.
+
+        A piano's compass contains both of the walk's own numbers, so the
+        left hand the engine was written for is unchanged by construction —
+        which is why the whole corpus is byte-identical across this change.
+        """
+        assert _bass_register(None) == BassRegister(
+            window=MelodyBand(low_midi=BASS_WALK_LOW_MIDI, high_midi=BASS_WALK_HIGH_MIDI),
+            ceiling=BASS_HIGH_MIDI,
+        )
+        assert _bass_register("piano") == _bass_register(None)
+        # A cello's floor is C2, above the walk's own bottom; its top leaves
+        # the ceiling alone.
+        assert _bass_register("cello") == BassRegister(
+            window=MelodyBand(low_midi=36, high_midi=60), ceiling=BASS_HIGH_MIDI
+        )
+        # A tuba stops at Bb3, under the ceiling, so both narrow together.
+        assert _bass_register("tuba") == BassRegister(
+            window=MelodyBand(low_midi=28, high_midi=58), ceiling=58
+        )
+
+    def test_the_window_sits_under_the_ceiling_for_every_instrument(self) -> None:
+        """The invariant the bar's own bass rests on, over the whole table.
+
+        A landing above the ceiling takes its own octave down, lands below
+        itself, and the bar loses its bass
+        (`test_a_landing_above_the_ceiling_leaves_the_bar_with_nothing`), so
+        the window's top must not cross the ceiling. It cannot: the top is
+        `min(BASS_WALK_HIGH_MIDI, compass.high)` and the ceiling is
+        `min(BASS_HIGH_MIDI, compass.high)`, and the first constant is under
+        the second.
+        """
+        for name in INSTRUMENT_RANGES:
+            register = _bass_register(name)
+            assert register.window.high_midi <= register.ceiling, name
+
+    def test_no_instrument_is_written_a_bass_note_it_cannot_sound(self) -> None:
+        """The whole table at once, plus the ratchet on how much of it works.
+
+        64 instruments can be named for the bass here — a nylon guitar is the
+        melody and `strings` is the harmony the mood completes the ensemble
+        with, so either would collide. Every one that composes must have
+        written only notes inside its own compass. The 23 that compose nothing
+        at all are the walk's reach rather than its register: it only steps
+        *down* from a chord root, so an instrument whose whole compass is above
+        the walk's window (flute, violin, piccolo, the untuned percussion) has
+        no candidate however the window is drawn, and `compose` refuses rather
+        than writing a bass-less piece. That is the hole this narrowing did not
+        close, and it is a decision about the walk's direction rather than a
+        band to intersect.
+
+        The floor is the measurement, not a guess: 33 instruments hold the bass
+        at this cell under the fix, against 22 before it.
+        """
+        served = 0
+        for name in INSTRUMENT_RANGES:
+            if name in {"nylon_guitar", "strings"}:
+                continue
+            spec = CompositionSpec.model_validate(
+                {
+                    "mood": "calming",
+                    "duration_seconds": 60,
+                    "seed": 0,
+                    "instrumentation": [
+                        {"role": "melody", "instrument": "nylon_guitar"},
+                        {"role": "bass", "instrument": name},
+                    ],
+                }
+            )
+            try:
+                piece = compose(spec)
+            except CompositionEngineError:
+                continue
+            served += 1
+            compass = range_for(name)
+            outside = [
+                (n.tick, n.pitch_midi)
+                for n in piece.notation_score.notes
+                if n.voice_id == VOICE_BASS
+                and not compass.low_midi <= n.pitch_midi <= compass.high_midi
+            ]
+            assert not outside, f"{name}: bass outside {compass}: {outside}"
+        assert served >= 33, f"only {served} instruments hold the bass; the palette moved"
+
+    @pytest.mark.parametrize(
+        ("instrument", "low", "high"),
+        [
+            # The control: the piano's compass contains the walk's own
+            # register, so nothing narrows.
+            ("piano", 21, 108),
+            # Floors, from the shallowest rise to the deepest.
+            ("contrabass", 28, 67),
+            ("cello", 36, 81),
+            ("timpani", 38, 57),
+            ("trombone", 40, 72),
+            ("choir", 43, 79),
+            ("marimba", 45, 96),
+            ("viola", 48, 91),
+            ("ud", 48, 84),
+            # And the one whose ceiling is under the constant's.
+            ("tuba", 28, 58),
+        ],
+    )
+    def test_every_bass_note_is_a_note_that_player_has(
+        self, instrument: str, low: int, high: int
+    ) -> None:
+        """The property the player hears, read off the score.
+
+        The register narrows so that no bar can land or climb outside the
+        compass — and the compass is the instrument's, so the assertion is
+        that every bass note of the piece is inside `[low, high]`. Before the
+        ceiling narrowed, a tuba asked to hold down the bass was refused
+        outright rather than written one; this case names instruments the
+        engine can now use, so a regression here is a refusal rather than a
+        wrong note.
+        """
+        for seed in (0, 1):
+            spec = CompositionSpec.model_validate(
+                {
+                    "mood": "calming",
+                    "duration_seconds": 60,
+                    "seed": seed,
+                    "instrumentation": [
+                        {"role": "melody", "instrument": "nylon_guitar"},
+                        {"role": "bass", "instrument": instrument},
+                    ],
+                }
+            )
+            piece = compose(spec)
+            outside = [
+                (n.tick, n.pitch_midi)
+                for n in piece.notation_score.notes
+                if n.voice_id == VOICE_BASS and not low <= n.pitch_midi <= high
+            ]
+            assert not outside, f"{instrument} seed {seed}: bass outside [{low}, {high}]: {outside}"
 
 
 class TestMelodyWalk:
@@ -1736,10 +2029,12 @@ class TestMelodyWalk:
         `_MAX_ENTRANCE_SEMITONES`. This bar has a placement that fits its
         band and enters four semitones up, and the rank used to take the
         one that enters sixteen because it left the line in the octave the
-        walk wrote it in. A 36-piece sweep of the corpus found 19 intervals
-        wider than an octave before that key moved and 8 after, and the
-        body's own wide placements did not fall — they rose — so every one
-        the change removed was the apex's.
+        walk wrote it in. Re-measured over the 210 pieces of the 3-mood x
+        7-duration x 10-seed grid by unbinding the apex, wide entrances
+        (a move of more than an octave into the bar) fall from 152 on 103
+        pieces to 2 on 2, and the body's own wide entrances do not fall at
+        all — 16 either way — so every one the change removes is the
+        apex's.
 
         The same call at `apex=False` is asserted beside it, because both
         bar shapes are ranked on one scale (`_RANK_RUBBING`) and the point
@@ -2016,6 +2311,31 @@ class TestRhythmVocabulary:
             assert 3 * out.notation_score.ppq // 2 in {
                 n.duration_ticks for n in self._melody(out)
             }, f"{mood}: no dotted rhythm rendered"
+
+    def test_a_dotted_eighth_carries_the_figure_where_the_cells_are_eighths(self) -> None:
+        """The dotted op's own size is a dotted quarter, and a bar whose cells
+        are all eighths has no quarter pair to make one from. Such a bar used
+        to draw the figure and hear nothing — `dotted` is a third of a calm
+        bar's weight, so the figure went missing exactly where the rhythm was
+        shortest. Removing the eighth-pair fallback takes every dotted eighth
+        in the matrix, and a dotted quarter cannot witness that: the bars that
+        *do* have a quarter pair still draw one with the fallback gone.
+
+        Counted per cell over six seeds, because a single piece often has none
+        — seed 0 of a calm 30 seconds renders in two note values in the whole
+        piece. Measured: the fallback is worth 9 to 23 a cell, against 0 with
+        it removed, so the floor of five is the one that says the figure is
+        *drawn* rather than that a seed happened to find it."""
+        ppq = 480
+        for mood in (Mood.CALMING, Mood.ELECTRIFYING):
+            for duration in (30, 60, 120):
+                drawn = sum(
+                    1
+                    for seed in range(6)
+                    for note in self._melody(compose(_spec(mood, duration=duration, seed=seed)))
+                    if note.duration_ticks == 3 * ppq // 4
+                )
+                assert drawn >= 5, (mood, duration, drawn)
 
     def test_sixteenths_appear_in_high_energy_moods(self) -> None:
         out = compose(_spec(Mood.ELECTRIFYING, duration=60))
@@ -3069,6 +3389,15 @@ class TestHarmonyVoice:
         pin is the record of the new music; `TestRealizationStreams` is what
         holds the decoupling itself.
 
+        The seventh re-basing is F4's, and it re-earned the tune alone. The
+        melody pin was 83 events through the six before it; the shape's
+        breaths, its written-length pass and its dropped pickup write three
+        more, so it reads 86. The bass and the kit are unmoved — the same
+        two digests, the same 46 and 206 — which is the whole of what this
+        test claims and the reason a melody-only re-pin is the right repair
+        rather than a re-basing of all three. F3's sibling test below is
+        what would catch it if the bass had moved too.
+
         The key is named, and that is what keeps the six pins above
         meaning what they say. They were earned at C major, and the claim
         they make is that the *instrument table* moved the melody's
@@ -3095,8 +3424,8 @@ class TestHarmonyVoice:
                 46,
             ),
             VOICE_MELODY: (
-                "56bb69bb61e4bb16b639aefc05b0837f33c279ff500bcfcbe1fc96780467057b",
-                83,
+                "43cbcf1e7333f3d10da2cd16db9d7e1a960cea4c15f8fd78def1437236e619d4",
+                86,
             ),
             VOICE_PERCUSSION: (
                 "064e0d34ebaada775a82ba6115bd2249f000f35579dd0aa8fdbed3b4e896a61e",

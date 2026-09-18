@@ -35,24 +35,24 @@ from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolContext, dispatch
 from saimc.spec import CompositionSpec, Mood
 
-_SLEEP = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=7)
+_SLEEP = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=10)
 """A spec whose four-wide fan-out is mixed: one seed misses, three are clean.
 
 Measured rather than assumed — a sweep of sixteen seeds at each mood and each
-of 30/60/120 s puts `sleep`'s thirty-second pieces at `.X.X.X.X.....X.X`, and
-the fan-out composes `spec.seed + offset`, so the candidates here are seeds 7
-through 10 and it is **the first** of them that misses. The gate's two branches
+of 30/60/120 s puts `sleep`'s thirty-second pieces at `.X..XX....X.....`, and
+the fan-out composes `spec.seed + offset`, so the candidates here are seeds 10
+through 13 and it is **the first** of them that misses. The gate's two branches
 need a session that holds both a clean candidate and an unclean one, and this
-is the smallest fixture that really does.
+is the smallest fixture that really does: the other mixed windows the sweep
+offers are `X..X` at seed 4, which is mixed but misses twice, and `X...` at
+seed 10, which is the one kept.
 
 The breach profile is a fact about the keys these seeds land on, which is the
 mood's own pool rather than a constant — the piece this replaced was
-`sleep/60s/0`, whose four seeds read `X...` before the apex-entrance fix moved
-the melody and `....` after it. So the ids below are the measured ones and the
-sweep above is re-derived whenever they are re-read, rather than the fixture
-pinning a key to keep an older reading standing. The duration dropped from 60
-seconds to 30 with the re-measurement, which is the direction the sweep's own
-ordering put it in rather than a preference.
+`sleep/30s/7`, whose four seeds read `...X` before the melody's leap bar was
+given a floor. So the ids below are the measured ones and the sweep above is
+re-derived whenever they are re-read, rather than the fixture pinning a key to
+keep an older reading standing.
 """
 
 _ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0)
@@ -107,7 +107,7 @@ class TestTheGateJudgesAPublication:
     def test_the_detail_reports_the_fan_out_and_not_only_the_winner(self, ctx: ToolContext) -> None:
         """The number the engine-side gate cannot produce.
 
-        Three of these four candidates are clean — seed 0 misses — so a gate
+        Three of these four candidates are clean — the first seed misses — so a gate
         that reported the published draft alone would say the same thing about
         a session that searched four times and one that searched once. The
         premise is asserted rather than trusted: if the fixture's fan-out

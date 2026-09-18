@@ -80,10 +80,16 @@ def _melody(pitches: list[int], *, duration: int = 480) -> list[NoteEvent]:
 def _clean_line() -> list[NoteEvent]:
     """A solo line every metric that applies to a solo clears.
 
-    Whole-tone steps up an octave over three note values. It is the fixture
-    for "this part has nothing to say": a test that needs a clean axis adds
-    its offending part to this line, so whatever is reported can be
-    attributed to what it added rather than to the tune underneath.
+    It has to carry a leap and it has to mix steps with something else, which
+    the all-steps line this fixture used to be could not do: a line of nothing
+    but seconds measures `step_ratio` 1.0 — past the cap as well as off the
+    floor — and `leap_ratio` 0.0, so it was clean only while the scorecard was
+    blind to both faults. Three whole tones up to E, a minor sixth to the
+    octave C, a semitone back down to B and two tones back up and over: five
+    of the six moves are steps, the sixth is a leap, and the leap is answered.
+    It is the fixture for "this part has nothing to say": a test that needs a
+    clean axis adds its offending part to this line, so whatever is reported
+    can be attributed to what it added rather than to the tune underneath.
     """
     return [
         NoteEvent(voice_id=VOICE_MELODY, pitch_midi=pitch, tick=tick, duration_ticks=duration)
@@ -91,10 +97,10 @@ def _clean_line() -> list[NoteEvent]:
             (60, 0, 480),
             (62, 480, 480),
             (64, 960, 960),
-            (66, 1440, 480),
-            (68, 1920, 1920),
-            (70, 2400, 480),
-            (72, 2880, 1920),
+            (72, 1440, 480),
+            (71, 1920, 1920),
+            (72, 2400, 480),
+            (74, 2880, 1920),
         )
     ]
 
@@ -169,6 +175,31 @@ class TestMelodicIntervals:
     def test_no_leap_means_no_recovery_to_report(self) -> None:
         piece = score_piece(_score(_melody([60, 62, 64])))
         assert piece.leap_recovery_ratio is None
+
+    def test_a_leap_is_counted_apart_from_the_steps_around_it(self) -> None:
+        # C D E, up a minor sixth to C, a semitone back down, then two tones
+        # up and over: five of the six moves are steps and the sixth is a
+        # leap, so the two readings are the two halves of the same moves.
+        piece = score_piece(_score(_melody([60, 62, 64, 72, 71, 72, 74])))
+        assert piece.step_ratio == 5 / 6
+        assert piece.leap_ratio == 1 / 6
+
+    def test_a_line_of_nothing_but_steps_has_no_leap_in_it(self) -> None:
+        # The floor's own fault, and one no other bar can report: with no
+        # leap at all `leap_recovery_ratio` is None and `max_leap_semitones`
+        # is 2, so a line that never leaves the step is invisible to both.
+        piece = score_piece(_score(_melody([60, 62, 64, 66])))
+        assert piece.leap_ratio == 0.0
+        assert piece.leap_recovery_ratio is None
+        assert piece.max_leap_semitones == 2
+
+    def test_a_third_is_neither_a_step_nor_a_leap(self) -> None:
+        # Why the cap and the floor are two statements rather than one read
+        # twice: three steps and a third clears the cap and leaps nowhere, so
+        # this line is reported by the floor alone.
+        piece = score_piece(_score(_melody([60, 62, 64, 67, 69])))
+        assert piece.step_ratio == 3 / 4
+        assert piece.leap_ratio == 0.0
 
     def test_a_single_note_has_no_intervals(self) -> None:
         piece = score_piece(_score(_melody([60])))
@@ -579,6 +610,7 @@ class TestWhatTheScoreCannotMeasure:
 
 _AXIS_BY_METRIC = {
     "step_ratio": "melody",
+    "leap_ratio": "melody",
     "leap_recovery_ratio": "melody",
     "repeat_ratio": "melody",
     "range_semitones": "melody",
@@ -593,12 +625,19 @@ _AXIS_BY_METRIC = {
 }
 
 _UNLOCALISED_METRICS = (
+    "leap_ratio",
     "range_semitones",
     "distinct_durations",
     "register_separation_semitones",
     "tessitura_overlap_semitones",
 )
-"""The four metrics no bar can hold, named so that the partition is a ratchet."""
+"""The five metrics no bar can hold, named so that the partition is a ratchet.
+
+Four of them count a relation between things rather than an event in a bar.
+The fifth, `leap_ratio`, counts the *absence* of one: a piece under the floor
+is a piece a leap is not in, and every bar of it is a bar the piece is
+entitled to, so naming any of them would be naming the music's good bars.
+"""
 
 
 class TestTheAxisTable:
@@ -617,9 +656,9 @@ class TestTheAxisTable:
         assert set(_AXIS_BY_METRIC.values()) == set(AXES)
 
     def test_no_metric_pretends_to_say_where_it_is_when_no_bar_holds_it(self) -> None:
-        """The localised metrics and the four that count a relation partition
-        the table, so a fifth absent one arrives as a failed test rather than
-        as a finding silently reported without bars."""
+        """The localised metrics and the five without a bar partition the
+        table, so a sixth absent one arrives as a failed test rather than as a
+        finding silently reported without bars."""
         assert set(_LOCALISERS) | set(_UNLOCALISED_METRICS) == set(_AXIS_BY_METRIC)
         assert not set(_LOCALISERS) & set(_UNLOCALISED_METRICS)
 
@@ -643,29 +682,32 @@ class TestBarSpans:
         assert BarSpan(3, 6).label() == "bars 3-6"
 
 
-def _finding_for(metric: str) -> QualityFinding:
+def _finding_for(metric: str, *, direction: str = "min") -> QualityFinding:
     """A finding named for one metric, so a localisation case names its own.
 
     Only the metric selects a localiser, so the numbers are placeholders and
     the axis and the remedy come from the shipped table — what is under test
     is a reading of the *score*, and a case that first had to make a metric
-    breach its bar would be testing the bar as well as the bars it names.
+    breach its bar would be testing the bar as well as the bars it names. The
+    direction is an argument for the one bar that is missed on both sides, and
+    it is the direction a case has to choose because the offenders are not the
+    same intervals on either side of it.
     """
     bar = next(threshold for threshold in QUALITY_THRESHOLDS if threshold.metric == metric)
     return QualityFinding(
         metric=bar.metric,
         measured=0.0,
         target=0.0,
-        direction="min",
+        direction=direction,
         rationale=bar.rationale,
         hint=bar.hint,
         axis=bar.axis,
     )
 
 
-def _bars(score: NotationScore, metric: str) -> tuple[BarSpan, ...]:
+def _bars(score: NotationScore, metric: str, *, direction: str = "min") -> tuple[BarSpan, ...]:
     """The bars `localize` reports for one metric on a hand-written score."""
-    (localised,) = localize(score, [_finding_for(metric)])
+    (localised,) = localize(score, [_finding_for(metric, direction=direction)])
     return localised.bars
 
 
@@ -683,6 +725,22 @@ class TestLocalisation:
         # it arrives, which is beat 1 of bar 2.
         score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
         assert [span.label() for span in _bars(score, "step_ratio")] == ["bar 2"]
+
+    def test_the_step_cap_names_the_bars_where_every_move_is_a_step(self) -> None:
+        """The same bar read the other way round, and the offenders are not
+        the same intervals.
+
+        A floor miss counts the moves wider than a step; a cap miss counts
+        the bars where *every* move is one, because those are the bars a line
+        of nothing but steps is made of. Bar 1 here is three whole tones and
+        bar 2 opens with a sixth, so the floor names bar 2 and the cap names
+        its complement among the bars the line moves in — bar 1. A localiser
+        that named the wide intervals whichever way the bar was missed would
+        point a piece like this at the one bar with any shape in it.
+        """
+        score = _score(_melody([60, 62, 64, 65, 72, 74, 76, 77]), bars=2)
+        assert _bars(score, "step_ratio", direction="min") == (BarSpan(2, 2),)
+        assert _bars(score, "step_ratio", direction="max") == (BarSpan(1, 1),)
 
     def test_a_repeat_is_placed_in_the_bar_it_sits_in(self) -> None:
         score = _score(_melody([60, 62, 62, 64]))
@@ -772,10 +830,12 @@ class TestLocalisation:
         assert [span.label() for span in _bars(score, "harmonic_rhythm_variety")] == ["bars 1-2"]
 
     def test_a_metric_that_counts_a_relation_is_placed_nowhere(self) -> None:
-        """The four absences, asserted rather than left to the docstring.
+        """The five absences, asserted rather than left to the docstring.
 
-        No bar holds a relation between the line's two extremes, so naming
-        bars for one would name the bars where the piece is legal.
+        No bar holds a relation between the line's two extremes, and no bar
+        holds the absence of a leap either — a piece under the floor is a
+        piece the leap is not in, so naming bars for it would name the bars
+        where the piece is legal.
         """
         score = _score(_melody([60, 84, 60]))
         for metric in _UNLOCALISED_METRICS:
@@ -806,8 +866,14 @@ class TestLocalisation:
 class TestFindings:
     def test_a_clean_piece_reports_no_findings(self) -> None:
         piece = score_piece(_score(_clean_line(), bars=3))
-        assert piece.step_ratio == 1.0
-        assert piece.range_semitones == 12
+        # The fixture's own numbers, because "clean" is only interesting when
+        # the line is not trivially so: it misses the step cap by a sixth and
+        # clears the leap floor by the same sixth, which is the narrowest the
+        # two bars get on a line this short.
+        assert piece.step_ratio == 5 / 6
+        assert piece.leap_ratio == 1 / 6
+        assert piece.leap_recovery_ratio == 1.0
+        assert piece.range_semitones == 14
         assert piece.distinct_durations == 3
         assert piece.findings() == ()
 
@@ -969,6 +1035,21 @@ class TestThresholdTable:
         bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "step_ratio")
         assert bar.describe(0.1) == f"step_ratio 0.10 < {bar.minimum:.2f}"
 
+    def test_the_step_bar_is_missed_from_both_sides(self) -> None:
+        # The only bar with offenders on each side of it, and the two faults
+        # are different pieces: every move a step is a line with no shape, no
+        # move a step is a line with no line. A piece in between is clean.
+        bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "step_ratio")
+        assert bar.violated_by(1.0)
+        assert bar.violated_by(0.0)
+        assert not bar.violated_by(5 / 6)
+
+    def test_the_leap_floor_reads_as_a_share_of_the_line_s_moves(self) -> None:
+        bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "leap_ratio")
+        assert bar.describe(0.0) == f"leap_ratio 0.00 < {bar.minimum:.2f}"
+        assert bar.violated_by(0.0)
+        assert not bar.violated_by(1 / 6)
+
     def test_a_maximum_miss_reads_as_greater_than(self) -> None:
         bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "repeat_ratio")
         assert bar.describe(0.9) == f"repeat_ratio 0.90 > {bar.maximum:.2f}"
@@ -985,6 +1066,7 @@ class TestThresholdTable:
                 melody_notes=0,
                 melody_bars=0,
                 step_ratio=None,
+                leap_ratio=None,
                 repeat_ratio=None,
                 leap_recovery_ratio=None,
                 max_leap_semitones=None,
