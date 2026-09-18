@@ -180,6 +180,9 @@ _MUTATIONS: dict[str, Any] = {
     "rotation_cycle": (0, 1, 0),
     "percussion_velocity_scale": 0.8,
     "section_crash_velocity": 91,
+    # Later than the floor: the kit's entrance and its crash move down two
+    # bars, and the bars between take no hit at all.
+    "percussion_entry_bar": 4,
 }
 """One valid, different value per field.
 

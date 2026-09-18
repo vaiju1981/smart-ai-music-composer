@@ -78,6 +78,7 @@ from saimc.compose.percussion import (
     DRUM_CRASH,
     DRUM_STYLES,
     DrumKit,
+    rotation_index,
 )
 from saimc.compose.plan import (
     PLAN_SCHEMA_VERSION,
@@ -1702,6 +1703,10 @@ _DRUM_KNOBS: dict[str, Any] = {
     "percussion_velocity_scale": 0.5,
     # A quieter crash under the section downbeats.
     "section_crash_velocity": 40,
+    # Later than the floor, and later than this piece's intro: the kit's
+    # entrance and its crash move two bars down, so the bars between take
+    # no hits at all.
+    "percussion_entry_bar": 4,
 }
 
 _DRUM_KIT_FIELDS = frozenset(
@@ -1710,9 +1715,10 @@ _DRUM_KIT_FIELDS = frozenset(
         "rotation_cycle",
         "percussion_velocity_scale",
         "section_crash_velocity",
+        "percussion_entry_bar",
     }
 )
-"""The plan's `--- Percussion ---` block, which reads these four.
+"""The plan's `--- Percussion ---` block, which reads these five.
 
 `percussion_rest_section` stays in the sections group and is covered
 there, although both blocks are read by the same pass.
@@ -1720,13 +1726,14 @@ there, although both blocks are read by the same pass.
 
 
 class TestTheDrumKitIsLive:
-    """The style, the variant rotation, the mood's level and the crash.
+    """The style, the variant rotation, the mood's level, the crash and the
+    entry.
 
     Four module-table reads before B7 — `style_for(mood, …)`,
     `ROTATION_CYCLE`, `MOOD_VELOCITY_SCALE.get(mood)` and
     `SECTION_CRASH_VELOCITY` — and the mood no longer reaches the
     percussion pass at all. Unlike the voices layer, every one of these
-    four is read at exactly one site, so the fingerprint class is enough
+    is read at exactly one site, so the fingerprint class is enough
     to prove the plan reaches the music; what the *site* does with it is
     covered by the direct calls below.
     """
@@ -1767,20 +1774,35 @@ class TestTheDrumKitIsLive:
         ]
         assert notes, "the spec no longer writes a percussion voice"
 
-    def test_a_style_with_one_variant_leaves_the_cycle_unread(self) -> None:
-        """And the honest unobservability of the knob is pinned: the waltz
-        and the shuffle carry a single variant per meter, so
-        `rotation_index` returns 0 for every section and no cycle can move
-        them. A future style with a second 3/4 variant makes this fail,
-        which is the right time to notice."""
-        for style_name in ("waltz", "shuffle"):
-            style = DRUM_STYLES[style_name]
+    def test_every_style_offers_a_second_bar_to_change_to(self) -> None:
+        """The premise of the rotation knob, and the ratchet F5a moved.
+
+        Before F5a the waltz and the shuffle carried a single variant per
+        meter, so `rotation_index` returned 0 for every section and no
+        cycle could move them — pinned here as an honest unobservability.
+        That is now false, and this is the same pin turned round: every
+        style has at least two bars per meter to rotate between and at
+        least one fill to hand over with. A style added with one variant,
+        or one whose fills are dropped, fails here rather than leaving
+        `rotation_cycle`'s case asserting nothing.
+        """
+        assert DRUM_STYLES, "no styles at all"
+        for style_name, style in DRUM_STYLES.items():
+            assert style.variants, style_name
             for meter, variants in style.variants.items():
-                assert len(variants) == 1, (style_name, meter)
+                assert len(variants) > 1, (style_name, meter)
+            for meter, fills in style.fills.items():
+                assert fills, (style_name, meter)
 
 
 def _kit_notes(
-    kit: DrumKit, *, total_bars: int = 8, form_bars: int = 4, repetition_count: int = 2
+    kit: DrumKit,
+    *,
+    total_bars: int = 8,
+    form_bars: int = 4,
+    repetition_count: int = 2,
+    seed: int = 7,
+    entry_bar: int = 0,
 ) -> list[NoteEvent]:
     """Two sections of a 4/4 bar, written by the percussion pass at this kit.
 
@@ -1789,6 +1811,10 @@ def _kit_notes(
     played. The pass is called directly for the reason the voices layer's
     cases are: a plan mutation moves the whole fingerprint whichever read
     it reaches.
+
+    `entry_bar` defaults to 0 so the cases written before the kit had an
+    entry read the pass as it behaved then — bar 0 is the first section's
+    downbeat and carries its crash either way.
     """
     return _generate_percussion(
         kit=kit,
@@ -1796,7 +1822,8 @@ def _kit_notes(
         form_bars=form_bars,
         repetition_count=repetition_count,
         total_bars=total_bars,
-        seed=7,
+        seed=seed,
+        entry_bar=entry_bar,
     )
 
 
@@ -1845,17 +1872,23 @@ class TestTheDrumWritersReadTheirShape:
         """The first section reads the cycle's first entry, the second its
         second — so a cycle that changes only the second entry moves the
         second section's hits and leaves the first's exactly where they
-        were."""
-        default = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]))
+        were.
+
+        Read at seed 0, where `section_idx + seed` *is* the section index:
+        the seed is the phase, so at seed 7 this cycle's second entry is not
+        the one the second section reads and the comparison would be
+        asserting the wrong thing.
+        """
+        default = _kit_notes(DrumKit(style=DRUM_STYLES["rock"]), seed=0)
         rotated = _kit_notes(
-            DrumKit(style=DRUM_STYLES["rock"], rotation_cycle=(0, 1, 0, 0))
+            DrumKit(style=DRUM_STYLES["rock"], rotation_cycle=(0, 1, 0, 0)), seed=0
         )
-        second = 4 * PPQ  # the fifth bar of two four-bar sections
-        assert [hit for hit in _hits(default) if hit[0] < second] == [
-            hit for hit in _hits(rotated) if hit[0] < second
+        second_section = 4 * 4 * PPQ  # the fifth bar of two four-bar sections
+        assert [hit for hit in _hits(default) if hit[0] < second_section] == [
+            hit for hit in _hits(rotated) if hit[0] < second_section
         ]
-        assert [hit for hit in _hits(default) if hit[0] >= second] != [
-            hit for hit in _hits(rotated) if hit[0] >= second
+        assert [hit for hit in _hits(default) if hit[0] >= second_section] != [
+            hit for hit in _hits(rotated) if hit[0] >= second_section
         ]
 
     def test_the_level_scales_every_hit(self) -> None:
@@ -1881,6 +1914,66 @@ class TestTheDrumWritersReadTheirShape:
         assert min(velocity for _tick, velocity in _crashes(quiet)) < min(
             velocity for _tick, velocity in _crashes(default)
         )
+
+    def test_the_entry_bar_rests_the_kit_and_marks_its_arrival(self) -> None:
+        """The kit does not open the piece, and its arrival is marked the
+        way a section downbeat is.
+
+        The entrance mark is the whole reason the knob is musical rather
+        than a rest: on a piece with an intro the first section's own crash
+        is inside the rested bars, so an entry without one fades the kit in
+        and the piece's first cymbal waits for bar `form_bars`.
+        """
+        kit = DrumKit(style=DRUM_STYLES["rock"])
+        # Asked for no entry, the kit opens on bar one with the crash.
+        assert _crashes(_kit_notes(kit))[0][0] == 0
+        entry_bar = 2
+        entry_tick = entry_bar * 4 * PPQ
+        notes = _kit_notes(kit, entry_bar=entry_bar)
+        assert not [hit for hit in _hits(notes) if hit[0] < entry_tick]
+        assert _crashes(notes)[0][0] == entry_tick
+
+    def test_the_seed_is_the_phase_of_the_rotation(self) -> None:
+        """F5a: the seed reaches the *notation*, not only the render.
+
+        Before it the written kit was byte-identical for every seed — one
+        distinct shape across sixteen — and the kit was the one voice the
+        seed did not reach; what a listener heard between two seeds was
+        sub-50 ms timing jitter and the ghost pass. The seed enters as a
+        phase rather than as a fresh draw, so a seed that lands on the same
+        phase writes the same bar.
+        """
+        kit = DrumKit(style=DRUM_STYLES["rock"])
+        assert _hits(_kit_notes(kit, seed=0)) != _hits(_kit_notes(kit, seed=2))
+        # The cycle is four long, so a seed four further on is the same
+        # phase and writes the identical part.
+        assert _hits(_kit_notes(kit, seed=0)) == _hits(_kit_notes(kit, seed=4))
+
+    def test_the_seed_picks_which_fill_a_section_hands_over_with(self) -> None:
+        """The other thing the seed reaches: the handover, read as
+        `section_idx + seed` into the style's fills."""
+        kit = DrumKit(style=DRUM_STYLES["rock"])
+        assert kit.style is not None
+        assert kit.style.fill("4/4", 0) != kit.style.fill("4/4", 1), (
+            "rock's two fills are the same bar, so no seed could be heard "
+            "in the handover"
+        )
+        # The premise, so a cycle edit cannot silently move the attribution
+        # of the difference below to the variant rather than the fill: at
+        # these two seeds the first section plays the same variant.
+        assert rotation_index(0, 2, seed=0) == rotation_index(0, 2, seed=1)
+        fill_bar = 3  # the first of two four-bar sections ends here
+        filled = {
+            seed: [
+                hit
+                for hit in _hits(_kit_notes(kit, seed=seed))
+                if hit[0] // (4 * PPQ) == fill_bar
+            ]
+            for seed in (0, 1)
+        }
+        assert filled[0], "the first section's fill bar is empty"
+        assert filled[1], "the first section's fill bar is empty"
+        assert filled[0] != filled[1]
 
 
 class TestTheCodaBranchReadsThePlan:

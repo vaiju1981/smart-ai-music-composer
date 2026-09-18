@@ -89,6 +89,7 @@ from saimc.compose.motif import (
 from saimc.compose.percussion import (
     DRUM_STYLES,
     MOOD_VELOCITY_SCALE,
+    PERCUSSION_ENTRY_BAR,
     PERCUSSION_REST_SECTION,
     ROTATION_CYCLE,
     SECTION_CRASH_VELOCITY,
@@ -107,7 +108,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 5
+PLAN_SCHEMA_VERSION: Final[int] = 6
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -461,6 +462,14 @@ class CompositionPlan:
     meter but 4/4, 3/4 and 6/8, and the percussion voice is then skipped)."""
     rotation_cycle: tuple[int, ...]
     """Which pattern variant each section takes, cycling by section index."""
+    percussion_entry_bar: int
+    """The first bar the kit may sound in, the groove stated before it.
+
+    A floor rather than a position: a long piece's intro outlasts it and
+    keeps the kit resting (`_build_score` takes the larger of the two).
+    It is the knob behind "drums in at bar 8", and the reason a short
+    piece no longer opens on a crash.
+    """
     percussion_velocity_scale: float
     """The mood's scaling of every drum hit's velocity."""
     section_crash_velocity: int
@@ -635,6 +644,11 @@ class CompositionPlan:
             "a rotation_cycle entry names a pattern variant, so it cannot be negative",
         )
         _require(
+            self.percussion_entry_bar >= 0,
+            "percussion_entry_bar counts bars from the start, so it cannot be "
+            f"negative; got {self.percussion_entry_bar}",
+        )
+        _require(
             self.percussion_velocity_scale > 0.0,
             "percussion_velocity_scale must be positive",
         )
@@ -704,6 +718,7 @@ class CompositionPlan:
             "harmony_melody_clearance": self.harmony_melody_clearance,
             "drum_style_name": self.drum_style_name,
             "rotation_cycle": list(self.rotation_cycle),
+            "percussion_entry_bar": self.percussion_entry_bar,
             "percussion_velocity_scale": self.percussion_velocity_scale,
             "section_crash_velocity": self.section_crash_velocity,
         }
@@ -788,6 +803,7 @@ class CompositionPlan:
             harmony_melody_clearance=payload["harmony_melody_clearance"],
             drum_style_name=payload["drum_style_name"],
             rotation_cycle=tuple(payload["rotation_cycle"]),
+            percussion_entry_bar=payload["percussion_entry_bar"],
             percussion_velocity_scale=payload["percussion_velocity_scale"],
             section_crash_velocity=payload["section_crash_velocity"],
         )
@@ -950,6 +966,10 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         harmony_melody_clearance=HARMONY_MELODY_CLEARANCE,
         drum_style_name=style_name_for(mood, spec.time_signature.value),
         rotation_cycle=ROTATION_CYCLE,
+        # The one new percussion value that is not a read of the table it
+        # replaces: the kit used to open a short piece on bar one with a
+        # crash, and the groove is better stated before the drums join it.
+        percussion_entry_bar=PERCUSSION_ENTRY_BAR,
         percussion_velocity_scale=MOOD_VELOCITY_SCALE.get(mood, 1.0),
         section_crash_velocity=SECTION_CRASH_VELOCITY,
     )

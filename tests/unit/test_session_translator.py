@@ -39,6 +39,7 @@ from saimc.session.deltas import (
     DeltaRefusal,
     ReRoll,
     SetBassMotion,
+    SetDrumEntry,
     SetDrumStyle,
     SetDuration,
     SetHarmonicRhythm,
@@ -223,7 +224,6 @@ class TestTheKeywordTableReadsWhatItClaims:
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
             "SetSwing",
-            "SetDrumEntry",
             "ExtendSection",
         }
 
@@ -257,7 +257,6 @@ class TestAnUnbuiltRequestIsRefusedByIdent:
         [
             ("up an octave", "SetRegister"),
             ("swing feel", "SetSwing"),
-            ("bring the drums in", "SetDrumEntry"),
             ("extend the chorus", "ExtendSection"),
         ],
     )
@@ -283,17 +282,46 @@ class TestADirectionTheWordsDidNotName:
     request no knob carries, and "harmonic rhythm" is a request the plan carries
     whose words do not say which way to move it. Answering the second with the
     first's sentence would tell a listener the engine cannot do something it can.
+
+    `SetDrumEntry` joined this class in F5a, when the plan grew
+    `percussion_entry_bar` and the phrase stopped being an unbuilt request. Its
+    missing piece is the *bar* rather than a direction, which is the same
+    situation: the knob is there, the words name it, and the value is not in
+    them.
     """
 
-    def test_a_bare_knob_is_refused_for_the_direction_and_not_the_knob(self) -> None:
-        translation = _read("more harmonic rhythm please")
+    @pytest.mark.parametrize(
+        ("text", "knob", "missing"),
+        [
+            ("harmonic rhythm", "SetHarmonicRhythm", "faster"),
+            ("bring the drums in", "SetDrumEntry", "drums in at bar 8"),
+        ],
+    )
+    def test_a_bare_knob_is_refused_for_the_direction_and_not_the_knob(
+        self, text: str, knob: str, missing: str
+    ) -> None:
+        translation = _read(text)
         assert translation.deltas == ()
-        assert [refusal.request for refusal in translation.refusals] == ["SetHarmonicRhythm"]
+        assert [refusal.request for refusal in translation.refusals] == [knob]
         refusal = translation.refusals[0]
         assert refusal.reason == "direction_unnamed"
+        assert missing in refusal.message
+
+    def test_a_bare_knob_leaves_only_what_it_did_not_read(self) -> None:
+        translation = _read("more harmonic rhythm please")
+        (refusal,) = translation.refusals
         assert "faster" in refusal.message
         assert "slower" in refusal.message
         assert translation.unread == ("more please",)
+
+    def test_the_drum_entry_knob_is_one_the_engine_takes(self) -> None:
+        """The premise, for the same reason the harmonic rhythm one has it:
+        the phrase is refused for the words, so the request itself has to be
+        honoured when the words do carry the value."""
+        assert "SetDrumEntry" in DELTA_TYPES
+        application = apply_deltas(_SPEC, [SetDrumEntry(bar=6)])
+        assert application.ok, application.refused
+        assert application.plan.percussion_entry_bar == 6
 
     def test_it_is_not_the_unbuilt_knob_and_says_nothing_about_not_carrying(self) -> None:
         """The false sentence, asserted absent.

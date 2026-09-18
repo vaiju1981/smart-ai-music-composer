@@ -25,23 +25,23 @@
     "calming-180-full-Am": {
       "engine_decisions_sha256": "2a287a77967504b50f1b3823b6a7503b8dadb92cb6788d1c8b142d6b82074b42",
       "measure_count": 40,
-      "notation_score_sha256": "9e70ae655f9b669c2905b2590935cc0caa48aa7092a2823bdcaff4db4bcc48a5",
-      "note_count": 557,
-      "performance_plan_sha256": "edf82c376af9a56f298d1327dd17ceda1010abb84e014decabcb9e45426c971f"
+      "notation_score_sha256": "bcf0d696cbec412ecd4c507cfa84fc3ebf556a9404090af3e9528e2d2b189347",
+      "note_count": 551,
+      "performance_plan_sha256": "3c9b8d32613e43a5391d806e2cd317eb897fb4465cb43ac171a4eb4675f7e9b9"
     },
     "calming-180-full-C": {
       "engine_decisions_sha256": "076d0393e7c05a7584ef17a721816ba24b8a338280afdd829ebedc28180f5655",
       "measure_count": 40,
-      "notation_score_sha256": "217491df2b266e8cd195588bb756398bfc167ce51d7b4222c0298d184d130d30",
-      "note_count": 555,
-      "performance_plan_sha256": "4436615423ac7b2598656cb8a9dffa045197771d7a8a9fc11af0b19e7792207f"
+      "notation_score_sha256": "e3b81858a7dd7f0c54cf0514cc697938488e1b183ecf8b1c7ac59a7692d8464e",
+      "note_count": 549,
+      "performance_plan_sha256": "a654502f72cd2d4400f15e73b9eda46a3e2c9f15060a7f5f7c4861f7e9a7bbc7"
     },
     "calming-180-full-G": {
       "engine_decisions_sha256": "907dd773b5f93c8c7917705f0441406810377501d4f058c6888d2811af58a003",
       "measure_count": 40,
-      "notation_score_sha256": "81ae2caa675a631408278277f36191cee8c8c50b1692893c89438bc4dc0814dd",
-      "note_count": 555,
-      "performance_plan_sha256": "77dcd087ec86eed122171e50e869434e5c7f635f9071a0c797eeba51cc2e2db8"
+      "notation_score_sha256": "9eb6b3561adcb8a0fb4b3d1b8e91bd5a3f9ab1b5f5b51889b35194423ca6b69e",
+      "note_count": 549,
+      "performance_plan_sha256": "44c2d0d3ee0ececa96be92fd8e31fbfc6747f23b21dbe03dd78d7f827f87d04f"
     },
     "calming-180-trio-Am": {
       "engine_decisions_sha256": "49cf74fe2240387ca6dc0e7114bbe9efd1b43f0836353beef9ff5f53d436267a",
@@ -88,23 +88,23 @@
     "calming-30-full-Am": {
       "engine_decisions_sha256": "60a82378aed90ecdb9b004961ec730650692791b9ec47e85d6c3b988a5d4f2a0",
       "measure_count": 8,
-      "notation_score_sha256": "c14c44cc338c0e9a4267bfe7036067a81128000394629255f28ea33508d9573c",
-      "note_count": 136,
-      "performance_plan_sha256": "204179d5dabc00401df23854b000c61de20717106520bc5042536b6836f621f4"
+      "notation_score_sha256": "848192cc39ba2e8f6a89846abe4e65316802f24fcd851c092d57de80355d2f74",
+      "note_count": 114,
+      "performance_plan_sha256": "2709a10ec6acb00e04b23d769df0b7ddb241375020efb8c00a09789d885c81bc"
     },
     "calming-30-full-C": {
       "engine_decisions_sha256": "a0930762fbcd572aad28e273e0f4957f08b60a8e01b88f4bf91c3088b8045f7b",
       "measure_count": 8,
-      "notation_score_sha256": "a176fa4f130e1fbd41996021e3f3ed2426a9e675089e01dd8b4e6e137868ceca",
-      "note_count": 140,
-      "performance_plan_sha256": "1826715455e69fd59871b2072cd2601402fcdf8fc9d644d403a2f3d2fd09d396"
+      "notation_score_sha256": "ba9d237f893b37030e865f637ad646b59d0213f07470650a158c792f6403c5be",
+      "note_count": 118,
+      "performance_plan_sha256": "70e42a6914cc86b416a6904d9b4a4b08ad6e3fc2768e032cda9f1af546c26689"
     },
     "calming-30-full-G": {
       "engine_decisions_sha256": "080aa331397bd07af8a2674c26ebd21077a1e943dc9f4922efc7545618665959",
       "measure_count": 8,
-      "notation_score_sha256": "4a03177c89a6a79d9cd0304daa7c6753d46d7da508334f632c24a1c3ba279c83",
-      "note_count": 140,
-      "performance_plan_sha256": "b1133406e9cc4ed536faf56625a5fa10249ba1ca40aa1754ee9bb02d1899471e"
+      "notation_score_sha256": "44822c70e5e478d258e555d6788322e0a08fdcca15080217a97c5d43a449c7b4",
+      "note_count": 118,
+      "performance_plan_sha256": "cabdcdbd0dc5317b404e0b93bfcbea4c477d86ccb90a8d969ae31ad91c44f0d0"
     },
     "calming-30-trio-Am": {
       "engine_decisions_sha256": "0ced386e72552b9ad3005bb3443c30491ab13f745cafb786bcda74b3ad0c8544",
@@ -151,23 +151,23 @@
     "calming-600-full-Am": {
       "engine_decisions_sha256": "97b15ed5b5d217405a9f2857ee850e7c412f7a93451d72f315812fd44017a3a6",
       "measure_count": 128,
-      "notation_score_sha256": "b4bf57643b92662eb9f98f56fcfaf90b316a9aa3d93524f6ec526767770936a3",
-      "note_count": 1954,
-      "performance_plan_sha256": "da6ab8dbd0002a10041a7f10fd36ccbbebd98e3550959ef978b85bad5ee4343c"
+      "notation_score_sha256": "3b0cdce400e2a2dac4709c5663c0b8082469d74f072938c305f159481d16d209",
+      "note_count": 1966,
+      "performance_plan_sha256": "18afbe8cd3282386c43a2fb4cc52007360c6d1322dbff53a428e24ebdf77c454"
     },
     "calming-600-full-C": {
       "engine_decisions_sha256": "dc280dcf186b1cc45da0fa1ed70012e6d3d15b0ae2ee1085bd09b189e4f72c61",
       "measure_count": 128,
-      "notation_score_sha256": "7305250e2723a7e69927ec63fff80c0227de6e7c69cccf98f78f14ea603236e1",
-      "note_count": 1949,
-      "performance_plan_sha256": "c480cd1f835be29f52278dfc69c60de9fd2c67869480ab9b7a2b160998bc39dc"
+      "notation_score_sha256": "3ce9c7db4e5d5e3a6b0ffcae5e750d959e09fa5a3ebda077e038c96771cc419c",
+      "note_count": 1961,
+      "performance_plan_sha256": "13c6461988e2cd90a61543927bc8395ca1a3651b10b034befbc20c42f29b95a2"
     },
     "calming-600-full-G": {
       "engine_decisions_sha256": "a328fbaa960783ea9d639c712727b06c7f392633944bccef91a034d1091cf81e",
       "measure_count": 128,
-      "notation_score_sha256": "62ea2c7db38dee436ddca014101e2c2f5a714cef3ed44ef8e203d1d9ab938352",
-      "note_count": 1945,
-      "performance_plan_sha256": "58b78ea2fb959a1db63350820333f34a256d23af4b7479379c20a9d798c926fb"
+      "notation_score_sha256": "a48f81740d9a5d8eafe196307f48246751a9acb316f6384964b88b5321668ade",
+      "note_count": 1957,
+      "performance_plan_sha256": "0bc9d11957bf46bda295112437d1cfebddad6954b65ccbf2f4c5ee30dafab9e1"
     },
     "calming-600-trio-Am": {
       "engine_decisions_sha256": "6302e91515b671efe1620f1a3375c1bb19338447014a44619262c324d48f7430",
@@ -214,23 +214,23 @@
     "electrifying-180-full-Am": {
       "engine_decisions_sha256": "a7e738767afd57317ffc90871de98bd862f6a837668aee8bc9b57e08683913ad",
       "measure_count": 80,
-      "notation_score_sha256": "23d1eedc384ee350d99970a26f861bdc686be5a08b49e23465ff8cecff77bf9d",
-      "note_count": 2027,
-      "performance_plan_sha256": "c1a416d212a3a0a6371b7db5e81898a813a59083ae44c17983e55e3787d06f7b"
+      "notation_score_sha256": "de715be97665ebb118a24723f19134257460251f161bacaa87e3d444fa95fba9",
+      "note_count": 2056,
+      "performance_plan_sha256": "4582a32533f50112b75ec383a7735e4d02f764ceddf7db4c6f9a0bf2cd7983a6"
     },
     "electrifying-180-full-C": {
       "engine_decisions_sha256": "eafc2f4cbfba353e64ba46704c859d03b25f2a0468f5f4be02cda8d45ce2c08b",
       "measure_count": 80,
-      "notation_score_sha256": "b9f3eb11e1c88cba3a9e10b46aaff05cdc228b6884a591c5a83be3da1d518088",
-      "note_count": 2012,
-      "performance_plan_sha256": "f2c2162ea7ab12a66ac5bbdb4ad37d1db80f0e5d5472730100d0dfffa743f353"
+      "notation_score_sha256": "b9cbbbba12601938af3b116fe04d16e26bfbbd37d82a77ebbbed0a14a50db262",
+      "note_count": 2041,
+      "performance_plan_sha256": "7b32edcc642771551ce8b7266c9d411c69ef8016248ff0b09c4ac32c060b7105"
     },
     "electrifying-180-full-G": {
       "engine_decisions_sha256": "3626f6e6bbfe7ecc029546c98d91d4ddc194d16987d5db2396f2234548bd02a9",
       "measure_count": 80,
-      "notation_score_sha256": "a8b76c29cd239d9a27765be32d03ac36cb523af0e13a5f7d6cbed43b36059fec",
-      "note_count": 2031,
-      "performance_plan_sha256": "a4843b7e357286b1b74256048ab22819f7ba5865a2e6b72f9be72e5d950d5944"
+      "notation_score_sha256": "9162edd3656cfe494961d81f0e26df71876c0fc4ffcd1fd22f508f1b932af9af",
+      "note_count": 2060,
+      "performance_plan_sha256": "2fbfc6a0202303c30a43b455666eb82fa01fc936f345877c5506f204b85ed72f"
     },
     "electrifying-180-trio-Am": {
       "engine_decisions_sha256": "3a0b0a9089d9b17312d608c562362445491692b0f639935372a6b2201699de1e",
@@ -277,23 +277,23 @@
     "electrifying-30-full-Am": {
       "engine_decisions_sha256": "64f8a2d91e7b0a8414039ab121cf0993319db428652c5aa0c0dcf4231b936d42",
       "measure_count": 16,
-      "notation_score_sha256": "d33fdf48651e0e00ac691018029322dbf21fb377db5eb7e6b45b8737d624db23",
-      "note_count": 452,
-      "performance_plan_sha256": "9c17ab7e886fac0ea742ae003df60fc1b002c45798c2c99001097f1180d427d0"
+      "notation_score_sha256": "9e49a8566174b541ddfacfb431595c76dc39dc0a5b7df5d47206dd701b94531c",
+      "note_count": 449,
+      "performance_plan_sha256": "2895289748c40557e1fc889cc0316b1717e075e5547a7dbef8eae46a9c47a2e5"
     },
     "electrifying-30-full-C": {
       "engine_decisions_sha256": "5726a59474e4a0befbcd66d4ade05d36ebd424745ad4db8366f71eb586b3d62e",
       "measure_count": 16,
-      "notation_score_sha256": "16c1ec183c4331dc71e25e0e7095fb46ca312b07dff599272840ef1b91088fc0",
-      "note_count": 452,
-      "performance_plan_sha256": "e1824cdeb74f57e56cdd2ae733280429365dec23d6873ab1ae53f3be16d65272"
+      "notation_score_sha256": "a4ef396d3946ac5379b0907245ae4cae937665f962bb0e1a93b0764a41df6c0f",
+      "note_count": 449,
+      "performance_plan_sha256": "834e8d424e40272c7328096be310f07c025f153afb0bf061f4ee005faf1e7653"
     },
     "electrifying-30-full-G": {
       "engine_decisions_sha256": "2c9bd593e8afa208e8b1435e862748363201071e336e4de549256c748dd6bc74",
       "measure_count": 16,
-      "notation_score_sha256": "61007ee722980a641acd0e404a67778f5651ea820a9b642119da39128327e931",
-      "note_count": 449,
-      "performance_plan_sha256": "6a0509492a5aaa7d32652d394b82b9e6277ff94aaef166b3f6a1d68c6628e5aa"
+      "notation_score_sha256": "c10e59a5c11d7457ab90eef662358c3a17994b35514502e85b05860e9daabc41",
+      "note_count": 446,
+      "performance_plan_sha256": "df5c7e05558911c81c68c40e234a0e6a3efcabcfc401303e11fb6cb5ec01d92d"
     },
     "electrifying-30-trio-Am": {
       "engine_decisions_sha256": "c3e117fdbbcee7dd12a08012857685395b1e42f89dd642327a7ba33dac2b3876",
@@ -340,23 +340,23 @@
     "electrifying-600-full-Am": {
       "engine_decisions_sha256": "a15442d998642a425fe1b79ee022f130510f384a3308226374fc0fb6ff71870b",
       "measure_count": 256,
-      "notation_score_sha256": "b9d94a28509f85e5de2964e9943389669e6ab733dd791e745693d53693bcaccd",
-      "note_count": 6633,
-      "performance_plan_sha256": "9abe3cd8e896544a4e8eb4937c879217eeb5a7595fa8097780d7dbe165e07e88"
+      "notation_score_sha256": "5d92c1318ce5e766f7c0987d3e60ba834642a0e18f8fe42f9ad90d0afc58ee9b",
+      "note_count": 6646,
+      "performance_plan_sha256": "6d6a81355623844060339b38813a78724de5bb2c3585f5ae6dcf38426bd71d47"
     },
     "electrifying-600-full-C": {
       "engine_decisions_sha256": "8fcd438fbcabdf64f4e15966f594c897450acf2d27d503999b54a90e6924d335",
       "measure_count": 256,
-      "notation_score_sha256": "f8f25655071b240ec5f3aa9b3de7d32d176d2bd8314f7afa0e97e48c793a7805",
-      "note_count": 6650,
-      "performance_plan_sha256": "bc99ac628a0070e055d033f1118661a7df3847943e198705798bf680d15e2d8b"
+      "notation_score_sha256": "b6917fba626ea050e031290eea57baec58d3e4d0e07e4724a91b70288f6ee64e",
+      "note_count": 6663,
+      "performance_plan_sha256": "49486b230653d75bdf478d72b91160f2ff64933110b39f2fac0308d5ba8a79e6"
     },
     "electrifying-600-full-G": {
       "engine_decisions_sha256": "fa0295e9b40506b89fbefe598223b555a39c3bed74c3cf8980aba92be4250419",
       "measure_count": 256,
-      "notation_score_sha256": "006c8396f41cd14f39d40854b90a47bc63253b2994be06d81c31f30d4f1ae3b0",
-      "note_count": 6646,
-      "performance_plan_sha256": "b181f0c50c2e2854cf277651ecd2f054d0090550a6aff255f65229f2fb541e58"
+      "notation_score_sha256": "56c95d3e36687dbfc6e62cb43bb52fd67c77fb286ecff59dc1205030c5bf0a06",
+      "note_count": 6659,
+      "performance_plan_sha256": "99a83e2d9dcdb6fd56faeb6d5a58e97a1f2a40064facbf95cf988f4f3e4d8352"
     },
     "electrifying-600-trio-Am": {
       "engine_decisions_sha256": "ff6db545c78a0f21156a91678ddfade9624b365b61e22b9090e01d85be88a41a",
@@ -403,23 +403,23 @@
     "sleep-180-full-Am": {
       "engine_decisions_sha256": "fde66dcabd419eed09382fd8f3f674918c08463a2364a5a5f65938f5716eee6f",
       "measure_count": 32,
-      "notation_score_sha256": "7abef25cdd0013671ac2dbc5bb3ee85ba45004be6b9c94ecbbe146f9f1b59fc7",
-      "note_count": 443,
-      "performance_plan_sha256": "c5ebd773fa9f6c935a46d29130557a2fd977a43cc54489da80f483b79d62535e"
+      "notation_score_sha256": "5116d5576151e551129093f13564bbd56b1e6fb83ee5a25fa30403b0ca3b2d62",
+      "note_count": 449,
+      "performance_plan_sha256": "c2c8d0a6d1d525cf0e3a306eb463573bfc530956907eba09a31a2393892badad"
     },
     "sleep-180-full-C": {
       "engine_decisions_sha256": "a0eaae1e957c5b3b1dd9b8632682cee020703565ad16bb79a1022b6272f8d9a2",
       "measure_count": 32,
-      "notation_score_sha256": "405fccf19b3134e34496265f35465e97f77d87cc1d3fb6033396cc706a1efd82",
-      "note_count": 442,
-      "performance_plan_sha256": "c99a5f84b14174e072d1c57dde5dd9f2eab99d26a2f08b9e56bfe923a00f78c3"
+      "notation_score_sha256": "acbd80326f9ee4d33e05f0608b5056ff71f68f3bdf911d5b9236feed118c9793",
+      "note_count": 448,
+      "performance_plan_sha256": "42151a7e33bd4e4e1d4262c32f29a90a48f8d807137e997ee1147de83b606749"
     },
     "sleep-180-full-G": {
       "engine_decisions_sha256": "a1d2fc85eaf9f346c894ca55f00ec0b804717157725b99bf074e115bf6e41cbe",
       "measure_count": 32,
-      "notation_score_sha256": "82266aa33fb56f6f46ea34ecee155cf41bfff79afb4b5c0acd253a01980b8eab",
-      "note_count": 442,
-      "performance_plan_sha256": "e137a2a33011a229550b40a2340db1d2a5820fd734439958b14c0f7a62fd8908"
+      "notation_score_sha256": "bcb5aa9685e1e0279d39c6275703a2f649f1d392e74c5f0ef9cbe1fec3e405c1",
+      "note_count": 448,
+      "performance_plan_sha256": "92b9661d17e56dc6a1b1e284ba44f53ad990bab068b21780f9238c9e22f217a8"
     },
     "sleep-180-trio-Am": {
       "engine_decisions_sha256": "9bca88d8eed86fe7065fbb44e847a85a92ec12df4dc9b21654d2571a2ef35040",
@@ -466,23 +466,23 @@
     "sleep-30-full-Am": {
       "engine_decisions_sha256": "6135272518afa9f32024ea91416d04723d8bafdf89dc38c4e46e3f67f40a20d2",
       "measure_count": 8,
-      "notation_score_sha256": "30d0a3b2d3b3921b58e235e754e05e4a7b29aa548c122c663744235ffefa6f83",
-      "note_count": 138,
-      "performance_plan_sha256": "bb6d00c4bf24a7d41e6aade083972a1cb85bd2d08c6a1316d6b4eb6846226a83"
+      "notation_score_sha256": "575293d75c783f5b441bfe18d2e181ffaec7a8ffda05fbafe7c29b2727dce4b2",
+      "note_count": 122,
+      "performance_plan_sha256": "57154b0516580e1a42293e793563ea95f44672e5b804ca7ab40e7ac2febdabcb"
     },
     "sleep-30-full-C": {
       "engine_decisions_sha256": "b451d3ca0b6810a836030992929cbe736857786b92917eb0ef5d3269b6f4eded",
       "measure_count": 8,
-      "notation_score_sha256": "b01625ef8e4a562ce920bc123ddd7a87874c1016e6fb10eab8db25cdb0800a2c",
-      "note_count": 138,
-      "performance_plan_sha256": "bf49516e98a36c6bae842160691e4ce0892ed2a300cbfe441ba3b40dfb06b813"
+      "notation_score_sha256": "1b7d264a785f04ba45434867c886adf3f051caf763fa179c151603f4a7777a8b",
+      "note_count": 122,
+      "performance_plan_sha256": "3ed093adb1416c4aa43ca448efd12bc4cc816a891c8fbb264713a2fcc56e5af0"
     },
     "sleep-30-full-G": {
       "engine_decisions_sha256": "243520fcf9775df1efd11a05eaa13c1a8887c8c947f9a4858323d6a4ed23f11a",
       "measure_count": 8,
-      "notation_score_sha256": "73e654bd79d3a23e380ee1495abb428ea7b34d97aa3144ba8280fffb5298a710",
-      "note_count": 138,
-      "performance_plan_sha256": "a0a85ffec9cc19b3c44dbb01859fa5b651bbf101e7bfb869e20fe9f5fcbe5f36"
+      "notation_score_sha256": "ce201dd8f3a70c62f01171696e242d64cd7ab2b0bd54459b5a0f8cbfd046ecc3",
+      "note_count": 122,
+      "performance_plan_sha256": "abd9f4c75d459bf1be6b00c2eba9c34b2348b992eaa44fddbc279b102b303d84"
     },
     "sleep-30-trio-Am": {
       "engine_decisions_sha256": "57406af574390a09b3b61505466a3b79744e7aa650472a84d7e273a7d25b83bc",
@@ -529,23 +529,23 @@
     "sleep-600-full-Am": {
       "engine_decisions_sha256": "31a055d54ea0ec242e1beb6cb2fe590b96248c8054f0f6eca3fc0df93022460d",
       "measure_count": 112,
-      "notation_score_sha256": "6f0899520cd9368776bb37333bc313d9ac9eb125a585c1c1b55bdda87adbb8e0",
-      "note_count": 1683,
-      "performance_plan_sha256": "0cc5d46379987d0bdab91820afec86ba9d23b412d5571c460a0121f249d63ec9"
+      "notation_score_sha256": "8ef959b99187d527c185ea70f4f337480e38e3ee8823b3a5843d01a55246124c",
+      "note_count": 1685,
+      "performance_plan_sha256": "27f55edf865e0a2373bf8f362ed4fc531f48e7fba356bbbb8890915dfb5583fa"
     },
     "sleep-600-full-C": {
       "engine_decisions_sha256": "0027733b1e1344cf3cb80691cbddfc989c857aa8a8587ffefd1b04647f87083c",
       "measure_count": 112,
-      "notation_score_sha256": "35e7f39db00743f9e104f01382d90b0b6ec8827afc9fdddf09ae407d6b24dbcc",
-      "note_count": 1682,
-      "performance_plan_sha256": "cede2b3b2f964981e0387dc59cc1cd05c32fba378ac574c47b6e8028235f787a"
+      "notation_score_sha256": "7001e14c9d8b7005917f6d18e07173a56b2bd61d26c67c39b7e9f8a9c21aef4a",
+      "note_count": 1684,
+      "performance_plan_sha256": "d6e6c846081d72abc1a20acccec82c38e27590ed81e40e8905c7a60e5286de03"
     },
     "sleep-600-full-G": {
       "engine_decisions_sha256": "7e216e6b370e92758808f7440662c7f6f68c18c536c09b31f1fa2e5a7d5d0e00",
       "measure_count": 112,
-      "notation_score_sha256": "d009bed34674b7a58597d96b5da68cce11be14b9d8fe1017a60f19b11c13f959",
-      "note_count": 1671,
-      "performance_plan_sha256": "5dd16fcb39da52dc387cd8f24129e39b1625c484166d1b100b6251d7dfb406f3"
+      "notation_score_sha256": "dd8f4e6627bf708cfbb244fae5dc428f036d7e89b9d62a115dcfa0d6c3cc6a2a",
+      "note_count": 1673,
+      "performance_plan_sha256": "89903515410499a39d93211564fae55e93b1117dd00dd43123f3a2b0a4704cc0"
     },
     "sleep-600-trio-Am": {
       "engine_decisions_sha256": "9b298723b271f0f5fa25ab65131f3044804b1b1585e93193436d8d1b50a301a0",

@@ -648,6 +648,24 @@ class SetPercussionRest(Delta):
         return {"percussion_rest_section": self.section}
 
 
+@dataclass(frozen=True)
+class SetDrumEntry(Delta):
+    """The bar the kit may sound from — the groove stated before it.
+
+    A floor rather than a position: a long piece's intro outlasts it and
+    keeps the kit resting, so "drums in at bar 8" on a piece whose intro is
+    two bars moves the entrance, and the same request on a piece whose
+    intro is ten leaves it where the intro put it. The bars below it are
+    silent and the entrance itself is marked with a crash, which is what
+    makes this a musical request rather than a rest.
+    """
+
+    bar: int
+
+    def plan_changes(self, plan: CompositionPlan) -> Mapping[str, Any]:
+        return {"percussion_entry_bar": self.bar}
+
+
 DELTA_TYPES: Final[dict[str, type[Delta]]] = {
     "SetTempo": SetTempo,
     "SetMood": SetMood,
@@ -672,6 +690,7 @@ DELTA_TYPES: Final[dict[str, type[Delta]]] = {
     "SetSectionEnergy": SetSectionEnergy,
     "SetDrumStyle": SetDrumStyle,
     "SetPercussionRest": SetPercussionRest,
+    "SetDrumEntry": SetDrumEntry,
 }
 """Every delta, by the name a tool call and a stored document use.
 
@@ -712,11 +731,6 @@ UNCARRIED: Final[tuple[Uncarried, ...]] = (
         request="SetSwing",
         why="a swing ratio needs a triplet grid, which the engine does not have",
         instead="SetDrumStyle, for the styles it does carry",
-    ),
-    Uncarried(
-        request="SetDrumEntry",
-        why="the kit's entry is a section rather than a bar, which is what the plan carries",
-        instead="SetPercussionRest",
     ),
     Uncarried(
         request="ExtendSection",
@@ -1003,6 +1017,7 @@ __all__ = [
     "SetAccompanimentDensity",
     "SetBassMotion",
     "SetCadence",
+    "SetDrumEntry",
     "SetDrumStyle",
     "SetDuration",
     "SetHarmonicRhythm",

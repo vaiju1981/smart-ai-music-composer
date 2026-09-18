@@ -710,9 +710,20 @@ def _build_score(
     # Long pieces rest the kit during the bass-alone intro bars and one
     # mid-piece section, so the texture has a hole before it refills.
     if ensemble.percussion == "drum_set":
+        # The kit does not open the piece. The intro rests it for as long
+        # as the intro lasts, and `percussion_entry_bar` is the floor
+        # under that — the bed and the bass state the groove first, and
+        # the kit arrives on a downbeat with a crash. A short piece has
+        # no intro bars at all, so without the floor it opened on the
+        # crash. The pass rests everything below `entry_bar` itself, so
+        # the two cannot disagree; only bars silent for another reason
+        # travel separately.
+        entry_bar = max(
+            arrangement.intro_bars if long_piece else 0,
+            plan.percussion_entry_bar,
+        )
         rest_bars: set[int] = set()
         if long_piece:
-            rest_bars.update(range(arrangement.intro_bars))
             rest_bars.update(
                 range(
                     plan.percussion_rest_section * arrangement.form_bars,
@@ -728,6 +739,7 @@ def _build_score(
                 total_bars=arrangement.total_bars_with_coda,
                 seed=rng_base_seed,
                 rest_bars=frozenset(rest_bars),
+                entry_bar=entry_bar,
                 arc=arc,
             )
         )
@@ -3448,6 +3460,7 @@ def _generate_percussion(
     total_bars: int,
     seed: int,
     rest_bars: frozenset[int] = frozenset(),
+    entry_bar: int = 0,
     arc: SectionArc = DEFAULT_SECTION_ARC,
 ) -> list[NoteEvent]:
     """Generate the percussion voice for a drum-set piece.
@@ -3455,14 +3468,28 @@ def _generate_percussion(
     The style is the plan's (`percussion.style_name_for` resolved it from
     the mood and the meter, and `CompositionPlan.drum_kit` looked it up);
     its variants rotate across sections on a longer cycle than plain A/B,
-    with the coda treated as one more section. A section's last bar hands
-    off to the next through the style's fill (never on the piece's final
-    bar, which must resolve), and every section downbeat is marked with a
-    crash cymbal — plus a kick when the pattern does not already open with
-    one. A per-bar seeded jitter of a few velocity points keeps repeated
-    bars from sounding machine-stamped. Bars in `rest_bars` (the intro and
-    one mid-piece section on long pieces) are silent, and the sections
-    that do play follow the terraced dynamic arc.
+    with the coda treated as one more section. The *seed* is the phase of
+    that rotation and which of the style's fills a section hands over
+    with, so two pieces of one mood and meter do not write the same drum
+    part — the notation was identical for every seed before this, and the
+    kit was the one voice the seed did not reach. A section's last bar
+    hands off to the next through the fill (never on the piece's final
+    bar, which must resolve), and a downbeat is marked with a crash
+    cymbal — plus a kick when the pattern does not already open with one.
+
+    Two kinds of downbeat are marked: the start of every section, and the
+    kit's own entrance at `entry_bar`. The entrance needs the mark for the
+    same reason a section does — the kit arrives after the groove has been
+    stated, and an arrival nobody hears is a fade-in — and it is the only
+    mark the first section gets on a piece with an intro: the intro rests,
+    so the crash that belongs to bar 0 is silent, and without the entrance
+    mark the piece's first cymbal waited for bar `form_bars`.
+
+    A per-bar seeded jitter of a few velocity points keeps repeated
+    bars from sounding machine-stamped. The kit is silent below
+    `entry_bar` and in every bar of `rest_bars` (one mid-piece section on
+    long pieces); the rest of the sections that play follow the terraced
+    dynamic arc.
     """
     style = kit.style
     if style is None:
@@ -3471,7 +3498,7 @@ def _generate_percussion(
     mood_scale = kit.velocity_scale
     notes: list[NoteEvent] = []
     for bar in range(total_bars):
-        if bar in rest_bars:
+        if bar < entry_bar or bar in rest_bars:
             continue
         in_body = bar < repetition_count * form_bars
         section_idx = bar // form_bars if in_body else repetition_count
@@ -3479,7 +3506,9 @@ def _generate_percussion(
         is_final_bar = bar == total_bars - 1
         terrace = _section_velocity_scale(section_idx, repetition_count, arc)
         if bar % form_bars == form_bars - 1 and not is_final_bar:
-            pattern = style.fill(time_signature, section_idx)
+            # The seed picks which of the style's fills the section hands
+            # over with. A style with one fill plays it either way.
+            pattern = style.fill(time_signature, section_idx + seed)
         else:
             pattern = None
         if pattern is None:
@@ -3489,6 +3518,7 @@ def _generate_percussion(
                     section_idx,
                     len(style.variants.get(time_signature, ())),
                     cycle=kit.rotation_cycle,
+                    seed=seed,
                 ),
             )
         if pattern is None:
@@ -3509,9 +3539,11 @@ def _generate_percussion(
                     velocity=min(PERCUSSION_VELOCITY_MAX, max(1, velocity)),
                 )
             )
-        if section_start:
-            # The section downbeat is marked: crash always, and a kick
-            # underneath it when the groove does not open with one.
+        if section_start or bar == entry_bar:
+            # A downbeat is marked: crash always, and a kick underneath it
+            # when the groove does not open with one. The kit's entrance
+            # is a downbeat in this sense even when the form does not put a
+            # section boundary there.
             crash_velocity = round(
                 kit.crash_velocity * style.velocity_scale * mood_scale * terrace
             )

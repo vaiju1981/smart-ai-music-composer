@@ -98,7 +98,9 @@ class TestEnginePercussionVoice:
         assert drum_notes, "drum-set piece must lay a percussion voice"
         assert all(35 <= n.pitch_midi <= 81 for n in drum_notes)
 
-    def test_percussion_hits_every_bar(self) -> None:
+    def test_percussion_holds_from_the_entry_bar_on(self) -> None:
+        from saimc.compose.percussion import PERCUSSION_ENTRY_BAR
+
         out = self._compose()
         bars = {m.index for m in out.notation_score.measures}
         hit_bars = {
@@ -106,7 +108,11 @@ class TestEnginePercussionVoice:
             for n in out.notation_score.notes
             if n.voice_id == VOICE_PERCUSSION
         }
-        assert hit_bars == bars
+        # The groove is stated before the kit joins it: the entry bars are
+        # silent and every bar from there on sounds. A short piece has no
+        # intro, so this is the only thing keeping the drums off bar one —
+        # before it the kit opened the piece on a crash.
+        assert hit_bars == bars - set(range(PERCUSSION_ENTRY_BAR))
 
     def test_piano_piece_has_no_percussion_voice(self) -> None:
         out = compose(_drum_spec(instrumentation="piano"))
@@ -114,11 +120,19 @@ class TestEnginePercussionVoice:
 
     def test_waltz_meter_gets_the_waltz_pattern(self) -> None:
         out = self._compose(time_signature=TimeSignature.THREE_FOUR.value)
+        ticks = bar_ticks("3/4")
         drum_notes = [n for n in out.notation_score.notes if n.voice_id == VOICE_PERCUSSION]
         assert drum_notes
-        # Every bar starts with the kick (offset 0), per the waltz template.
-        kicks = {n.tick % bar_ticks("3/4") for n in drum_notes if n.pitch_midi == DRUM_KICK}
-        assert kicks == {0}
+        # Every bar is kick-led, but the kick is not always on the downbeat:
+        # the waltz's second variant states it on the "and" of the first beat
+        # (BEAT - EIGHTH = 240 ticks), which is one of the two things the
+        # widened vocabulary bought. Which of the two a section plays is the
+        # seed's, so this asserts the family rather than the one bar.
+        kicks = sorted({n.tick % ticks for n in drum_notes if n.pitch_midi == DRUM_KICK})
+        assert set(kicks) <= {0, 240}
+        sounding_bars = {n.tick // ticks for n in drum_notes}
+        kick_bars = {n.tick // ticks for n in drum_notes if n.pitch_midi == DRUM_KICK}
+        assert kick_bars == sounding_bars
 
     def test_deterministic_for_the_same_seed(self) -> None:
         a = self._compose(seed=7)
@@ -177,25 +191,31 @@ class TestFillsAndDownbeats:
             and n.pitch_midi in (DRUM_HIGH_TOM, DRUM_LOW_TOM)
         ]
 
-    def test_every_sounding_section_downbeat_has_a_crash(self) -> None:
+    def test_every_sounding_downbeat_has_a_crash(self) -> None:
         from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS
-        from saimc.compose.percussion import DRUM_CRASH, PERCUSSION_REST_SECTION
+        from saimc.compose.percussion import (
+            DRUM_CRASH,
+            PERCUSSION_ENTRY_BAR,
+        )
 
         out = compose(_drum_spec(duration_seconds=120))
         arr = out.arrangement
         ticks_per_bar = bar_ticks(out.time_signature)
-        expected_bars = {s * arr.form_bars for s in range(arr.repetition_count)}
-        # Long pieces rest the kit during the intro and one mid-piece
-        # section; those downbeats are silent like the rest of them.
-        if arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS:
-            expected_bars -= {0}
-            expected_bars -= {s * arr.form_bars for s in (PERCUSSION_REST_SECTION,)}
-        crash_bars = {
-            n.tick // ticks_per_bar
-            for n in self._drum_notes(out)
-            if n.pitch_midi == DRUM_CRASH
-        }
-        assert crash_bars == expected_bars
+        drums = self._drum_notes(out)
+        hit_bars = {n.tick // ticks_per_bar for n in drums}
+        crash_bars = {n.tick // ticks_per_bar for n in drums if n.pitch_midi == DRUM_CRASH}
+        assert arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+        # Every section downbeat the kit actually sounds is marked — a long
+        # piece rests the intro, where the first section's own crash lives,
+        # and one mid-piece section, so those downbeats are silent with the
+        # rest of their bars.
+        section_starts = {s * arr.form_bars for s in range(arr.repetition_count)}
+        # ...and so is the kit's own entrance, which the form puts no section
+        # boundary on. Without it the piece's first cymbal waited for bar
+        # `form_bars`, because the only crash before that one is rested.
+        assert crash_bars == (section_starts & hit_bars) | {min(hit_bars)}
+        assert min(crash_bars) == PERCUSSION_ENTRY_BAR
+        assert arr.intro_bars == PERCUSSION_ENTRY_BAR
 
     def test_long_pieces_rest_the_kit_then_it_returns_with_a_crash(self) -> None:
         from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS

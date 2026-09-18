@@ -51,6 +51,7 @@ from saimc.session.deltas import (
     SetAccompanimentDensity,
     SetBassMotion,
     SetCadence,
+    SetDrumEntry,
     SetDrumStyle,
     SetDuration,
     SetHarmonicRhythm,
@@ -122,6 +123,7 @@ _EXAMPLES: dict[str, Delta] = {
     "SetSectionEnergy": SetSectionEnergy(role="peak", factor=1.1),
     "SetDrumStyle": SetDrumStyle(name="funk"),
     "SetPercussionRest": SetPercussionRest(section=2),
+    "SetDrumEntry": SetDrumEntry(bar=6),
 }
 """One request per registered knob, and every one of them differs from the default.
 
@@ -157,6 +159,7 @@ _PLAN_EFFECTS: dict[str, dict[str, object]] = {
     "SetSectionEnergy": {"section_energy_peak": pytest.approx(1.12 * 1.1)},
     "SetDrumStyle": {"drum_style_name": "funk"},
     "SetPercussionRest": {"percussion_rest_section": 2},
+    "SetDrumEntry": {"percussion_entry_bar": 6},
 }
 """What each plan delta writes. The three whose value is *derived* are exempt.
 
@@ -795,16 +798,16 @@ class TestTheUnbuiltKnobs:
             "an alternative that names no request is not an alternative"
         )
 
-    def test_the_unbuilt_requests_are_the_four_the_scope_rule_left_out(self) -> None:
+    def test_the_unbuilt_requests_are_the_three_the_scope_rule_left_out(self) -> None:
         # A ratchet, not evidence: the design's Tier-2 list named these, the plan has
         # no knob for them, and re-opening or shortening the table should be a
         # declared edit rather than a quiet one. `SetHarmonicRhythm` left this table
-        # in F3c, when the plan grew `harmonic_rhythm` — which is why the count in
+        # in F3c, when the plan grew `harmonic_rhythm`, and `SetDrumEntry` left it in
+        # F5a, when the plan grew `percussion_entry_bar` — which is why the count in
         # this test's name is a fact to re-read rather than a constant to trust.
         assert {entry.request for entry in UNCARRIED} == {
             "SetRegister",
             "SetSwing",
-            "SetDrumEntry",
             "ExtendSection",
         }
 

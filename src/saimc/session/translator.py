@@ -375,9 +375,18 @@ KEYWORD_TABLE: Final[tuple[Phrase, ...]] = (
         _fixed(SetHarmonicRhythm((2, 1, 1))),
     ),
     Phrase(("swing", "swung", "swing feel"), _unbuilt("SetSwing")),
+    # The knob exists as of F5a and the words name it without saying where the
+    # kit should come in — `direction_unnamed`'s case exactly, and the *bar* is
+    # the direction here. The model path can read a number out of the sentence
+    # and call `SetDrumEntry(bar=8)`; the keyword reader is handed the spec and
+    # not the words, so it can only say which piece of information is missing.
     Phrase(
         ("drums in at", "drum entry", "drums enter", "drums come in", "bring the drums in"),
-        _unbuilt("SetDrumEntry"),
+        _directionless(
+            "SetDrumEntry",
+            "the words name the kit's entry and not the bar it should come in on; "
+            'say which, as in "drums in at bar 8"',
+        ),
     ),
     Phrase(
         (

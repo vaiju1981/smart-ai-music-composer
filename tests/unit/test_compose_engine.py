@@ -3398,6 +3398,22 @@ class TestHarmonyVoice:
         rather than a re-basing of all three. F3's sibling test below is
         what would catch it if the bass had moved too.
 
+        The eighth is F5a's, and it re-earns the kit alone — the first time
+        in eight that the kit moved and the tune did not, which is the
+        decoupling F2a bought read from the other side. Three things moved
+        it. The kit no longer opens the piece: this one is 30 seconds, so it
+        has no intro bars at all and `percussion_entry_bar` rests bars 0 and
+        1, where a crash and two bars of groove used to be. The seed is the
+        rotation's phase and picks the fill, so the written bars are not the
+        same bars the pre-F5a build wrote. And the vocabulary is wider — the
+        styles carry a second variant per meter and a second fill each — so
+        even a section that reads the same cycle entry may be a different
+        bar. The kit's count reads 191: 177 written hits and 14 ghosts, so
+        the ghost pass is unmoved and what is missing is the two rested
+        bars. The bass and the tune read byte-identical to the pin above,
+        which is what says a rhythm-section change reaches the rhythm
+        section.
+
         The key is named, and that is what keeps the six pins above
         meaning what they say. They were earned at C major, and the claim
         they make is that the *instrument table* moved the melody's
@@ -3428,8 +3444,8 @@ class TestHarmonyVoice:
                 86,
             ),
             VOICE_PERCUSSION: (
-                "064e0d34ebaada775a82ba6115bd2249f000f35579dd0aa8fdbed3b4e896a61e",
-                206,
+                "c28644637555965a6ad16fe0554e705db44f4535420f6dd7bc0bc0a79e1a1645",
+                191,
             ),
         }
         for voice_id, (digest, count) in pinned.items():
