@@ -415,6 +415,40 @@ class TestTheReport:
         assert result.exit_code == 0
         assert "No review file yet" in result.output
 
+    def test_a_run_that_writes_nothing_does_not_claim_to_write(self, tmp_path: Path) -> None:
+        """The preamble said "Writing …" in the mode that writes nothing.
+
+        `--report-only` is the mode that is safe to run anywhere *because*
+        it writes nothing, so announcing a write there is the one sentence
+        the tool must not print. The premise is asserted beside it: the file
+        really is absent afterwards, which is the claim the sentence broke.
+        """
+        review = tmp_path / "absent.jsonl"
+
+        result = runner.invoke(
+            app, ["--corpus", str(_CORPUS), "--review", str(review), "--report-only"]
+        )
+
+        assert result.exit_code == 0
+        assert "Writing" not in result.output
+        assert str(review) in result.output
+        assert not review.exists()
+
+    def test_a_pass_with_nothing_left_to_label_does_not_claim_to_write(
+        self, tmp_path: Path,
+    ) -> None:
+        """The other half of the condition: a full file writes nothing either."""
+        review = tmp_path / "review.jsonl"
+        records, _ = load_corpus(_CORPUS)
+        written = "".join(record.model_dump_json() + "\n" for record in records)
+        review.write_text(written, encoding="utf-8")
+
+        result = runner.invoke(app, ["--corpus", str(_CORPUS), "--review", str(review)])
+
+        assert result.exit_code == 0, result.output
+        assert "Writing" not in result.output
+        assert review.read_text(encoding="utf-8") == written
+
     def test_a_partial_pass_is_not_scored(self, tmp_path: Path) -> None:
         """Scoring a half-finished pass would report the reviewer's progress."""
         review = tmp_path / "review.jsonl"

@@ -409,9 +409,13 @@ def main(
     records, stats = load_corpus(corpus_path)
     done = _existing_ids(review_path)
     pending = [record for record in records if record.id not in done]
+    # Only claim a write when there is going to be one. `--report-only` is the
+    # mode that is safe to run anywhere precisely because it writes nothing,
+    # and a run with nothing pending writes nothing either.
+    writing = not report_only and bool(pending)
     typer.echo(
         f"{stats.total} records; {len(done)} already labeled; {len(pending)} to go. "
-        f"Writing {review_path}."
+        + (f"Writing {review_path}." if writing else f"Review file: {review_path}.")
     )
 
     if not report_only and pending:
