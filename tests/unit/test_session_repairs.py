@@ -60,7 +60,15 @@ from saimc.session.deltas import (
     SetMotifVariation,
     apply_deltas,
 )
-from saimc.session.repairs import _REPAIRS, Attempt, Repair, _Trial, _try, repair_chain
+from saimc.session.repairs import (
+    _REPAIRS,
+    Attempt,
+    Repair,
+    _Trial,
+    _try,
+    repair_chain,
+    repair_table,
+)
 from saimc.session.tools import MAX_REPAIRS_PER_TURN
 from saimc.spec import CompositionSpec, Mood
 
@@ -352,6 +360,63 @@ class TestTheTable:
             "max_leap_semitones": 2,
             "leap_recovery_ratio": 2,
         }
+
+    def test_the_table_is_the_order_it_is_written_as(self) -> None:
+        """The order itself, pinned, because it is the one property a set cannot
+        carry and the three cases above hold for every permutation of it.
+
+        A tuple's order is what settles a tie between two candidates that
+        measure the same: `test_the_kept_request_is_the_better_of_two_that_tie`
+        keeps the first of its two, and both reach a clean piece. So reordering
+        a bar changes *which repair a piece gets* rather than merely which one
+        is proposed first, and the bars' own order is what
+        `retune.proposal` iterates and what `saimc-preferences` prints beside
+        the table. Not evidence that the order is right — nothing can be,
+        because it is a judgement measured on a corpus — but evidence that
+        changing it was deliberate. The arbiter's `METRIC_TIERS` gets the same
+        pin for the same reason.
+        """
+        assert list(_REPAIRS) == [
+            "harmony_pad_coverage",
+            "texture_hierarchy",
+            "max_leap_semitones",
+            "leap_recovery_ratio",
+        ]
+        assert {
+            metric: tuple(candidate.describe() for candidate in candidates)
+            for metric, candidates in _REPAIRS.items()
+        } == {
+            "harmony_pad_coverage": (
+                "SetHarmonyTexture(broken_chord=False)",
+                "SetAccompanimentDensity(step_ticks=1440)",
+            ),
+            "texture_hierarchy": (
+                "SetAccompanimentDensity(step_ticks=1440)",
+                "SetHarmonyTexture(broken_chord=False)",
+            ),
+            "max_leap_semitones": (
+                "SetMelodyBand(semitones=9)",
+                "SetMotifVariation(factor=0.5)",
+            ),
+            "leap_recovery_ratio": (
+                "SetMelodyBand(semitones=14)",
+                "SetMelodyBand(semitones=9)",
+            ),
+        }
+
+    def test_the_table_is_handed_out_as_a_copy(self) -> None:
+        """A caller gets the table to reason about, not the loop's own mapping.
+
+        `repair_chain` reads `_REPAIRS` directly, so an accessor that returned it
+        would let a reader retune the loop by assignment — from a caller that
+        thought it was only looking, which is exactly what `saimc-preferences`
+        is. The values are tuples and immutable; the mapping is not.
+        """
+        handed = repair_table()
+        assert handed == _REPAIRS
+        assert handed is not _REPAIRS
+        handed.clear()
+        assert len(_REPAIRS) == 4, "clearing the copy cleared the loop's table"
 
 
 class TestTheCleanDraft:

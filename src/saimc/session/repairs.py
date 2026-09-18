@@ -404,6 +404,24 @@ def _try(
     )
 
 
+def repair_table() -> dict[str, tuple[Delta, ...]]:
+    """The table `repair_chain` reads, for a caller that has to reason about it.
+
+    A copy, so a reader cannot assign into the loop's own mapping — the values
+    are tuples and immutable, the mapping is not — and a function rather than a
+    public constant because the table stays private on purpose: a repair reads
+    its knob off *this* table and never off the finding's hint, and a module
+    attribute that looked like a suggestion would invite the second read the
+    docstring above exists to prevent.
+
+    **Each tuple's order is significant.** It is what settles a tie between two
+    candidates that measure the same, so a caller ranking these requests is
+    proposing to *reorder the table* — which changes which repair a piece gets —
+    and not merely to sort a set of requests.
+    """
+    return dict(_REPAIRS)
+
+
 def repair_chain(
     root_spec: CompositionSpec,
     prefix: Sequence[Delta],

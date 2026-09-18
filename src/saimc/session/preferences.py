@@ -77,9 +77,11 @@ class Preference:
 
     The row of a preference dataset: `(plan_hash, delta, verdict)` says what was
     asked for, in which piece, and how the result was received — and the last of
-    those is the only part a threshold cannot supply. Nothing consumes it yet,
-    and it is written now because the alternative is losing it: the chain it
-    describes lives on drafts, and drafts are what a session prunes.
+    those is the only part a threshold cannot supply. The chain it describes
+    lives on drafts, and drafts are what a session prunes, which is why the rows
+    are written down rather than derived. `retune.proposal` reads them and
+    `saimc-preferences` prints what it finds; nothing edits the repair table from
+    them, deliberately, so a row is a measurement rather than a setting.
 
     `requests_source` is the *step's* reader rather than the judged draft's,
     because one chain can be built by two of them — a slider dragged and then a
