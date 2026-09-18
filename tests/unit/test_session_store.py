@@ -27,9 +27,11 @@ import pytest
 
 from saimc.compose.engine import compose
 from saimc.compose.linter import lint
+from saimc.compose.motif import BassMotion
 from saimc.compose.plan import default_plan
 from saimc.jobs.storage import JobStorage
 from saimc.quality import score_piece
+from saimc.session.deltas import SetBassMotion
 from saimc.session.models import (
     SESSION_FORMAT,
     Draft,
@@ -39,6 +41,7 @@ from saimc.session.models import (
     Turn,
     UnsupportedSessionVersionError,
 )
+from saimc.session.preferences import Preference, PreferenceLog
 from saimc.session.store import (
     HISTORY_DIRNAME,
     SESSION_RETENTION_DAYS,
@@ -548,3 +551,35 @@ class TestTheTwoRootsKnowNothingOfEachOther:
         jobs.save(job, at=datetime.now(UTC) - timedelta(days=30))
         jobs.prune()
         assert sessions.get(session.session_id).session_id == session.session_id
+
+    def test_a_preference_log_in_a_shared_root_is_not_a_session(self, tmp_path) -> None:
+        """The third member of the family, and the one retention must never reach.
+
+        The log has a root of its own precisely because it is not pruned — but a
+        deployment that ignored that and pointed it at the sessions root must
+        still not have its judgements read as sessions or deleted with them. Both
+        halves are asserted because they fail differently: the listing is about a
+        glob, and the prune is about the bytes.
+        """
+        root = tmp_path / "shared"
+        sessions = SessionStorage(root)
+        log = PreferenceLog(root)
+        session = sessions.create("p")
+        assert log.append(
+            [
+                Preference(
+                    draft_id="draft-one",
+                    at=_NOW,
+                    plan_hash="0" * 64,
+                    delta=SetBassMotion(motion=BassMotion.SPARSE),
+                    verdict="like",
+                )
+            ]
+        ) == 1
+
+        assert [s.session_id for s in sessions.list_all()] == [session.session_id]
+        before = log.path.read_bytes()
+        sessions.save(session, at=datetime.now(UTC) - timedelta(days=SESSION_RETENTION_DAYS + 1))
+        assert sessions.prune() == 1
+        assert log.path.read_bytes() == before
+        assert len(log.rows()) == 1

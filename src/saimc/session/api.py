@@ -73,6 +73,7 @@ from saimc.session.models import (
     Verdict,
     VerdictValue,
 )
+from saimc.session.preferences import PreferenceLog, preference_rows
 from saimc.session.store import SessionStorage, UndoUnavailable
 from saimc.session.tools import (
     ToolBudget,
@@ -337,6 +338,19 @@ def _storage(request: Request) -> SessionStorage:
     if storage is None:
         raise HTTPException(status_code=500, detail="Session storage not configured.")
     return storage
+
+
+def _preference_log(request: Request) -> PreferenceLog:
+    """The log this app writes judgements to.
+
+    A 500 when it is missing rather than a silent skip: a verdict whose row went
+    nowhere is the one failure the log exists to prevent, and it would otherwise
+    be invisible — the response carries the verdict either way.
+    """
+    log: PreferenceLog | None = getattr(request.app.state, "preference_log", None)
+    if log is None:
+        raise HTTPException(status_code=500, detail="Preference log not configured.")
+    return log
 
 
 def _jobs(request: Request) -> JobStorage:
@@ -685,9 +699,10 @@ def record_verdict(session_id: str, body: VerdictRequest, request: Request) -> S
     the piece is rendered and the opinion still counts. A verdict in words alone
     writes no log row, since words are not yet a judgement this can weigh.
 
-    The rows go into the session document rather than into this response: they
-    are read by a dataset builder over the store, not by the studio, which
-    already has the verdicts.
+    The rows go to the preference log rather than into this response or into the
+    session document: they are read by a dataset builder over the store, not by
+    the studio, which already has the verdicts — and they have to outlive the
+    session they name, so they cannot be written into it.
     """
     sessions = _storage(request)
     session = _session(request, session_id)
@@ -711,6 +726,13 @@ def record_verdict(session_id: str, body: VerdictRequest, request: Request) -> S
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     session.record_verdict(verdict)
     sessions.save(session)
+    # After the save, deliberately. A row for a verdict the store never accepted
+    # is a preference the user did not cast, while a verdict whose row was lost
+    # is a hole in a dataset — and the two orders differ only when the save
+    # fails, which is the one moment the difference is a judgement rather than a
+    # detail. The rows are read off the session that was just persisted, so the
+    # plan hash they carry is the stored draft's.
+    _preference_log(request).append(preference_rows(session, verdict))
     return _serialize_session(session)
 
 

@@ -43,14 +43,12 @@ from saimc.session.deltas import (
     SetTempo,
     SetTimeSignature,
     apply_deltas,
-    delta_to_dict,
 )
 from saimc.session.models import (
-    _REQUEST_SOURCES,
+    REQUEST_SOURCES,
     SESSION_FORMAT,
     SESSION_SCHEMA_VERSION,
     Draft,
-    Preference,
     Publication,
     Session,
     SketchRecord,
@@ -58,7 +56,6 @@ from saimc.session.models import (
     Turn,
     UnsupportedSessionVersionError,
     Verdict,
-    VerdictValue,
     require_id_segment,
 )
 from saimc.session.tools import _draft_from
@@ -154,7 +151,6 @@ def _session(
     turns: list[Turn] | None = None,
     drafts: list[Draft] | None = None,
     verdicts: list[Verdict] | None = None,
-    preferences: list[Preference] | None = None,
     publication: Publication | None = None,
     spec: CompositionSpec | None = None,
 ) -> Session:
@@ -167,7 +163,6 @@ def _session(
         turns=[] if turns is None else turns,
         drafts=[] if drafts is None else drafts,
         verdicts=[] if verdicts is None else verdicts,
-        preferences=[] if preferences is None else preferences,
         publication=publication,
     )
 
@@ -573,7 +568,7 @@ class TestHowTheRequestsWereAskedFor:
         load-time refusal reject a source this build writes, which is the kind of
         disagreement a ratchet is for.
         """
-        assert set(_REQUEST_SOURCES) == set(get_args(RequestSource))
+        assert set(REQUEST_SOURCES) == set(get_args(RequestSource))
 
     def test_a_chain_with_no_recorded_source_is_read_as_absent(self) -> None:
         """The tolerance, and the reason the invariant is one-directional.
@@ -602,254 +597,6 @@ class TestHowTheRequestsWereAskedFor:
 
         with pytest.raises(ValueError, match="no step to place"):
             Draft.from_document(document)
-
-
-class TestThePreferenceLog:
-    """Every verdict, read against the chain of the draft it judged.
-
-    A row is `(plan_hash, delta, verdict)` — what was asked for, in which piece,
-    and how it was received — and the last of the three is the only part no
-    threshold can supply. It is written down rather than derived because the
-    chain it describes lives on drafts, and drafts are what a session prunes;
-    these cases are about the row being the *whole* datum, which means naming the
-    step that asked for each request rather than the reader that touched it last.
-    """
-
-    _FIRST = (SetBassMotion(motion=BassMotion.SPARSE),)
-    _SECOND = (SetTimeSignature(TimeSignature.THREE_FOUR),)
-
-    def _chain(self) -> list[Draft]:
-        """A root, a typed revision of it, and a model-read revision of that.
-
-        Two different readers on one chain on purpose: it is the case a log
-        labelling every row with the last reader would get wrong, and the step
-        each request belongs to is the only place the right answer lives.
-        """
-        return [
-            _draft("draft-one"),
-            _revision(self._FIRST, source="typed"),
-            _revision(
-                (*self._FIRST, *self._SECOND),
-                parent_id="draft-two",
-                draft_id="draft-three",
-                source="model",
-            ),
-        ]
-
-    def _judged(
-        self, session: Session, draft_id: str, *, value: VerdictValue | None = "like"
-    ) -> Session:
-        session.record_verdict(Verdict(draft_id=draft_id, at=_NOW, value=value))
-        return session
-
-    def test_one_row_is_written_for_every_request_in_the_chain(self) -> None:
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-
-        assert [(row.delta, row.requests_source) for row in session.preferences] == [
-            (self._FIRST[0], "typed"),
-            (self._SECOND[0], "model"),
-        ]
-
-    def test_the_case_can_tell_the_two_readers_apart(self) -> None:
-        """The premise the ordering above rests on, asserted rather than believed.
-
-        Why the pairing is a walk: one chain, two readers, two rows. A fixture
-        whose steps shared a reader would let the case above pass while saying
-        nothing about the walk at all — so the judged draft's own source is
-        asserted to be the one *not* on the first row.
-        """
-        chain = self._chain()
-        session = self._judged(_session(drafts=chain), "draft-three")
-
-        assert chain[-1].requests_source == "model"
-        assert session.preferences[0].requests_source != chain[-1].requests_source
-
-    def test_every_row_names_the_piece_the_verdict_was_cast_on(self) -> None:
-        """A chain's requests are all changes to the one piece the user heard."""
-        chain = self._chain()
-        session = self._judged(_session(drafts=chain), "draft-three")
-
-        assert {row.plan_hash for row in session.preferences} == {chain[-1].plan_hash}
-        assert {row.draft_id for row in session.preferences} == {"draft-three"}
-        assert {row.verdict for row in session.preferences} == {"like"}
-        assert {row.at for row in session.preferences} == {_NOW}
-
-    def test_the_rows_are_in_the_order_the_requests_were_added(self) -> None:
-        """The chain's order, so a log read in file order is a log in time order."""
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-
-        assert [row.delta for row in session.preferences] == [*self._FIRST, *self._SECOND]
-
-    def test_the_verdict_is_recorded_beside_the_rows(self) -> None:
-        """Two records of one judgement, and the session keeps both."""
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-
-        assert [(verdict.draft_id, verdict.value) for verdict in session.verdicts] == [
-            ("draft-three", "like")
-        ]
-
-    def test_a_piece_drafted_from_the_brief_has_no_request_to_weigh(self) -> None:
-        """Liking it is a judgement about the spec; there is no change to attribute."""
-        session = self._judged(_session(drafts=self._chain()), "draft-one")
-
-        assert session.preferences == []
-        assert len(session.verdicts) == 1
-
-    def test_a_verdict_in_words_alone_writes_no_row(self) -> None:
-        """Words are the most useful thing the product gets and are not yet a preference.
-
-        Nothing here knows whether "the bass is muddy" is praise, and a row
-        claiming one would be this module inventing a judgement the user made in
-        a vocabulary it cannot read.
-        """
-        session = _session(drafts=self._chain())
-        session.record_verdict(
-            Verdict(draft_id="draft-three", at=_NOW, feedback="the bass is muddy")
-        )
-
-        assert session.preferences == []
-        assert session.verdicts[0].feedback == "the bass is muddy"
-
-    def test_the_log_is_written_down_and_read_back(self) -> None:
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-
-        document = session.to_document()
-        assert document["preferences"] == [row.to_document() for row in session.preferences]
-        assert Session.from_document(document).preferences == session.preferences
-
-    def test_a_row_outliving_the_draft_it_judges_is_not_refused(self) -> None:
-        """The asymmetry with `verdicts`, and the whole reason the row is stored.
-
-        A verdict naming a draft the session does not have is a broken record.
-        A row naming one is the judgement kept after the pruning that would take
-        the draft away — so it is the one thing `check()` must not refuse.
-        """
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-        session.drafts = [draft for draft in session.drafts if draft.draft_id == "draft-one"]
-        session.verdicts = []
-
-        session.check()
-        assert Session.from_document(session.to_document()).preferences == session.preferences
-
-    def test_a_document_from_before_the_log_is_read_as_absent(self) -> None:
-        """`.get()` tolerance, as every other field of this record has."""
-        document = self._judged(_session(drafts=self._chain()), "draft-three").to_document()
-        del document["preferences"]
-
-        assert Session.from_document(document).preferences == []
-
-    def test_a_row_whose_verdict_is_not_a_verdict_is_refused_on_load(self) -> None:
-        document = self._judged(_session(drafts=self._chain()), "draft-three").to_document()
-        document["preferences"][0]["verdict"] = "shrug"
-
-        with pytest.raises(ValueError, match="preference verdict"):
-            Session.from_document(document)
-
-    def test_a_row_whose_source_is_outside_the_vocabulary_is_refused_on_load(self) -> None:
-        document = self._judged(_session(drafts=self._chain()), "draft-three").to_document()
-        document["preferences"][0]["requests_source"] = "whispered"
-
-        with pytest.raises(ValueError, match="requests_source"):
-            Session.from_document(document)
-
-    def test_a_row_whose_delta_is_not_a_request_is_refused_on_load(self) -> None:
-        document = self._judged(_session(drafts=self._chain()), "draft-three").to_document()
-        document["preferences"][0]["delta"] = {"knob": "SetSaxophone"}
-
-        with pytest.raises(ValueError, match="SetSaxophone"):
-            Session.from_document(document)
-
-    def test_a_chain_that_does_not_line_up_places_what_it_can(self) -> None:
-        """A posed draft, not a written one: the constructor cannot see a prefix.
-
-        `deltas` and `parent_id` are checked together on one record, and whether
-        a parent's chain is a prefix of its child's is a fact about *two*. So a
-        session can hold a line that does not line up, and it is reached by
-        posing one — the same way a hand-edited document reaches it in the wild.
-        The requests the walk cannot place carry no source rather than a guess.
-        """
-        session = _session(
-            drafts=[
-                _draft("draft-one"),
-                _draft("draft-two", parent_id="draft-one", deltas=self._SECOND),
-                _draft(
-                    "draft-three",
-                    parent_id="draft-two",
-                    deltas=self._FIRST,
-                    requests_source="typed",
-                ),
-            ]
-        )
-        session.record_verdict(Verdict(draft_id="draft-three", at=_NOW, value="like"))
-
-        assert [(row.delta, row.requests_source) for row in session.preferences] == [
-            (self._FIRST[0], None)
-        ]
-
-    def test_a_cycle_in_the_lineage_reports_what_it_cannot_place(self) -> None:
-        """Two drafts naming each other, which no tool writes and a file can.
-
-        The walk terminates, reports each request once, and pairs the request it
-        cannot place with no source rather than with a guess. The terminator here
-        is the prefix check rather than the record of what has been seen — this
-        chain's second step is not an extension of its parent — so the guard is
-        witnessed by the case below, and this one is about the answer being
-        honest rather than about which line produced it.
-        """
-        session = _session(
-            drafts=[
-                _draft("draft-one"),
-                _draft("draft-two", parent_id="draft-three", deltas=self._FIRST),
-                _draft(
-                    "draft-three",
-                    parent_id="draft-two",
-                    deltas=(*self._FIRST, *self._SECOND),
-                    requests_source="typed",
-                ),
-            ]
-        )
-        session.record_verdict(Verdict(draft_id="draft-three", at=_NOW, value="like"))
-
-        assert [(row.delta, row.requests_source) for row in session.preferences] == [
-            (self._FIRST[0], None),
-            (self._SECOND[0], "typed"),
-        ]
-
-    def test_the_walk_is_ended_by_the_drafts_it_has_seen_and_not_by_their_shape(self) -> None:
-        """The cycle the prefix check cannot catch, which is why the guard is there.
-
-        A loop whose chains each extend their parent's evenly has every prefix
-        check pass on the way round — the closure of a loop of extensions is
-        equality — so nothing but the set of what the walk has visited ends it.
-        Fired as a sabotage: deleting that guard hangs this case, and the case
-        above cannot see the deletion at all, which is the whole reason the two
-        are separate.
-        """
-        chain = (*self._FIRST, *self._SECOND)
-        session = _session(
-            drafts=[
-                _draft("draft-one"),
-                _draft("draft-two", parent_id="draft-three", deltas=chain),
-                _draft(
-                    "draft-three",
-                    parent_id="draft-two",
-                    deltas=chain,
-                    requests_source="typed",
-                ),
-            ]
-        )
-        session.record_verdict(Verdict(draft_id="draft-three", at=_NOW, value="like"))
-
-        assert [(row.delta, row.requests_source) for row in session.preferences] == [
-            (self._FIRST[0], None),
-            (self._SECOND[0], None),
-        ]
-
-    def test_a_row_whose_delta_is_stored_as_it_is_written(self) -> None:
-        """The delta goes in through `delta_to_dict`, the same form a draft's chain uses."""
-        session = self._judged(_session(drafts=self._chain()), "draft-three")
-
-        assert session.to_document()["preferences"][0]["delta"] == delta_to_dict(self._FIRST[0])
 
 
 class TestSession:
@@ -994,18 +741,44 @@ class TestSession:
         pins are. `6` was the draft's scorecard gaining `harmony_pad_coverage`,
         `7` is `RequestSource` gaining `repair` — a word an older build would
         refuse rather than read, which is why it moved the schema and not merely
-        a table — and `8` is the session's `finalized_job_id` becoming the
+        a table — `8` is the session's `finalized_job_id` becoming the
         `publication` pair, which is a *change of meaning* rather than an
         addition: an older document's job id names no draft, and reading it as a
-        publication would have to invent one.
+        publication would have to invent one, and `9` is the session *losing*
+        `preferences` to the log that outlives it. The guard compares with `!=`,
+        so a `Session:8` on disk is refused on load rather than read as a session
+        whose log is empty — which is the difference between an older build's
+        judgements being unreadable here and being thrown away.
         """
-        assert SESSION_FORMAT == "Session:8"
+        assert SESSION_FORMAT == "Session:9"
 
     def test_a_foreign_session_document_is_refused(self) -> None:
         """Derived, not spelled out: a literal here is a trap for the next
         bump — it passed until the constant caught up with it."""
         document = _session().to_document()
         document["format"] = f"Session:{SESSION_SCHEMA_VERSION + 1}"
+        with pytest.raises(UnsupportedSessionVersionError, match="format"):
+            Session.from_document(document)
+
+    def test_the_document_the_rows_moved_out_of_is_refused_rather_than_read(self) -> None:
+        """The one version below, which is where the cost of the move is paid.
+
+        The guard compares with `!=`, so a `Session:8` — the shape that still
+        carried `preferences` — is refused instead of being completed. Reading it
+        would produce a session whose log is empty, and "this build cannot see
+        your judgements" is a different and worse statement than "this build
+        cannot read this session". Fired as a sabotage by widening the guard to
+        `>`, which passes every other case in this class.
+
+        What the refusal costs is real and is not softened here: the rows an
+        older build wrote are *inside* those documents, so no version of this
+        build reads them, and the retained session is what retention will
+        eventually delete. The log starts empty and fills from the next verdict.
+        """
+        document = _session().to_document()
+        document["format"] = "Session:8"
+        document["preferences"] = []
+
         with pytest.raises(UnsupportedSessionVersionError, match="format"):
             Session.from_document(document)
 
@@ -1022,16 +795,21 @@ def test_the_module_exports_what_it_claims() -> None:
 
     Added with `Publication`, which is what the ratchet is for: the new
     record is an export a reader of this module can rely on, and the next one
-    to move the surface fails here rather than going unremarked.
+    to move the surface fails here rather than going unremarked. It has since
+    moved three times, each of them a declared edit: `Preference` left for the
+    log's own module, and `REQUEST_SOURCES`, `VERDICT_VALUES` and `one_of`
+    joined, because a value another module reads is contract rather than
+    private.
     """
     from saimc.session import models
 
     assert set(models.__all__) == {
+        "REQUEST_SOURCES",
         "SESSION_FORMAT",
         "SESSION_FORMAT_PREFIX",
         "SESSION_SCHEMA_VERSION",
+        "VERDICT_VALUES",
         "Draft",
-        "Preference",
         "Publication",
         "Session",
         "SketchRecord",
@@ -1042,5 +820,6 @@ def test_the_module_exports_what_it_claims() -> None:
         "UnsupportedSessionVersionError",
         "Verdict",
         "VerdictValue",
+        "one_of",
         "require_id_segment",
     }

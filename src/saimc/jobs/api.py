@@ -50,6 +50,7 @@ from saimc.jobs.worker import DEFAULT_QUEUE, QueueUnavailable, enqueue_or_fail
 from saimc.llm.base import ChatClient
 from saimc.session.api import conduct, http_from_refusal
 from saimc.session.api import router as session_router
+from saimc.session.preferences import PreferenceLog
 from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolRefusal
 from saimc.spec import CompositionSpec
@@ -502,10 +503,11 @@ def _media_type(artifact: ArtifactRecord) -> str:
 def create_app(
     jobs_root: Path | str | None = None,
     sessions_root: Path | str | None = None,
+    preferences_root: Path | str | None = None,
     *,
     session_llm: ChatClient | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app with its two storages and, optionally, a model.
+    """Build the FastAPI app with its three storages and, optionally, a model.
 
     **No model by default, and that is the decision worth reading.** Every
     existing test and every local run builds the app through here, and a factory
@@ -513,6 +515,11 @@ def create_app(
     `create_app(jobs_root=tmp_path)` would reach the configured host on every
     `POST /jobs`, in tests that mean to touch no network at all. A factory
     whose defaults are inert is one whose callers opt into a model.
+
+    Three roots rather than one because the three records have three lifetimes:
+    a job is pruned at 7 days, a session at 30, and the preference log never.
+    All three are optional and each store defaults its own root from the
+    environment, so a caller that names none gets the deployment's own layout.
 
     `create_served_app` is the one that reads the configuration, and it is what
     the server runs.
@@ -528,6 +535,7 @@ def create_app(
     )
     app.state.job_storage = JobStorage(jobs_root or DEFAULT_JOBS_DIR)
     app.state.session_storage = SessionStorage(sessions_root)
+    app.state.preference_log = PreferenceLog(preferences_root)
     app.state.session_llm = session_llm
     app.include_router(router)
     app.include_router(session_router)

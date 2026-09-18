@@ -27,6 +27,8 @@ broker.
 
 from __future__ import annotations
 
+import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,7 @@ from saimc.render.audio import AudioArtifact
 from saimc.session import tools
 from saimc.session.api import http_from_refusal
 from saimc.session.models import Session
+from saimc.session.preferences import PreferenceLog
 from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolRefusal
 from saimc.spec import CompositionSpec, Mood, SpecError
@@ -181,8 +184,14 @@ def rendered(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 @pytest.fixture
-def roots(tmp_path: Path) -> tuple[Path, Path]:
-    return tmp_path / "jobs", tmp_path / "sessions"
+def roots(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Three roots, because the three records have three lifetimes.
+
+    A preference log under the sessions root would be deleted by the session's
+    own retention, which is the whole reason it has a root of its own — so the
+    tests address it the way `run.sh` does, by name.
+    """
+    return tmp_path / "jobs", tmp_path / "sessions", tmp_path / "preferences"
 
 
 @pytest.fixture
@@ -191,12 +200,15 @@ def model() -> ScriptedModel:
 
 
 @pytest.fixture
-def client(roots: tuple[Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch):
+def client(
+    roots: tuple[Path, Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch
+):
     """An app with a model, over `tmp_path`, touching no broker."""
     monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
     app = create_app(
         jobs_root=roots[0],
         sessions_root=roots[1],
+        preferences_root=roots[2],
         session_llm=model,
     )
     return TestClient(app)
@@ -230,7 +242,7 @@ class TestCreateSession:
         assert len(body["drafts"]) == 2
 
     def test_a_specific_brief_publishes_without_being_asked(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
     ) -> None:
         """The one-shot promise, kept by the harness rather than by a rule table.
 
@@ -310,7 +322,7 @@ class TestCreateSession:
         assert len(body["drafts"]) == 2
 
     def test_a_chat_only_model_degrades_instead_of_crashing(
-        self, roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+        self, roots: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`parse_brief` needs `LLMClient`; a client that is only a `ChatClient` refuses.
 
@@ -329,7 +341,7 @@ class TestCreateSession:
         assert body["spec"] is None
 
     def test_a_session_without_a_model_is_refused_before_it_is_written(
-        self, roots: tuple[Path, Path]
+        self, roots: tuple[Path, Path, Path]
     ) -> None:
         """503 rather than an empty session the caller has to notice."""
         app = create_app(jobs_root=roots[0], sessions_root=roots[1])
@@ -575,7 +587,7 @@ class TestVerdict:
         assert "draft-1" in detail
 
     def test_a_like_on_a_revised_draft_writes_the_preference_row(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
     ) -> None:
         """The row a dataset is built from, written now because nothing else can.
 
@@ -587,9 +599,10 @@ class TestVerdict:
         row labelled with the draft's own reader would say the user typed a
         chain the conductor could have written.
 
-        Read out of the stored document rather than the response, which is the
-        other half of the decision: the log is for a dataset builder over the
-        store, and the studio already has the verdicts.
+        The log is read from its own root and the session document from its own,
+        which is the other half of the decision and now visible on disk: the
+        rows are for a dataset builder over a file, and the studio already has
+        the verdicts.
         """
         created = _drafts(client, model)
         revised = client.post(
@@ -601,16 +614,44 @@ class TestVerdict:
             json={"draft_id": revised["draft_id"], "value": "like"},
         )
 
-        session = SessionStorage(roots[1]).get(created["session_id"])
-        rows = [row.to_document() for row in session.preferences]
+        rows = [row.to_document() for row in PreferenceLog(roots[2]).rows()]
         assert [
             (row["draft_id"], row["delta"], row["requests_source"], row["verdict"]) for row in rows
         ] == [(revised["draft_id"], _SPARSE, "typed", "like")]
         assert rows[0]["plan_hash"] == revised["plan_hash"]
-        assert "preferences" not in client.get(f"/sessions/{created['session_id']}").json()
+
+    def test_a_verdict_survives_the_deletion_of_its_session_directory(
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
+    ) -> None:
+        """The claim the row's own docstring makes, end to end and finally true.
+
+        The old form of this case was `"preferences" not in GET /sessions/{id}`,
+        which the move made structurally unwidable — a session with no such field
+        cannot report one. What is worth pinning instead is the thing the move is
+        *for*: the retention walker deletes the directory, and the judgement is
+        still there. Written through the endpoint and read off the disk, so the
+        path tested is the one a deployment runs.
+        """
+        created = _drafts(client, model)
+        revised = client.post(
+            f"/sessions/{created['session_id']}/deltas",
+            json={"draft_id": _FIRST, "deltas": [_SPARSE], "sketch": False},
+        ).json()["draft"]
+        client.post(
+            f"/sessions/{created['session_id']}/verdict",
+            json={"draft_id": revised["draft_id"], "value": "like"},
+        )
+
+        session_dir = roots[1] / created["session_id"]
+        document = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+        assert "preferences" not in document
+
+        shutil.rmtree(session_dir)
+        assert list(SessionStorage(roots[1]).list_all()) == []
+        assert [row.draft_id for row in PreferenceLog(roots[2]).rows()] == [revised["draft_id"]]
 
     def test_a_verdict_in_words_alone_writes_no_row(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
     ) -> None:
         """Words are not yet a judgement this can weigh against a plan.
 
@@ -633,12 +674,44 @@ class TestVerdict:
 
         session = SessionStorage(roots[1]).get(created["session_id"])
         assert [verdict.feedback for verdict in session.verdicts] == ["the bass is muddy"]
-        assert session.preferences == []
+        assert PreferenceLog(roots[2]).rows() == ()
+        assert not PreferenceLog(roots[2]).path.exists()
+
+    def test_a_verdict_the_store_never_accepted_writes_no_row(
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ordering of the save and the append, which is only visible when
+        the save fails.
+
+        A row for a verdict the store never accepted is a preference the user
+        did not cast, while a verdict whose row was lost is a hole in a dataset —
+        and the two orders differ only here, at the one moment the difference is
+        a judgement rather than a detail. So the endpoint saves first, and this
+        is the case that says so: with the write broken, nothing reaches the log.
+        """
+        created = _drafts(client, model)
+        revised = client.post(
+            f"/sessions/{created['session_id']}/deltas",
+            json={"draft_id": _FIRST, "deltas": [_SPARSE], "sketch": False},
+        ).json()["draft"]
+
+        def _boom(_session: Session) -> None:
+            raise OSError("the disk is full")
+
+        monkeypatch.setattr(client.app.state.session_storage, "save", _boom)
+        with pytest.raises(OSError, match="disk is full"):
+            client.post(
+                f"/sessions/{created['session_id']}/verdict",
+                json={"draft_id": revised["draft_id"], "value": "like"},
+            )
+
+        assert PreferenceLog(roots[2]).rows() == ()
+        assert not PreferenceLog(roots[2]).path.exists()
 
 
 class TestFinalize:
     def test_finalizing_a_draft_publishes_it_and_queues_the_render(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
     ) -> None:
         created = _drafts(client, model)
         response = client.post(
@@ -807,7 +880,7 @@ class TestSketch:
         assert response.status_code == 404
 
     def test_a_sketch_whose_file_is_gone_is_410(
-        self, client: TestClient, sketched: dict[str, Any], roots: tuple[Path, Path]
+        self, client: TestClient, sketched: dict[str, Any], roots: tuple[Path, Path, Path]
     ) -> None:
         """Rendered and then lost on disk is a different thing to be told than 'no such sketch'."""
         sessions = SessionStorage(roots[1])
@@ -1112,7 +1185,7 @@ class TestDeltas:
         assert len(after["drafts"]) == 2
 
     def test_the_draft_remembers_how_its_requests_were_asked_for(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path]
+        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path]
     ) -> None:
         """Recorded on the child, and durable before the answer is.
 

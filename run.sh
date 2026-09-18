@@ -45,6 +45,13 @@ valid_port "$VALKEY_PORT" || {
 }
 
 export SAIMC_JOBS_DIR="${SAIMC_JOBS_DIR:-$REPO_ROOT/var/jobs}"
+# Sessions and the preference log each get their own root, and the server is
+# where that becomes visible: the three stores default their roots from the
+# environment, so this is the one place a deployment says where its state
+# lives. The preference log is never pruned and must not sit under a root that
+# is, which is the reason it is named here rather than left to the default.
+export SAIMC_SESSIONS_DIR="${SAIMC_SESSIONS_DIR:-$REPO_ROOT/var/sessions}"
+export SAIMC_PREFERENCES_DIR="${SAIMC_PREFERENCES_DIR:-$REPO_ROOT/var/preferences}"
 export SAIMC_VALKEY_URL="$VALKEY_URL"
 # Prefer the repo's audited LGPL build over any GPL ffmpeg on PATH —
 # the render audit gate would (correctly) reject the latter.
