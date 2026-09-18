@@ -8,10 +8,14 @@ The corpus has a second file — the independent review pass required by
 `docs/model-fine-tuning.md` before any candidate model is scored — and it
 is in this same schema, so this loader validates both. See
 `DEFAULT_REVIEW_PATH` and `saimc.labels`.
+
+`corpus_sha256` is the one reader here that does *not* parse: see its own
+docstring for why the digest is taken over the file's bytes.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -129,6 +133,27 @@ def load_corpus(
     )
 
 
+def corpus_sha256(path: Path | str = DEFAULT_CORPUS_PATH) -> str:
+    """The corpus file's SHA-256, for the hash every benchmark run records.
+
+    `docs/parser-benchmark.md` requires the corpus hash alongside a run so a
+    recorded score can be invalidated when the corpus moves, and nothing
+    computed one: the corpus has already been rewritten twice (for schema v2
+    and v3) with no version or hash trail, so the two runs either side of those
+    rewrites are not comparable and nothing says so.
+
+    **Hashed as bytes, not as a canonical re-serialization of the parsed
+    records.** A canonical form would be stable across a reformat, which sounds
+    better until the hash has to answer the question it is recorded for — "is
+    this the same corpus the stored score was taken against?" — and a canonical
+    digest is not the file on disk, so it cannot tell an edited file from a
+    re-serialized one. Bytes can, and they answer it the conservative way:
+    white-space drift invalidates a comparison rather than silently joining it.
+    """
+    with Path(path).open("rb") as fh:
+        return hashlib.file_digest(fh, "sha256").hexdigest()
+
+
 def iter_records(records: Iterable[BenchmarkRecord]) -> Iterable[BenchmarkRecord]:
     """Passthrough iterator for symmetry with potential future generators."""
     yield from records
@@ -141,6 +166,7 @@ __all__ = [
     "BenchmarkRecord",
     "CorpusStats",
     "ExpectedErrorCode",
+    "corpus_sha256",
     "iter_records",
     "load_corpus",
 ]

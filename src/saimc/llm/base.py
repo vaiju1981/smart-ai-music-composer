@@ -70,6 +70,28 @@ class ParseResult:
     """Free-form capability-probe result line (`schema_native | prompted_json | error:...`)
     for logging and benchmark diagnostics. None if no probe was run."""
 
+    first_attempt: Literal["valid", "invalid"] | None = None
+    """What the *first* attempt read — set by `saimc.parser.parse_prompt`, not by an adapter.
+
+    **Three states, not two.** `"valid"` and `"invalid"` are the two the field's
+    name implies, and `None` is the third: no model output was read at all. It is
+    the value a run gets when every attempt failed to reach the host, and it is
+    not the same thing as `"invalid"` — §8's first bar is about a model's first
+    *response*, and a run in which no model ever answered cannot be scored
+    against it. Recording `"invalid"` there would charge the model for the
+    network's failure, which is the one thing that makes the bar meaningless on a
+    flaky host.
+
+    A typed field rather than an `extra` key, because `extra` is documented above
+    as the free-form *diagnostic* channel and this value drives a scored release
+    bar; and rather than an inference from `attempts` plus the error code,
+    because that rule would live outside the loop that witnessed the attempt. The
+    loop is the witness; this is where its testimony goes.
+
+    Adapters leave it alone. An adapter does not know whether its call was the
+    first one, and a `ParseResult` built by one is an attempt rather than a run.
+    """
+
     spec: CompositionSpec | None = None
     error: SpecError | None = None
     extra: dict[str, str] = field(default_factory=dict)

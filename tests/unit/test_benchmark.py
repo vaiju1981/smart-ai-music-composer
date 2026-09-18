@@ -26,7 +26,8 @@ def _obs(
     error_code: str | None = None,
     parser_source: str = "llm",
     attempts: int = 1,
-    raw_first_response_valid: bool = True,
+    raw_first_response_valid: bool | None = True,
+    cost_usd: float | None = 0.0,
     latency_ms: int = 50,
 ) -> ParseObservation:
     from saimc.spec import CompositionSpec
@@ -40,7 +41,7 @@ def _obs(
             structured_output=False,
             latency_ms=latency_ms,
             raw_first_response_valid=raw_first_response_valid,
-            cost_usd=0.0,
+            cost_usd=cost_usd,
         )
     spec = CompositionSpec(mood=Mood(mood), duration_seconds=duration)
     return ParseObservation(
@@ -51,7 +52,7 @@ def _obs(
         structured_output=True,
         latency_ms=latency_ms,
         raw_first_response_valid=raw_first_response_valid,
-        cost_usd=0.0,
+        cost_usd=cost_usd,
     )
 
 
@@ -95,6 +96,49 @@ def test_corpus_loader_malformed_record(tmp_path: Path) -> None:
     bad.write_text('{"id": "x", "category": "supported_paraphrase"}\n')
     with pytest.raises(ValueError, match="Invalid record"):
         load_corpus(bad)
+
+
+class TestTheCorpusHash:
+    """`corpus_sha256`, and the property that makes it worth recording."""
+
+    def test_it_is_the_sha256_of_the_file_bytes(self, tmp_path: Path) -> None:
+        import hashlib
+
+        from saimc.benchmark_corpus import corpus_sha256
+
+        path = tmp_path / "c.jsonl"
+        path.write_bytes(b'{"id": "a"}\n')
+        assert corpus_sha256(path) == hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_whitespace_drift_changes_it(self, tmp_path: Path) -> None:
+        """The claim that separates a byte digest from a canonical one.
+
+        Both files below parse to the same record — so an implementation that
+        re-serialized the parsed records would call them the same corpus — and
+        the hash has to say they are not, because the question it is recorded
+        to answer is "is this the file the stored score was taken against?".
+        """
+        from saimc.benchmark_corpus import corpus_sha256
+
+        one = tmp_path / "one.jsonl"
+        two = tmp_path / "two.jsonl"
+        one.write_text('{"id": "a", "n": 1}\n', encoding="utf-8")
+        two.write_text('{"id": "a",   "n": 1}\n', encoding="utf-8")
+        assert corpus_sha256(one) != corpus_sha256(two)
+
+    def test_the_canonical_corpus_has_a_stable_hash(self) -> None:
+        """A ratchet on the file itself, so a rewrite of it is a declared edit.
+
+        The corpus has been rewritten twice already with no version or hash
+        trail, which left the runs either side of those rewrites incomparable
+        and nothing saying so. This pin is what makes the next rewrite say so.
+        """
+        from saimc.benchmark_corpus import DEFAULT_CORPUS_PATH, corpus_sha256
+
+        assert (
+            corpus_sha256(DEFAULT_CORPUS_PATH)
+            == "53c05b2a3c8163241c791491be93b21bfcef56cedd4fc4d98df10dc9708e2010"
+        )
 
 
 def test_score_record_accepted_matched_and_field_exact() -> None:
@@ -320,3 +364,175 @@ def test_score_corpus_fails_when_p95_latency_too_high() -> None:
 
 def test_score_corpus_first_pass_validity_constant_matches_spec() -> None:
     assert pytest.approx(0.98) == QUALITY_FIRST_PASS_VALIDITY
+
+
+# The spec every supported record in the cases below expects, in the corpus's
+# own flat-string form. Written once here because the cases below each build a
+# corpus and would otherwise restate ten lines of it apiece.
+_EXACT_SPEC: dict[str, object] = {
+    "schema_version": 3,
+    "request_kind": "mood_generation",
+    "duration_seconds": 180,
+    "tempo_bpm": None,
+    "key": None,
+    "time_signature": "4/4",
+    "mood": "calming",
+    "instrumentation": [
+        {"role": "melody", "instrument": "piano"},
+        {"role": "harmony", "instrument": "pizzicato_strings"},
+        {"role": "bass", "instrument": "cello"},
+    ],
+    "seed": None,
+    "humanization": "light",
+}
+
+
+def _supported(n: int) -> list[BenchmarkRecord]:
+    return [
+        _rec(
+            record_id=f"a{i}",
+            category="supported_paraphrase",
+            expected_outcome="accepted",
+            expected_spec=_EXACT_SPEC,
+        )
+        for i in range(n)
+    ]
+
+
+class TestFirstPassValidityIsMeasuredOrItIsNotScored:
+    """§8's flagship bar, and the three states the number can be in."""
+
+    def test_an_unjudged_cell_is_not_in_the_denominator(self) -> None:
+        """`None` is excluded, so a run that partly reached the host is still scorable.
+
+        Eight answered, two never reached it. Reading `None` as a miss would
+        report 80% for a model whose every actual response was valid, and
+        reading it as a pass would report 100% for a model that answered
+        eight times. It is neither: it is out of the denominator.
+        """
+        recs = _supported(10)
+        obs = [
+            _obs(mood="calming", raw_first_response_valid=None if i < 2 else True) for i in range(10)
+        ]
+        report = score_corpus("partly-reached", recs, obs)
+        assert report.first_pass_validity == 1.0
+        assert report.resolution_rate == 1.0
+
+    def test_a_run_with_nothing_to_judge_refuses_rather_than_scoring_zero(self) -> None:
+        """The fallback-only shape: every supported prompt resolved, no model asked."""
+        recs = _supported(10)
+        obs = [_obs(mood="calming", raw_first_response_valid=None) for _ in range(10)]
+        report = score_corpus("fallback", recs, obs)
+        assert report.first_pass_validity is None
+        assert report.resolution_rate == 1.0
+        assert not report.passed
+        assert any("not measured" in r for r in report.failure_reasons)
+
+    def test_a_judged_miss_still_scores(self) -> None:
+        """The premise of the two above: the bar is real when there is something to read."""
+        recs = _supported(10)
+        obs = [_obs(mood="calming", raw_first_response_valid=i >= 3) for i in range(10)]
+        report = score_corpus("judged", recs, obs)
+        assert report.first_pass_validity == pytest.approx(0.7)
+        assert any("first_pass_validity 70.00%" in r for r in report.failure_reasons)
+
+
+class TestResolutionRate:
+    """§8's 100% bar over supported prompts, by any route."""
+
+    def test_a_supported_prompt_that_resolves_to_nothing_fails_the_bar(self) -> None:
+        recs = _supported(10)
+        obs = [
+            _obs(
+                mood=None,
+                error_code="schema_invalid",
+                parser_source="fallback",
+                attempts=3,
+                raw_first_response_valid=False,
+            )
+        ] + [_obs(mood="calming") for _ in range(9)]
+        report = score_corpus("nine-of-ten", recs, obs)
+        assert report.resolution_rate == pytest.approx(0.9)
+        assert not report.passed
+        assert any("resolution_rate 90.00%" in r for r in report.failure_reasons)
+
+    def test_the_bar_is_scored_below_one_hundred_percent(self) -> None:
+        """The constant, pinned: a bar that slipped to 0.99 would pass this case."""
+        from saimc.benchmark import QUALITY_SUPPORTED_RESOLUTION
+
+        assert QUALITY_SUPPORTED_RESOLUTION == 1.0
+
+    def test_a_prompt_that_resolves_wrongly_still_resolved(self) -> None:
+        """The two bars this one sits between, told apart on one corpus.
+
+        Every record here produces a spec, so every supported prompt resolved
+        (100%) — and every spec is the *wrong* one, so field-level accuracy is
+        zero. Reading this bar off `field_exact_match` instead of `matched`
+        would report 0% for a parser that resolved all ten prompts, which is
+        the whole reason it is a separate field.
+        """
+        recs = _supported(10)
+        obs = [_obs(mood="sleep", duration=300) for _ in range(10)]
+        report = score_corpus("wrong-but-resolved", recs, obs)
+        assert all(o.matched for o in report.outcomes)
+        assert report.resolution_rate == 1.0
+        assert report.field_level_accuracy == 0.0
+
+
+class TestTheScorerHonoursItsSignature:
+    def test_a_generator_of_observations_is_read_three_times_over(self) -> None:
+        """`Iterable` in the annotation has to mean it.
+
+        The report walks the observations for the outcomes, again for the
+        first-pass numerator and once for the cost total, so an un-materialized
+        generator raises `ValueError: zip() argument 2 is shorter than argument
+        1` from the `strict=True` on the second walk. Only a generator argument
+        reaches that, which is why the case passes one.
+        """
+        recs = _supported(3)
+        obs = [_obs(mood="calming", cost_usd=0.25) for _ in range(3)]
+        report = score_corpus("generator", recs, (o for o in obs))
+        assert report.corpus_size == 3
+        assert report.cost_total_usd == pytest.approx(0.75)
+
+
+class TestCostIsEitherMeasuredOrItIsNot:
+    def test_a_total_over_priced_calls_is_their_sum(self) -> None:
+        recs = _supported(4)
+        obs = [_obs(mood="calming", cost_usd=0.5) for _ in range(4)]
+        report = score_corpus("priced", recs, obs)
+        assert report.cost_total_usd == pytest.approx(2.0)
+
+    def test_one_unpriced_call_makes_the_total_unknown(self) -> None:
+        """Not the sum of the rest: that reports a part as though it were the whole."""
+        recs = _supported(4)
+        obs = [_obs(mood="calming", cost_usd=0.5) for _ in range(3)] + [
+            _obs(mood="calming", cost_usd=None)
+        ]
+        report = score_corpus("partly-priced", recs, obs)
+        assert report.cost_total_usd is None
+
+    def test_a_genuine_zero_is_a_measured_zero(self) -> None:
+        """The offline path's `0.0` and an unpriced call are different statements."""
+        recs = _supported(3)
+        report = score_corpus("offline", recs, [_obs(mood="calming", cost_usd=0.0) for _ in range(3)])
+        assert report.cost_total_usd == 0.0
+
+
+def test_the_report_dict_carries_every_bar_it_scores() -> None:
+    """A bar that exists on the report and is absent from `to_dict` is unreadable.
+
+    The CLI prints the dict, and `MODELS.md` is written from what it prints,
+    so a bar missing here is a bar no operator can record.
+    """
+    report = score_corpus("keys", _supported(2), [_obs(mood="calming") for _ in range(2)])
+    payload = report.to_dict()
+    for key in (
+        "first_pass_validity",
+        "resolution_rate",
+        "field_level_accuracy",
+        "unsupported_rejection_accuracy",
+        "latency_p95_s",
+        "cost_total_usd",
+    ):
+        assert key in payload, f"{key} is scored but not reported"

@@ -14,12 +14,16 @@ plugin is inert, which is why it is no longer a dev dependency.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
+from pathlib import Path
 
 from saimc.llm.base import LLMClient, ParseRequest, ParseResult
-from saimc.parser import MAX_LLM_ATTEMPTS, parse_prompt
+from saimc.parser import MAX_LLM_ATTEMPTS, NO_COMPLETION_ERROR_CODES, parse_prompt
 from saimc.spec import CompositionSpec, Mood, SpecError
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _ScriptedClient:
@@ -168,3 +172,191 @@ def test_does_not_exceed_max_attempts() -> None:
     )
     _parse(client, "calming piano music", request_id="r5")
     assert client.calls == MAX_LLM_ATTEMPTS
+
+
+class TestWhatTheFirstAttemptRead:
+    """§8's first bar, which only this loop can witness.
+
+    Every case here is about *attempt one's* result rather than the run's, so
+    the fixture values are chosen to make the two differ wherever they can.
+    """
+
+    def test_a_spec_on_attempt_one_is_valid(self) -> None:
+        client: LLMClient = _ScriptedClient(
+            [ParseResult(parser_source="llm", spec=_spec(), extra={"latency_ms": "5"})]
+        )
+        result = _parse(client, "calming piano music", request_id="fa1")
+        assert result.first_attempt == "valid"
+
+    def test_a_bad_reply_on_attempt_one_is_invalid_even_when_a_later_one_parses(self) -> None:
+        """The case the `last_result` reading gets wrong.
+
+        Attempt one answered and the answer did not parse; attempt three did.
+        A field written from the result the loop *exits* with would say
+        `"valid"` here and score this prompt as a clean first pass, which is
+        the whole defect the field exists to remove. So the run ends with a
+        spec and the first attempt is still `"invalid"`.
+        """
+        client: LLMClient = _ScriptedClient(
+            [
+                ParseResult(parser_source="llm", error=_err("schema_invalid")),
+                ParseResult(parser_source="llm", error=_err("schema_invalid")),
+                ParseResult(parser_source="llm", spec=_spec(), extra={"latency_ms": "5"}),
+            ]
+        )
+        result = _parse(client, "calming piano music", request_id="fa2")
+        assert result.spec is not None
+        assert result.attempts == MAX_LLM_ATTEMPTS
+        assert result.first_attempt == "invalid"
+
+    def test_a_run_where_no_model_answered_is_neither(self) -> None:
+        """`None`, not `"invalid"` — and the run still resolves.
+
+        The host is unreachable for all three attempts and the fallback
+        answers, so the result carries a spec and `first_attempt` is `None`.
+        A two-state field would have to call attempt one *invalid* for a run
+        in which no model output was ever read, which charges the model for
+        the network's failure.
+        """
+        client: LLMClient = _ScriptedClient(
+            [
+                ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+                ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+                ParseResult(parser_source="llm", error=_err("llm_unreachable", "parsing")),
+            ]
+        )
+        result = _parse(client, "calming piano music", request_id="fa3")
+        assert result.spec is not None
+        assert result.parser_source == "hybrid"
+        assert result.first_attempt is None
+
+    def test_a_run_that_ends_refused_still_reports_what_attempt_one_read(self) -> None:
+        """The field describes attempt one even when there is no spec at all."""
+        client: LLMClient = _ScriptedClient(
+            [
+                ParseResult(parser_source="llm", error=_err("schema_invalid")),
+                ParseResult(parser_source="llm", error=_err("schema_invalid")),
+                ParseResult(parser_source="llm", error=_err("schema_invalid")),
+            ]
+        )
+        result = _parse(client, "an angry piano piece", request_id="fa4")
+        assert result.spec is None
+        assert result.first_attempt == "invalid"
+
+    def test_an_adapter_does_not_get_to_set_the_field(self) -> None:
+        """A client that claims a first attempt is overwritten by the loop.
+
+        `ParseResult` is documented as the *attempt* an adapter returns, and
+        an adapter has no way to know whether its call was the first one. A
+        fixture that sets the field to something else proves the loop is the
+        writer rather than a forwarder.
+        """
+        client: LLMClient = _ScriptedClient(
+            [
+                ParseResult(
+                    parser_source="llm",
+                    spec=_spec(),
+                    first_attempt="invalid",
+                    extra={"latency_ms": "5"},
+                )
+            ]
+        )
+        result = _parse(client, "calming piano music", request_id="fa5")
+        assert result.first_attempt == "valid"
+
+
+class TestTheNoCompletionVocabulary:
+    """The ratchet on `NO_COMPLETION_ERROR_CODES`.
+
+    The set is the rule §8's first bar rests on, and its correctness is a
+    property of code outside this module — the adapter's branches — so it is
+    checked against the code that mints those codes rather than restated. A
+    fifth branch added to the parse adapter fails
+    `test_every_code_the_adapters_mint_is_classified` until it is classified
+    one way or the other, which is the difference between a deliberate
+    decision and a branch that silently reports 0%.
+    """
+
+    # The codes that mean the model *did* answer. Not a constant in `parser.py`
+    # because nothing there branches on them — the only consumer is the set
+    # complement — so the partition is spelled out here, where a new code has
+    # to be placed.
+    JUDGEABLE: frozenset[str] = frozenset({"llm_invalid_json", "schema_invalid"})
+
+    @staticmethod
+    def _parse_path_codes(path: Path, *, within: str | None = None) -> set[str]:
+        """Every `SpecError(error_code="…")` literal in `path` (or in one class).
+
+        Both spellings of the callee are matched — `SpecError(...)` and
+        `module.SpecError(...)` — because the worker's `_NoopLLM` builds its
+        error through a deferred `__import__` rather than a local import, and a
+        scanner that only saw the bare name would quietly find nothing there
+        and pass.
+        """
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scope: list[ast.AST] = [tree]
+        if within is not None:
+            classes = [
+                n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == within
+            ]
+            assert len(classes) == 1, f"expected exactly one class {within!r} in {path}"
+            scope = classes
+        codes: set[str] = set()
+        for node in scope:
+            for call in ast.walk(node):
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                is_spec_error = (isinstance(func, ast.Name) and func.id == "SpecError") or (
+                    isinstance(func, ast.Attribute) and func.attr == "SpecError"
+                )
+                if not is_spec_error:
+                    continue
+                for kw in call.keywords:
+                    if kw.arg == "error_code":
+                        assert isinstance(kw.value, ast.Constant), f"non-literal code in {path}"
+                        assert isinstance(kw.value.value, str)
+                        codes.add(kw.value.value)
+        return codes
+
+    def _minted_codes(self) -> set[str]:
+        return self._parse_path_codes(
+            _REPO_ROOT / "src" / "saimc" / "llm" / "ollama.py"
+        ) | self._parse_path_codes(
+            _REPO_ROOT / "src" / "saimc" / "jobs" / "worker.py", within="_NoopLLM"
+        )
+
+    def test_the_adapters_mint_exactly_the_codes_this_suite_knows(self) -> None:
+        """The fixture's own premise, so the ratchet below cannot pass vacuously."""
+        assert self._minted_codes() == {
+            "llm_unreachable",
+            "llm_invalid_response",
+            "llm_invalid_json",
+            "schema_invalid",
+            "llm_not_configured",
+        }
+
+    def test_every_code_the_adapters_mint_is_classified(self) -> None:
+        minted = self._minted_codes()
+        classified = NO_COMPLETION_ERROR_CODES | self.JUDGEABLE
+        assert minted - classified == set(), (
+            "unclassified parse-path error codes: "
+            f"{sorted(minted - classified)}. Add each to NO_COMPLETION_ERROR_CODES "
+            "(no model output was read) or to JUDGEABLE above (the model answered), "
+            "then say which in a docstring."
+        )
+
+    def test_the_two_sides_do_not_overlap(self) -> None:
+        """A code in both would make the third state unreachable for it."""
+        assert NO_COMPLETION_ERROR_CODES.isdisjoint(self.JUDGEABLE)
+
+    def test_the_transport_codes_are_the_ones_that_are_not_a_judgement(self) -> None:
+        """Named explicitly, because the split is a claim about the adapter.
+
+        `llm_invalid_json` and `schema_invalid` are the two the model can only
+        produce by answering, and they are absent from the set for that reason
+        — asserted rather than left to the complement above, which would still
+        hold if the set grew to swallow them.
+        """
+        assert "llm_invalid_json" not in NO_COMPLETION_ERROR_CODES
+        assert "schema_invalid" not in NO_COMPLETION_ERROR_CODES

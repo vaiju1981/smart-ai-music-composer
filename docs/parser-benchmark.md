@@ -37,3 +37,10 @@ The primary labeler assigns every expected field using the frozen `CompositionSp
 ## Scoring
 
 Use the thresholds in §8 of [`roadmap.md`](roadmap.md). Report first-response schema validity, post-repair/fallback success, field-level semantic exact match, unsupported-request rejection, p50/p95 latency, and total benchmark cost.
+
+Run `saimc-benchmark --label <model>` against a live host, or `saimc-benchmark --fallback-only` for the offline path CI takes. Every run prints `corpus_sha256` — the SHA-256 of the corpus file's bytes, from `benchmark_corpus.corpus_sha256` — which is the value line 33 above requires recorded beside a score; because it is taken over the file rather than over a re-serialization of the parsed records, reformatting the corpus invalidates a comparison rather than silently joining it.
+
+Two report fields read `null` rather than `0.0`, and the distinction is not cosmetic:
+
+- `first_pass_validity` is `null` when no supported observation recorded a first attempt — an offline run asks no model, and a run against an unreachable host gets no reply. §8's bar is about a model's first *response*, so there is nothing to score, and the report fails with a reason saying the bar went unmeasured rather than reporting a number that measures nothing.
+- `cost_total_usd` is `null` when any call was unpriced, which is every call today: nothing in this codebase meters or prices a model call, so a `0.0` here would read as "free" while meaning "unmeasured". A `--fallback-only` run's `0.0` is a genuine zero by contrast — it makes no call.
