@@ -1441,23 +1441,32 @@ class TestRepair:
     repair aimed at the arbiter's worst bar has three to work through and the
     "one kept request" this case reads is not the shape it takes.
     """
-    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=180, seed=4)
+    _STUBBORN = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=60, seed=14)
     """A piece one move cannot finish, which is what the bound needs.
 
-    Measured over three moods, four durations and forty seeds at
-    `max_repairs=1`: this one and its counterpart at seed 27 are the two pieces
-    a single move leaves with `max_leap_semitones`, `texture_hierarchy` and
-    `harmony_pad_coverage` all still missed. The three-bar remainder is what the
-    case reads — one move applied, three bars named in `remaining` — and it is
-    three rather than one because the leap bar's own requests are partly
-    repairable at best (see `repairs.py`'s table for the reading), which is the
-    reason a bound has anything to report here at all.
+    Measured over three moods, seven durations and forty seeds at
+    `max_repairs=1`: this one leaves `max_leap_semitones`,
+    `texture_hierarchy` and `harmony_pad_coverage` all still missed after a
+    single move, and it is the cheapest piece that does. The three-bar
+    remainder is what the case reads — one move applied, three bars named in
+    `remaining` — and it is three rather than one because the leap bar's own
+    requests are partly repairable at best (see `repairs.py`'s table for the
+    reading), which is the reason a bound has anything to report here at all.
 
-    The older fixture was a 30-second piece at seed 3, and the key pool moved it
-    onto a key whose leap bar one move does clear — so this one is re-measured
-    rather than re-keyed, because the *property* the case asserts is what the
-    sweep was for, and pinning a key to preserve a seed's old behaviour would
-    leave the file measuring a path the product no longer takes.
+    The key is unset on purpose, which is the one fixture in this class where
+    that is true: the case is about the budget rather than about the piece
+    staying put, so it wants the piece the product would produce for this brief
+    rather than one pinned to a key the sweep happened to measure. Seed 27 at
+    180 seconds carries the same report and the same one-move chain, so the
+    choice between the two is cost — a 60-second compose rather than a
+    180-second one — and not a property only one of them has.
+
+    What it replaced was `electrifying/180s/4`, which no longer leaves the leap
+    bar missing after one move; and before that a 30-second piece at seed 3,
+    which the key pool moved onto a key whose leap bar one move does clear. So
+    this is re-measured rather than re-keyed: the *property* the case asserts is
+    what the sweep is for, and pinning a key to preserve a seed's old behaviour
+    would leave the file measuring a path the product no longer takes.
     """
     _OUT_OF_TABLE = CompositionSpec.model_validate(
         {

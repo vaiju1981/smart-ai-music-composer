@@ -1854,6 +1854,11 @@ _START_REACH_DEGREES: int = 8
 # place — a bar whose line fits the band in a single register and whose
 # every restatement rubs the bass has no way in but a leap, and this says
 # which leap. Inside the octave, size is still the caller's tiebreak.
+# Which rank position it occupies is what makes it bind, and the apex
+# needs its own answer: the bound sits behind the register everywhere
+# else (the band is a fact about the instrument and a rub is a refusal)
+# but ahead of it at the apex, which is the one bar per section that was
+# otherwise free to ignore it.
 _MAX_ENTRANCE_SEMITONES: int = 12
 # Which field of `_place_bar`'s rank tuple counts the notes left rubbing
 # the bass. It is the second field of both rank shapes — the apex's and
@@ -2595,14 +2600,22 @@ def _place_bar(
 
     An `apex` bar is the section's peak, and its height is already in
     its start (`_apex_starts` lifts the line by a tone or two of its own
-    chord), so what is left for the octave here is only the band: the
-    smallest displacement that fits it wins, and a bar that would fit
-    where it stands is never raised an octave to reach a top it has not
-    earned. Among placements that fit, a bounded entrance outranks the
-    height, and the height outranks the entrance's grade: one bar per
-    section chooses its register rather than being fitted to it, and the
-    one interval it may not be bought with is the one wider than any
-    answer can cover.
+    chord), so what is left for the octave here is only the band. What
+    it weighs, after the band and the collision: a bounded entrance,
+    then the smallest displacement that fits, then whether the entrance
+    is answered, then the height, then the entrance's grade. Weighing
+    the entrance above the displacement is the one key that differs from
+    every other bar's order, and it is a correction rather than a
+    refinement: it used to sit below the displacement, which made the
+    apex the one bar per section that would rather speak from the
+    register it was written in than enter quietly from an octave away. A
+    36-piece sweep of the corpus found 19 intervals wider than an octave
+    before the key moved and 8 after, and the body's own wide placements
+    did not fall — they rose — so every one the change removed was the
+    apex's. The interval it may not be bought with is still the one
+    wider than any answer can cover, and the band and a rub still
+    outrank the entrance both: the tessitura is a fact about the
+    instrument and a collision is a linter refusal.
 
     Whether the entrance *is* answered is weighed before the height,
     though, and that is not the same key as the entrance's grade: a
@@ -2658,8 +2671,8 @@ def _place_bar(
             rank: tuple[float, ...] = (
                 outside,
                 rubbing,
-                abs(octave),
                 within,
+                abs(octave),
                 answered,
                 -max(shifted),
                 entrance,

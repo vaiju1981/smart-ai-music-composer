@@ -12,6 +12,7 @@ import pytest
 from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS, bar_ticks
 from saimc.compose.engine import (
     _KIT_REALIZATION_SALT,
+    _MAX_ENTRANCE_SEMITONES,
     _MELODIC_REALIZATION_SALT,
     _RANK_RUBBING,
     _START_REACH_DEGREES,
@@ -1663,6 +1664,38 @@ class TestMelodyWalk:
             chord_pcs=frozenset({64 % 12}),
         )
         assert exempt == 0
+
+    def test_the_apex_enters_within_an_octave_when_the_band_allows_it(self) -> None:
+        """A bounded entrance outranks a bar's register at the apex, and it
+        did not: the apex was the one bar per section free to ignore
+        `_MAX_ENTRANCE_SEMITONES`. This bar has a placement that fits its
+        band and enters four semitones up, and the rank used to take the
+        one that enters sixteen because it left the line in the octave the
+        walk wrote it in. A 36-piece sweep of the corpus found 19 intervals
+        wider than an octave before that key moved and 8 after, and the
+        body's own wide placements did not fall — they rose — so every one
+        the change removed was the apex's.
+
+        The same call at `apex=False` is asserted beside it, because both
+        bar shapes are ranked on one scale (`_RANK_RUBBING`) and the point
+        of the correction is that the apex no longer has an order of its
+        own where the bound is concerned.
+        """
+        band = MelodyBand(low_midi=60, high_midi=84)
+        line = [76, 78, 80, 81]
+        bounded = [
+            12 * octave
+            for octave in range(-3, 4)
+            if all(band.contains(pitch + 12 * octave) for pitch in line)
+            and abs(line[0] + 12 * octave - 60) <= _MAX_ENTRANCE_SEMITONES
+        ]
+        assert bounded, "this bar has no bounded in-band placement to choose"
+        for apex in (False, True):
+            _rank, shift, outside, _rubbing, _entrance = _place_bar(
+                line, band=band, prev_pitch=60, apex=apex
+            )
+            assert outside == 0, (apex, shift)
+            assert shift in bounded, (apex, shift, bounded)
 
     def test_place_bar_ranks_both_bar_shapes_on_one_scale(self) -> None:
         """The apex ranks its octaves on its own key order — the height it

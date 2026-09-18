@@ -35,22 +35,24 @@ from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolContext, dispatch
 from saimc.spec import CompositionSpec, Mood
 
-_SLEEP = CompositionSpec(mood=Mood.SLEEP, duration_seconds=60, seed=0)
+_SLEEP = CompositionSpec(mood=Mood.SLEEP, duration_seconds=30, seed=7)
 """A spec whose four-wide fan-out is mixed: one seed misses, three are clean.
 
-Measured rather than assumed — a sweep of twelve seeds at each mood and each
-of 30/60/120 s puts `sleep`'s sixty-second pieces at `X....X.X.X..`, and the
-fan-out composes `spec.seed + offset`, so the candidates here are seeds 0
-through 3 and it is **the first** of them that misses. The gate's two branches
+Measured rather than assumed — a sweep of sixteen seeds at each mood and each
+of 30/60/120 s puts `sleep`'s thirty-second pieces at `.X.X.X.X.....X.X`, and
+the fan-out composes `spec.seed + offset`, so the candidates here are seeds 7
+through 10 and it is **the first** of them that misses. The gate's two branches
 need a session that holds both a clean candidate and an unclean one, and this
 is the smallest fixture that really does.
 
 The breach profile is a fact about the keys these seeds land on, which is the
-mood's own pool rather than a constant — `sleep`'s sixty-second pieces were
-`.X....X..X..` under the old C-major resolution and the missing seed moved with
-the key. So the ids below are the measured ones and the sweep above is
-re-derived whenever they are re-read, rather than the fixture pinning a key to
-keep an older reading standing.
+mood's own pool rather than a constant — the piece this replaced was
+`sleep/60s/0`, whose four seeds read `X...` before the apex-entrance fix moved
+the melody and `....` after it. So the ids below are the measured ones and the
+sweep above is re-derived whenever they are re-read, rather than the fixture
+pinning a key to keep an older reading standing. The duration dropped from 60
+seconds to 30 with the re-measurement, which is the direction the sweep's own
+ordering put it in rather than a preference.
 """
 
 _ELECTRIFYING = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0)

@@ -12,19 +12,20 @@ come out clean.
 
 What the measurement says, and it is the whole design:
 
-- **Four metrics breach at all, and 38 of the 90 pieces breach something.**
+- **Four metrics breach at all, and 36 of the 90 pieces breach something.**
   `texture_hierarchy` (30 pieces), `harmony_pad_coverage` (30),
-  `max_leap_semitones` (12) and `leap_recovery_ratio` (3). So a repair loop is
+  `max_leap_semitones` (12) and `leap_recovery_ratio` (1). So a repair loop is
   a loop over four bars in practice, and the other eight have no entry because
   nothing asked for them by *that* corpus — not because they cannot be reached.
   A later sweep of 2592 applied requests over 72 pieces, reached through the
   delta vocabulary rather than through a mood and a seed, finds three of them:
-  `register_separation_semitones` (48 pieces under a 24-semitone harmony
-  clearance, 71 under 60 — the bed pushed down under the tune),
-  `tessitura_overlap_semitones` (42 under either clearance — the bed's window
-  taking the tune inside it) and `range_semitones` (64 under a 500-semitone
-  band). All three land on `unmapped`, which is the outcome the next bullet's
-  design has to be able to say out loud. `range_semitones` earns its place twice
+  `register_separation_semitones` (59 pieces under a 24-semitone harmony
+  clearance, 88 under 60 — the bed pushed down under the tune),
+  `tessitura_overlap_semitones` (50 under a 24-semitone clearance, 60 under 60 —
+  the bed's window taking the tune inside it) and `range_semitones` (76 under a
+  500-semitone band). All three land on `unmapped`, which is the outcome the
+  next bullet's design has to be able to say out loud. `range_semitones` earns
+  its place twice
   over: under a *one*-semitone band it arrives in 2 pieces, each time alongside
   `max_leap_semitones`, and that pair is one on which the quality report's order
   and the arbiter's tier order **disagree** — the report lists
@@ -49,16 +50,16 @@ What the measurement says, and it is the whole design:
   pad bar in 30 of 30 pieces and the texture bar in 30 of 30, and
   `SetAccompanimentDensity(step_ticks=1440)`, an arpeggio that steps once per
   three beats instead of once per beat, measures *identically* on all 30: the
-  two readings are the same 25 pieces out clean and 5 pieces whose other bar —
+  two readings are the same 23 pieces out clean and 7 pieces whose other bar —
   the tune's — was already missing. They are both "let the bed hold rather than
   flurry", and the density move is the one that works when the figure is not the
   broken chord. Those are single-candidate readings, taken to *choose* the
   table; what the loop does with them is the next bullet.
 - **The tune's leap bar is only partly repairable, and the honest reading of
   that is a bound rather than a knob.** `SetMelodyBand(semitones=9)` — the
-  narrowest band the range bar allows — clears `max_leap_semitones` in 11 of the
-  12 pieces that breach it, and 5 of those still miss another bar afterwards;
-  `SetMotifVariation(factor=0.5)` clears 7 of the 12. No single move clears the
+  narrowest band the range bar allows — clears `max_leap_semitones` in 7 of the
+  12 pieces that breach it, and 4 of those still miss another bar afterwards;
+  `SetMotifVariation(factor=0.5)` clears 4 of the 12. No single move clears the
   bar *and* the piece, which is what the hint says without meaning to: it asks
   for a change to `motif.py`'s walk, and no request in the vocabulary is that
   change. The loop therefore keeps the best of the two and reports what is left.
@@ -67,9 +68,27 @@ What the measurement says, and it is the whole design:
   24 times — a five-semitone band and a four-bar arpeggio step both write
   dissonant collisions. A repair loop that let that propagate would turn a
   candidate it cannot use into a failed turn, so `unplayable` is a recorded
-  outcome. No candidate the table itself holds is refused by this corpus (see
-  the paragraph after the next one); the wider magnitudes are what keeps the arm
-  reachable, and `_ELECTRIC_90_17` is the piece the test reaches it through.
+  outcome. No candidate the table itself holds is refused *on a bare piece* —
+  all eight measure on a single move — but two of the corpus's 88 trials are
+  refused, and both are a candidate tried on a round *after* the first, where it
+  is folded onto a two-deep chain rather than onto the piece alone. So what the
+  corpus cannot reach is the bare reading of the arm, not the arm itself, and
+  `test_session_repairs.py` is where the two are told apart.
+- **The deepest chains are one request applied three times, and that is the
+  loop's real shape rather than a defect in it.** `electrifying/180s/17` — the
+  deepest chain the wider grid needs — keeps `SetMotifVariation(factor=0.5)`
+  three times, then `SetMelodyBand(semitones=9)`, then
+  `SetAccompanimentDensity(step_ticks=1440)`. Each halving is a *different*
+  request from the one before it (the delta multiplies the operation weights,
+  so three of them are x0.125 where one is x0.5), each measures strictly better
+  than the piece in hand, and the band only binds once the motif is stable
+  enough for it to — which is why the band is skipped as `no_gain` in the first
+  three rounds and kept in the fourth. So the loop is not spinning, but it is
+  trading melodic variation for a smaller worst leap, and three halvings is past
+  the point a musician would stop. That is worth recording against Phase F4's
+  own goal of measurable motivic development rather than against this module:
+  the loop is doing what the table says, and the table has one knob for this bar
+  that a repair can turn more than once.
 - **`refused` is the one outcome no request in this table produces**, and it is
   kept for a reason a test cannot supply. `_try` checks that the applier honoured
   the whole chain and records `refused` when it did not; every entry in `_REPAIRS`
@@ -82,14 +101,23 @@ What the measurement says, and it is the whole design:
   branch stays without a case to reach it.
 
 **What the loop does to that corpus**, which is the number the table above was
-chosen for rather than a claim about it — 52 of the 90 pieces are clean before
-it runs, 36 of the 38 breaching ones come out clean, one is improved and still
-missing a bar, and one is left as it was. Thirty-two of the repaired pieces need
-one kept request and five need two, so `maximum` never binds in practice; across
-all of the trials, 81 outcomes are `kept`, 7 are `no_gain` and none is
+chosen for rather than a claim about it — 54 of the 90 pieces are clean before
+it runs, 33 of the 36 breaching ones come out clean, two are improved and still
+missing a bar, and one is left as it was. Thirty of the repaired pieces need one
+kept request, four need two and one needs three, so `maximum` never binds *here*;
+across all 88 trials, 76 outcomes are `kept`, 10 are `no_gain` and 2 are
 `unplayable`.
 
-**All seven `no_gain` trials left the bar they aimed at still missed**, in all
+The corpus is not the whole picture, and the gap between the two is worth the
+sentence. A corpus of 90 pieces says nothing about a piece it does not contain,
+so the depth was re-measured over a wider grid — three moods, seven durations
+and forty seeds, every piece pinned to C, 840 pieces — where the deepest chain
+needed **five** kept requests and three pieces needed it. That is what
+`MAX_REPAIRS_PER_TURN` is set from, and it is one above rather than equal to it
+for the reason this module states about `maximum`: a backstop that is reached is
+not a backstop.
+
+**All ten `no_gain` trials left the bar they aimed at still missed**, in all
 2592 requests swept, which is worth stating because the other reading is the one
 that sounds more likely: a candidate that clears its bar and still loses on the
 piece as a whole. Nothing writes a sentence about that case — not because it is
@@ -104,9 +132,12 @@ the arbiter's total order, and stop when nothing measures strictly better. It
 is deterministic end to end — the candidates are literals, `compose` is a
 function, and a tie between two candidates goes to the table's order — and it
 spends no model calls and no audio. Its whole cost is bounded by `maximum`
-times the table's width in composes of arithmetic, a second at the 600-second
-cap, which is the reason nothing here touches the turn's ledger: the ledger
-counts what is expensive (sketches and model calls), not what is cheap.
+times the table's width in composes of arithmetic — twelve composes, and six
+seconds, at the 600-second cap where a compose measures 0.53 s, and under a
+second at the durations the deep chains actually occur, since the deepest one
+found is a 180-second piece — which is the reason nothing here touches the
+turn's ledger: the ledger counts what is expensive (sketches and model calls),
+not what is cheap.
 
 `revise_draft` composes the winning chain a second time, and that is deliberate
 rather than wasteful: the loop composes a trial to *measure* it, and the draft
@@ -299,7 +330,8 @@ def repair_chain(
     three: nothing to repair, a bar with no request in the table, or a bar whose
     requests all measured no better. `maximum` is the fourth and it is a
     backstop rather than the usual end — measured over the corpus, no piece
-    needs more than two kept requests.
+    needs more than three kept requests, and over the wider grid the deepest is
+    five.
     """
     findings: tuple[QualityFinding, ...] = quality.findings()
     order = musical_order(quality, lint_passed=True)

@@ -142,15 +142,26 @@ name a parent that names a parent that names the first one, and an unbounded
 walk would not return.
 """
 
-MAX_REPAIRS_PER_TURN: Final[int] = 4
+MAX_REPAIRS_PER_TURN: Final[int] = 6
 """How many requests one `repair` call may keep.
 
 A repair composes each candidate it tries to measure it, so this is the loop's
 backstop in the same sense `MAX_CANDIDATES_PER_DRAFT` is the fan-out's: it
 bounds a width, and it is read by the tool rather than counted in the ledger
-because a compose is arithmetic. Four is generous — measured over a 90-piece
-corpus the widest repair any piece needed was *two* kept requests — and it is
-what keeps the worst case at four rounds of two candidates each, a second.
+because a compose is arithmetic. The worst case stays around a second.
+
+Six is one round above the deepest chain the music needs, and the two numbers
+come from different sweeps on purpose. Over the 90-piece corpus `repairs.py`
+names, the widest chain a piece needed was three kept requests; over a wider
+grid — three moods, seven durations, forty seeds, every piece pinned to C —
+the deepest was **five**, at `electrifying/180s/17`. The corpus is 90 pieces
+and the grid is 840, so the grid is the one that bounds the default.
+
+It is one *above* the deepest rather than equal to it because a backstop that
+is reached is not a backstop: `repair_chain` states the same principle from
+the other side ("`maximum` is the fourth and it is a backstop rather than the
+usual end"), and at four the three five-move pieces of that grid came back
+with a bar still missed that a fifth move would have cleared.
 """
 
 
