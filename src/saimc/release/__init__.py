@@ -16,6 +16,7 @@ from saimc.release.gates import (
     gate_midi_parseable_and_onsets,
     gate_musical_quality,
     gate_musicxml_structural,
+    gate_quality_breach_rate,
     gate_render_time_budget,
     gate_spec_round_trip,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "gate_midi_parseable_and_onsets",
     "gate_musical_quality",
     "gate_musicxml_structural",
+    "gate_quality_breach_rate",
     "gate_render_time_budget",
     "gate_spec_round_trip",
 ]

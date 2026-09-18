@@ -24,6 +24,9 @@ Every gate returns a `GateResult` and asserts one criterion:
   threshold in `saimc.quality`: stepwise melody, recovered leaps, a
   melody that sits above its accompaniment, a bass that is not one bar
   looped. This is the gate behind §8's "not a hot pot of instruments".
+- `gate_quality_breach_rate` — the share of a *sampled* grid that
+  breaches at least one threshold is at or below a recorded ceiling,
+  which is the claim the curated matrix above cannot make.
 
 The gates deliberately encode the roadmap's thresholds as constants so
 a roadmap change forces a code change.
@@ -31,6 +34,7 @@ a roadmap change forces a code change.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +52,18 @@ from saimc.spec import CompositionSpec
 DURATION_TOLERANCE: float = 0.02
 ONSET_TOLERANCE_US: int = 20_000
 RENDER_TIME_BUDGET_FACTOR: float = 3.0
+
+MAX_THRESHOLD_BREACH_RATE: float = 0.50
+"""The ceiling on the share of a sampled grid breaching any threshold.
+
+A measurement, not a target: measured at 27 of 54 cells — 50.0% — across
+three moods x 30/120/300 s x six seeds on the tree `gate_quality_breach_rate`
+landed with. It is a ratchet, so it may only fall: a change that made more
+pieces breach their own bar would otherwise arrive as a lower rate beside a
+raised ceiling, which is the one move a ratchet must not allow. Lowering it is
+the deliberate act; raising it is a decision that has to be argued for in a
+commit, because the number is the whole of the claim.
+"""
 
 
 @dataclass(frozen=True)
@@ -307,16 +323,24 @@ def gate_musical_quality(scores: Sequence[NotationScore]) -> GateResult:
 
     What a green run proves is narrower than it reads. The release matrix
     is five hand-picked specs, and the engine does clear every threshold
-    on those. It is not a claim about the product: measured across the
-    reachable spec space, roughly half of all composed pieces breach at
-    least one threshold — `texture_hierarchy`, `max_leap_semitones` and
-    `leap_recovery_ratio` most often — and the one real end-to-end render
-    in `var/jobs/` records `max_leap_semitones: 14.0` against a maximum
-    of 12. A corpus mean over five curated specs cannot see any of that,
-    and it is not meant to; it is a regression bar for the engine, not a
-    guarantee about what a user gets. Scoring a sampled grid is the fix.
-    Until that lands, read a pass here as "the matrix passes", never as
-    "the generator passes".
+    on those. It is not a claim about the product: over the sampled grid
+    `gate_quality_breach_rate` pins, 27 of 54 pieces breach at least one
+    threshold — `texture_hierarchy` and `harmony_pad_coverage` in 18 cells
+    each, `leap_recovery_ratio` and `max_leap_semitones` in 5, and
+    `step_ratio` in 1 — and the one real end-to-end render in `var/jobs/`
+    records `max_leap_semitones: 14.0` against a maximum of 12. A corpus
+    mean over five curated specs cannot see any of that, and it is not
+    meant to; it is a regression bar for the engine, not a guarantee about
+    what a user gets. Read a pass here as "the matrix passes", never as
+    "the generator passes": the claim about the generator is the sampled
+    gate's, and it is a rate rather than a pass.
+
+    The metric frequencies here are read off that grid and not off a single
+    render, which is what they used to be — the paragraph named
+    `texture_hierarchy`, `max_leap_semitones` and `leap_recovery_ratio` as
+    the frequent three, two of which are among the rarest, and omitted
+    `harmony_pad_coverage`, which is tied for first. A frequency read off
+    one piece is the same defect the paragraph is about.
     """
     if not scores:
         return GateResult(
@@ -344,8 +368,60 @@ def gate_musical_quality(scores: Sequence[NotationScore]) -> GateResult:
     )
 
 
+def gate_quality_breach_rate(scores: Sequence[NotationScore]) -> GateResult:
+    """The share of a sampled grid breaching any threshold (§8, §F).
+
+    The companion to `gate_musical_quality`, and the two answer different
+    questions. That one asks whether the *corpus mean* clears every bar,
+    which a curated matrix answers for five pieces. This asks how often a
+    piece breaches its own bar, which no corpus mean can express: a metric
+    can average clean while half the pieces miss it, and that is exactly the
+    state this gate found the generator in.
+
+    **It judges the scores it is handed, so the sampling is the caller's.**
+    That is deliberate and it is why `run_all_gates` does not run it: the
+    rate is a claim about the reachable spec space, so it has to be measured
+    over a grid chosen to span that space rather than over whatever matrix a
+    caller happens to be holding. The acceptance suite builds the grid and
+    the axes it pins are its subject, not this function's.
+
+    The ceiling is `MAX_THRESHOLD_BREACH_RATE`, measured rather than chosen,
+    so a green run means "no worse than the tree that recorded it". An empty
+    grid fails: a rate over nothing is not a rate, and `0/0` would read as
+    perfect.
+    """
+    if not scores:
+        return GateResult(
+            "quality_breach_rate",
+            False,
+            "no pieces to score; a rate over an empty grid is not a rate",
+        )
+
+    missed = [score_piece(score).findings() for score in scores]
+    breached = sum(1 for findings in missed if findings)
+    rate = breached / len(scores)
+    tally = Counter(finding.metric for findings in missed for finding in findings)
+    named = ", ".join(f"{metric} ({count})" for metric, count in tally.most_common())
+    tail = f"; most often: {named}" if named else ""
+
+    if rate > MAX_THRESHOLD_BREACH_RATE:
+        return GateResult(
+            "quality_breach_rate",
+            False,
+            f"{breached} of {len(scores)} pieces breach at least one threshold, "
+            f"{rate:.1%} above a ceiling of {MAX_THRESHOLD_BREACH_RATE:.0%}{tail}",
+        )
+    return GateResult(
+        "quality_breach_rate",
+        True,
+        f"{breached} of {len(scores)} pieces breach at least one threshold, "
+        f"{rate:.1%} within a ceiling of {MAX_THRESHOLD_BREACH_RATE:.0%}{tail}",
+    )
+
+
 __all__ = [
     "DURATION_TOLERANCE",
+    "MAX_THRESHOLD_BREACH_RATE",
     "ONSET_TOLERANCE_US",
     "RENDER_TIME_BUDGET_FACTOR",
     "GateResult",
@@ -355,6 +431,7 @@ __all__ = [
     "gate_midi_parseable_and_onsets",
     "gate_musical_quality",
     "gate_musicxml_structural",
+    "gate_quality_breach_rate",
     "gate_render_time_budget",
     "gate_spec_round_trip",
     "run_all_gates",

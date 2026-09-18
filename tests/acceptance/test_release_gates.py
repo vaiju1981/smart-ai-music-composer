@@ -8,6 +8,7 @@ real-binary end-to-end run.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,9 +32,11 @@ from saimc.release import (
     gate_midi_parseable_and_onsets,
     gate_musical_quality,
     gate_musicxml_structural,
+    gate_quality_breach_rate,
     gate_render_time_budget,
     gate_spec_round_trip,
 )
+from saimc.release.gates import MAX_THRESHOLD_BREACH_RATE
 from saimc.spec import CompositionSpec, Mood
 
 # The §8 gate matrix: every mood at a short, a typical, and the
@@ -297,6 +300,136 @@ class TestMusicalQualityGate:
             ],
         )
         assert report.passed, report.failure_reasons
+
+
+# The sampled grid the breach-rate gate is measured over. Every axis is a
+# literal rather than drawn from `Mood` or from a duration constant: the rate
+# is a joint property of the axes, so an axis that followed a table would move
+# the number without the engine moving, and the ceiling would then be pinning
+# the sample rather than the generator.
+QUALITY_GRID_MOODS: tuple[Mood, ...] = (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP)
+QUALITY_GRID_DURATIONS: tuple[int, ...] = (30, 120, 300)
+QUALITY_GRID_SEEDS: tuple[int, ...] = (1, 2, 3, 4, 5, 6)
+
+QUALITY_GRID: list[CompositionSpec] = [
+    CompositionSpec(mood=mood, seed=seed, duration_seconds=duration)
+    for mood in QUALITY_GRID_MOODS
+    for duration in QUALITY_GRID_DURATIONS
+    for seed in QUALITY_GRID_SEEDS
+]
+
+
+@pytest.fixture(scope="module")
+def grid_scores() -> list[NotationScore]:
+    """The grid composed once: 54 cells is ~1.6 s and three cases read them."""
+    return [compose(spec).notation_score for spec in QUALITY_GRID]
+
+
+class TestTheQualityBreachRate:
+    """The quality claim over a sampled grid rather than a curated matrix.
+
+    `gate_musical_quality` judges the corpus mean over five hand-picked specs
+    and passes; the same engine breaches at least one threshold in 27 of the
+    54 cells below. Both statements are true and only one of them is about the
+    product, which is why the second has its own gate.
+
+    Measured on the tree this landed on, composing and scoring all 54 cells in
+    about 1.6 s — cheap enough to run on every commit, which is the only cost a
+    ratchet may have:
+
+    | | 30 s | 120 s | 300 s | total |
+    |---|---|---|---|---|
+    | calming | 3/6 | 1/6 | 0/6 | 4/18 |
+    | electrifying | 6/6 | 6/6 | 6/6 | 18/18 |
+    | sleep | 3/6 | 1/6 | 1/6 | 5/18 |
+
+    27/54 = 50.0%, breaching `texture_hierarchy` 18, `harmony_pad_coverage` 18,
+    `leap_recovery_ratio` 5, `max_leap_semitones` 5 and `step_ratio` 1.
+
+    Two things the table says that one number would not, and the second is why
+    the grid pins the durations as well as the moods. Every electrifying cell
+    breaches at every duration and every seed on the same two metrics — a
+    *mood* property, nothing to do with length — so the change that would move
+    this rate most is one mood's texture hierarchy and pad coverage rather than
+    a general melody or rhythm defect. The other two moods breach mostly at
+    30 s and are near-clean at 300 s, so a grid that sampled lengths unevenly
+    would move the rate while the engine stood still.
+
+    The ceiling is the measured rate and may only fall. Lowering it as those
+    two metrics are fixed is the ordinary edit; raising it is a decision that
+    has to be argued for.
+    """
+
+    def test_the_grid_spans_every_mood_and_duration(self) -> None:
+        """The premises the rate rests on, asserted rather than trusted.
+
+        `set(...) == set(Mood)` is the ratchet on the mood axis: a fourth mood
+        fails here rather than quietly leaving the grid, which is the
+        difference between a rate over the reachable space and a rate over
+        whatever three moods someone last typed.
+        """
+        assert set(QUALITY_GRID_MOODS) == set(Mood)
+        assert len(QUALITY_GRID) == (
+            len(QUALITY_GRID_MOODS) * len(QUALITY_GRID_DURATIONS) * len(QUALITY_GRID_SEEDS)
+        )
+        per_cell = Counter((spec.mood, spec.duration_seconds) for spec in QUALITY_GRID)
+        assert set(per_cell.values()) == {len(QUALITY_GRID_SEEDS)}, (
+            "the grid is not a full cross product, so the axes are weighted unevenly"
+        )
+
+    def test_the_sampled_grid_is_within_the_recorded_ceiling(
+        self, grid_scores: list[NotationScore]
+    ) -> None:
+        result = gate_quality_breach_rate(grid_scores)
+        assert result.passed, result.detail
+
+    def test_the_recorded_ceiling_is_the_measured_rate(
+        self, grid_scores: list[NotationScore]
+    ) -> None:
+        """The ceiling is a measurement, so it is pinned to the measurement.
+
+        `MAX_THRESHOLD_BREACH_RATE`'s own docstring says it is a measurement
+        rather than a target, and this is what makes that enforceable: the
+        constant has to equal what the grid measures. That closes the case a
+        plain "at or below" check cannot see — a change that made more pieces
+        breach while the ceiling was left where it was. An improvement fails
+        here too, deliberately: the ceiling is then lowered in the same commit,
+        which is the ordinary edit and the direction a ratchet may move.
+        """
+        rate = sum(1 for score in grid_scores if score_piece(score).findings()) / len(grid_scores)
+        assert rate == MAX_THRESHOLD_BREACH_RATE, (
+            f"the recorded ceiling is {MAX_THRESHOLD_BREACH_RATE:.4f} and the grid measures "
+            f"{rate:.4f}: lower the ceiling to the measurement, or argue for raising it"
+        )
+
+    def test_the_ceiling_is_the_ratchet_and_it_bites(
+        self, grid_scores: list[NotationScore], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard fired, because a ratchet that cannot fail is a comment.
+
+        Set to the rate the grid actually measures the same grid passes — the
+        ceiling is inclusive, so "at or below" is the claim. Lowered by a hair
+        it fails, which is the direction the ratchet exists to hold: a change
+        that made more pieces breach would otherwise arrive as a higher
+        measured rate beside an unmoved ceiling, and nothing would say so.
+        """
+        rate = sum(1 for score in grid_scores if score_piece(score).findings()) / len(grid_scores)
+        ceiling = "saimc.release.gates.MAX_THRESHOLD_BREACH_RATE"
+
+        monkeypatch.setattr(ceiling, rate)
+        assert gate_quality_breach_rate(grid_scores).passed, "the ceiling is not inclusive"
+
+        monkeypatch.setattr(ceiling, rate - 0.001)
+        result = gate_quality_breach_rate(grid_scores)
+        assert not result.passed, "a ratchet that cannot fail guards nothing"
+        assert "above a ceiling" in result.detail
+        assert "most often:" in result.detail, "a failing rate has to name the bars behind it"
+
+    def test_an_empty_grid_fails_rather_than_passing_vacuously(self) -> None:
+        # A rate over nothing is not a rate, and 0/0 would read as perfect.
+        result = gate_quality_breach_rate([])
+        assert not result.passed
+        assert "empty grid" in result.detail
 
 
 class TestThePlannedCaseIsLive:
