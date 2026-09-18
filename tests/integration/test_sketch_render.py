@@ -7,9 +7,13 @@ external process, so it can prove the sketch's encode command differs from
 the full render's — it cannot prove what a sketch *is* relative to the
 delivered artifact, which is the property the product depends on.
 
-That property is: **the sketch's WAV is byte-identical to the full render's,
-and only the OGG differs.** Same SMF, same font, same gain, so what a user
-approves from a preview is the piece they get; the difference is mastering.
+That property is: **the sketch and the full render produce the same mix, and
+the delivered WAV is that mix mastered.** Same SMF, same font, same gain, so
+what a user approves from a preview is the piece they get; the difference is
+mastering, which happens to the WAV and is therefore carried by every
+deliverable — the WAV, the OGG encoded from it, and the animation that muxes
+it. The sketch is the one artifact that is deliberately *not* mastered, and
+this module measures how far below the deliverable that leaves it.
 
 **The OGG cannot be compared by digest.** An Ogg Opus stream is not
 byte-reproducible: ffmpeg picks a random stream serial per encode, so the
@@ -35,6 +39,21 @@ design's "~2-3 s regardless of piece length" holds at 120 s and understates
 600 s. The bounds asserted below are the design's numbers rather than these
 measurements, so the margin stays visible to whoever reads them.
 
+The same machine measured the two downloads a full render produces. Before
+F6 the OGG normalised to the -16 LUFS target on its own while the WAV was
+written straight from FluidSynth, so they sat **16 dB apart** — OGG peak
+-1.25 / mean -19.25 dBFS against the WAV's -17.24 / -35.94 — with the
+primary deliverable the quiet one. F6 moved the master onto the WAV, and the
+same 120 s calming piece now measures:
+
+    full    WAV peak  -1.50  mean -18.80     OGG peak  -1.20  mean -18.80
+    sketch  WAV peak -14.00  mean -35.70     OGG peak -14.50  mean -35.70
+
+So both downloads land within a third of a dB and inside a decibel of the
+-1.5 dBTP the master aims at, and a sketch remains ~12 dB below them — which
+is the intended difference, not a defect. `TestTheTwoDeliverablesMatchInLevel`
+holds the first of those; the second is what a preview is for.
+
 This module skips unless a **release-gate FFmpeg** is available, which means
 it does not run in CI: `.github/workflows/ci.yml` installs Python
 dependencies and nothing else, and the Homebrew FFmpeg on a developer
@@ -56,6 +75,7 @@ from saimc.compose.engine import EngineOutput, compose
 from saimc.compose.score import PerformancePlan, TempoPoint, realized_duration_seconds
 from saimc.release.gates import gate_render_time_budget
 from saimc.render.audio import (
+    MASTER_TRUE_PEAK_DBTP,
     AudioArtifact,
     AudioRenderError,
     find_ffmpeg,
@@ -157,11 +177,12 @@ def _render(
 class _Renders:
     """One piece rendered three ways.
 
-    Three, not two, because a sketch differs from a full render in *two*
+    Three, not two, because a sketch and a full render differ in *two*
     settings — the master and the bitrate — and a comparison between the two
     end points cannot say which one caused what. `unmastered` is the control
     that isolates them: the same plan, the same bitrate as `full`, with only
-    the `master` flag flipped.
+    the master switched off. It is also the render whose WAV *is* the sketch's
+    WAV, which is how the preview claim is checked.
     """
 
     sketch: _Render
@@ -241,26 +262,31 @@ def _levels(ogg_path: Path) -> tuple[float, float]:
 class TestTheSketchPreviewsTheDeliveredAudio:
     """What the user approves is what they get."""
 
-    def test_every_wav_is_byte_identical(self, renders_120s: _Renders) -> None:
+    def test_the_sketch_delivers_the_same_mix_the_full_render_masters(
+        self, renders_120s: _Renders
+    ) -> None:
         """Same notes, same font, same gain — nothing about the music differs.
 
-        Neither the master nor the bitrate touches the WAV, which is what
+        Neither the master nor the bitrate touches the mix, which is what
         makes a preview a preview: what the user hears while choosing is the
-        audio they receive, not a rendering of the same score. If this ever
-        fails, they are choosing between one piece and being given another.
+        audio they receive, not a rendering of the same score. The comparison
+        is against the `unmastered` control rather than against `full`,
+        because `full`'s WAV is the mastered one and the two *should* differ
+        there — that difference is the master, and it is asserted below.
         """
         hashes = {
             "sketch": renders_120s.sketch.artifact.primary_sha256,
-            "full": renders_120s.full.artifact.primary_sha256,
             "unmastered": renders_120s.unmastered.artifact.primary_sha256,
         }
         assert len(set(hashes.values())) == 1, hashes
-        sizes = {
-            renders_120s.sketch.artifact.primary_size_bytes,
-            renders_120s.full.artifact.primary_size_bytes,
-            renders_120s.unmastered.artifact.primary_size_bytes,
-        }
-        assert len(sizes) == 1, sizes
+        assert (
+            renders_120s.sketch.artifact.primary_size_bytes
+            == renders_120s.unmastered.artifact.primary_size_bytes
+        )
+        # The master is not a no-op, so the delivered WAV is a different file
+        # from the mix. Without this the test above would be satisfied by a
+        # build that mastered nothing at all.
+        assert renders_120s.full.artifact.primary_sha256 != hashes["sketch"]
 
     def test_mastering_makes_the_audio_materially_louder(self, renders_120s: _Renders) -> None:
         """`master=False` is not a no-op — the same bitrate, a quieter mix.
@@ -295,6 +321,54 @@ class TestTheSketchPreviewsTheDeliveredAudio:
         assert sketch.ogg_size_bytes is not None
         assert unmastered.ogg_size_bytes is not None
         assert sketch.ogg_size_bytes < unmastered.ogg_size_bytes
+
+
+class TestTheTwoDeliverablesMatchInLevel:
+    """The WAV and the OGG a user downloads, measured against each other.
+
+    Roadmap §8 states media reproducibility as "same audio levels within
+    tolerance", and this is that claim about the two files one render
+    produces. It is the bar F6 was opened for: measured before the fix, the
+    delivered WAV sat at peak -17.24 / mean -35.94 dBFS against the delivered
+    OGG's -1.25 / -19.25 — **16 dB apart, with the primary deliverable the
+    quiet one.** They are together now because the OGG is encoded from the
+    mastered WAV rather than normalising to the target separately, and the
+    same piece measures 0.30 dB apart on the peak and 0.00 dB on the mean.
+
+    The animation is the third deliverable and is not measured here: it muxes
+    `AudioArtifact.primary_path` (`jobs/stages.py`), so it carries whatever
+    this WAV measures, and a WebM render is minutes of VP9 for a fact the WAV
+    already states.
+    """
+
+    TOLERANCE_DB = 1.0
+    """Lossy coding of a loud mix moves peak and mean by hundredths of a dB.
+
+    The failure this guards — an encode that normalises to its own target, or
+    a WAV that skipped its master — is 6 dB or more, so 1 dB separates the two
+    without being tight enough for a font or a machine to flap it.
+    """
+
+    def test_the_wav_and_the_ogg_are_at_the_same_level(self, renders_120s: _Renders) -> None:
+        wav_peak, wav_mean = _levels(renders_120s.full.artifact.primary_path)
+        ogg_peak, ogg_mean = _levels(renders_120s.full.artifact.ogg_path)
+        assert abs(wav_peak - ogg_peak) < self.TOLERANCE_DB, (wav_peak, ogg_peak)
+        assert abs(wav_mean - ogg_mean) < self.TOLERANCE_DB, (wav_mean, ogg_mean)
+
+    def test_the_pair_is_at_the_master_target(self, renders_120s: _Renders) -> None:
+        """Both files land where the master aimed, not merely near each other.
+
+        Two files 20 dB below the target would satisfy the assertion above,
+        so this pins the direction and the distance. The delivered WAV
+        measured -1.50 dBFS, exactly `MASTER_TRUE_PEAK_DBTP`: loudnorm's
+        `linear=true` still applies a true-peak limiter at that value, and a
+        sample peak read back with `volumedetect` cannot exceed a bounded true
+        peak. So the ceiling is exact rather than approximate, and the floor is
+        the part with room in it.
+        """
+        wav_peak, _ = _levels(renders_120s.full.artifact.primary_path)
+        assert wav_peak > MASTER_TRUE_PEAK_DBTP - 4.0, wav_peak
+        assert wav_peak <= MASTER_TRUE_PEAK_DBTP, wav_peak
 
 
 class TestTheSketchIsFastEnoughToWaitOn:

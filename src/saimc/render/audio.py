@@ -65,7 +65,7 @@ DEFAULT_FFMPEG_TIMEOUT_S: float = 60.0
 # Mix constants (§ "produced-track quality"). FluidSynth's own default
 # gain (0.2) leaves WAV peaks around 11-19% of full scale; 0.6 lands the
 # raw render around -6..-9 dBFS peaks with clipping headroom to spare —
-# the loudnorm pass in the Opus encode sets the final delivery level.
+# the loudnorm master sets the final delivery level.
 FLUIDSYNTH_GAIN: float = 0.6
 # Reverb pinned to FluidSynth's documented defaults (a version bump must
 # not silently change the room). Chorus is disabled in run_fluidsynth:
@@ -76,14 +76,14 @@ FLUIDSYNTH_REVERB_DAMP: float = 0.23
 FLUIDSYNTH_REVERB_WIDTH: float = 0.76
 FLUIDSYNTH_REVERB_LEVEL: float = 0.87
 
-# Master loudness target for the *encoded Opus* deliverable, applied via
-# a two-pass ffmpeg loudnorm in encode_opus. This is not the streaming
-# standard: the services normalise to -14 LUFS, and -16 is deliberately
-# 2 LU below it, so they turn this up rather than down — the safer
-# direction for a lossy re-encode. It is also not applied to the other
-# two deliverables: audio.wav is written straight from FluidSynth, and
-# the animation's audio is muxed from that same un-normalised WAV, so
-# all three files ship at different loudness. Unifying them is the fix.
+# Master loudness target, applied to the WAV every deliverable is cut
+# from (see master_wav). This is not the streaming standard: the services
+# normalise to -14 LUFS, and -16 is deliberately 2 LU below it, so they
+# turn this up rather than down — the safer direction for a lossy
+# re-encode. All three deliverables carry it, because all three descend
+# from the mastered `audio.wav`: the OGG is encoded from it and the
+# animation muxes it. The sketch is the exception and is deliberately not
+# mastered.
 MASTER_LOUDNESS_LUFS: float = -16.0
 MASTER_TRUE_PEAK_DBTP: float = -1.5
 MASTER_LRA: float = 11.0
@@ -490,7 +490,7 @@ def run_fluidsynth(
     # Reverb is pinned to FluidSynth's documented defaults so a version
     # bump cannot silently change the room. The gain raises the raw WAV
     # to a healthy 16-bit level (~-6..-9 dBFS peaks) with headroom left
-    # for the loudnorm pass in the Opus encode.
+    # for the loudnorm master.
     cmd = [
         bin_path,
         "-F",  # render to a file
@@ -648,7 +648,7 @@ def _loudnorm_measure(
 
 
 def _loudnorm_filter(measured: Mapping[str, str] | None) -> str:
-    """Build the loudnorm filter string for the encode pass.
+    """Build the loudnorm filter string for the master pass.
 
     With measurements, `linear=true` applies a single gain so the mix's
     dynamics are untouched (true mastering); without them the filter
@@ -669,6 +669,68 @@ def _loudnorm_filter(measured: Mapping[str, str] | None) -> str:
     )
 
 
+def master_wav(
+    wav_path: Path,
+    out_wav_path: Path,
+    *,
+    ffmpeg_bin: str | None = None,
+    timeout_s: float = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> None:
+    """Loudness-normalise `wav_path` -> `out_wav_path`, leaving PCM.
+
+    This is the master every deliverable is cut from. `audio.wav` is its
+    output, the OGG is encoded from that file, and the animation muxes
+    it, so the three files a user can receive all carry these levels.
+
+    Two ffmpeg passes: measure the mix, then apply the measurement as a
+    single linear gain. The measurement pass dominates the wall clock,
+    which is why this is a step of its own that the sketch path skips
+    rather than a flag on the encode.
+
+    A mix whose loudness cannot be measured — a silent one, or a binary
+    whose measurement pass fails — falls back to single-pass dynamic
+    loudnorm, which still targets the same loudness.
+    """
+    bin_path = find_ffmpeg(ffmpeg_bin)
+    audit = audit_ffmpeg(bin_path)
+    if not audit.ok:
+        raise AudioRenderError(
+            AudioRenderErrorCode.FFMPEG_AUDIT_FAILED,
+            f"ffmpeg at {bin_path} failed audit: {audit.reasons}",
+        )
+    out_wav_path.parent.mkdir(parents=True, exist_ok=True)
+    measured = _loudnorm_measure(bin_path, wav_path, timeout_s=timeout_s)
+    cmd = [
+        bin_path,
+        "-y",  # overwrite output if it exists
+        "-i",
+        str(wav_path),
+        "-af",
+        _loudnorm_filter(measured),
+        str(out_wav_path),
+    ]
+    t0 = time.perf_counter()
+    try:
+        proc = safe_run(cmd, timeout_s=timeout_s)
+    except SubprocessTimeoutError as exc:
+        raise AudioRenderError(
+            AudioRenderErrorCode.FFMPEG_FAILED,
+            f"ffmpeg exceeded {timeout_s}s timeout",
+        ) from exc
+    elapsed = time.perf_counter() - t0
+    if proc.returncode != 0:
+        raise AudioRenderError(
+            AudioRenderErrorCode.FFMPEG_FAILED,
+            f"ffmpeg rc={proc.returncode} stderr={proc.stderr.strip()[:200]}",
+        )
+    if not out_wav_path.exists():
+        raise AudioRenderError(
+            AudioRenderErrorCode.FFMPEG_FAILED,
+            "ffmpeg returned 0 but no mastered WAV was written",
+        )
+    logger.info("ffmpeg mastered %s -> %s in %.1fs", wav_path, out_wav_path, elapsed)
+
+
 def encode_opus(
     wav_path: Path,
     out_ogg_path: Path,
@@ -677,22 +739,14 @@ def encode_opus(
     bitrate_kbps: int = DEFAULT_OPUS_BITRATE_KBPS,
     timeout_s: float = DEFAULT_FFMPEG_TIMEOUT_S,
     soundfont_name: str | None = None,
-    master: bool = True,
 ) -> tuple[str, str, str]:
     """Encode WAV -> OGG Opus via the audited ffmpeg binary.
 
-    With `master` (the default) the encode runs the two-pass loudnorm
-    master first — measure the mix, then encode with those measurements
-    applied as a single linear gain — so every deliverable lands at the
-    same loudness regardless of which font rendered it. That master is
-    two ffmpeg passes and the measurement pass dominates the wall clock,
-    which is why it is optional.
-
-    `master=False` drops the measure pass *and* the filter, leaving one
-    encode. Use it for a sketch: a preview is heard once, while choosing
-    between drafts, and is never the artifact a user downloads. Skipping
-    only the filter would not help — an unmeasured loudnorm is still a
-    second pass and still targets the same loudness dynamically.
+    One pass, and no filter: the WAV it is handed is already at the
+    delivery loudness, because the master happens to the WAV and not to
+    the encode (`master_wav`). Encoding a mastered file applies no gain,
+    so the OGG lands at the same level as the WAV a user downloads rather
+    than 16 dB above it.
 
     Returns (version, build_sha, configuration_line) for the manifest
     toolchain block. The OGG carries the rendered font's attribution as
@@ -709,16 +763,11 @@ def encode_opus(
     out_ogg_path.parent.mkdir(parents=True, exist_ok=True)
     from saimc.render.attribution import audio_metadata_tags
 
-    measured = _loudnorm_measure(bin_path, wav_path, timeout_s=timeout_s) if master else None
     cmd = [
         bin_path,
         "-y",  # overwrite output if it exists
         "-i",
         str(wav_path),
-    ]
-    if master:
-        cmd += ["-af", _loudnorm_filter(measured)]
-    cmd += [
         "-c:a",
         "libopus",
         "-b:a",
@@ -780,15 +829,25 @@ def render_audio(
     file names. `tempo_changes` is the NotationScore's tempo map
     (empty for constant-tempo pieces).
 
-    `master=False` skips the loudnorm master (see `encode_opus`), which
-    is what makes this fast enough to sit in an interactive turn. The WAV
-    does not depend on it either way — the sketch and the full render
-    produce the same WAV from the same plan, so a sketch is a preview of
-    the delivered audio and not merely of the notes. `render_sketch` is
-    the named entry point for that mode.
+    With `master` (the default), FluidSynth's mix is mastered into
+    `audio.wav` — the primary deliverable — and the OGG is encoded from
+    that file. Both downloads then carry the same levels, and so does the
+    animation, which muxes the same `audio.wav`.
+
+    `master=False` delivers the mix itself as `audio.wav`, unmastered,
+    and encodes the OGG from that. Use it for a sketch: a preview is
+    heard once, while choosing between drafts, and is never the artifact
+    a user downloads. The *content* does not depend on it either way —
+    the same plan through the same font at the same gain produces the
+    same mix, so a sketch previews the delivered music and not merely the
+    notes. `render_sketch` is the named entry point for that mode.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     smf_path = out_dir / f"{job_id}.mid"
+    # FluidSynth always writes the mix; `audio.wav` is always the WAV a
+    # user receives. Naming them apart is what keeps the unmastered mix
+    # from ever being the thing at the delivered path.
+    mix_path = out_dir / "audio.mix.wav"
     wav_path = out_dir / "audio.wav"
     ogg_path = out_dir / "audio.ogg"
 
@@ -808,16 +867,28 @@ def render_audio(
             f"SMF build failed: {exc}",
         ) from exc
 
-    # 2. SMF + soundfont -> WAV via FluidSynth.
+    # 2. SMF + soundfont -> the mix WAV via FluidSynth.
     fs_version, fs_build = run_fluidsynth(
         smf_path,
         soundfont_path,
-        wav_path,
+        mix_path,
         fluidsynth_bin=fluidsynth_bin,
         timeout_s=fluidsynth_timeout_s,
     )
 
-    # 3. WAV -> OGG Opus via audited FFmpeg.
+    # 3. The mix -> the delivered WAV, mastered or as it stands.
+    if master:
+        master_wav(
+            mix_path,
+            wav_path,
+            ffmpeg_bin=ffmpeg_bin,
+            timeout_s=ffmpeg_timeout_s,
+        )
+        mix_path.unlink()
+    else:
+        mix_path.replace(wav_path)
+
+    # 4. The delivered WAV -> OGG Opus via audited FFmpeg.
     ffmpeg_version, ffmpeg_sha, ffmpeg_config = encode_opus(
         wav_path,
         ogg_path,
@@ -825,7 +896,6 @@ def render_audio(
         bitrate_kbps=bitrate_kbps,
         timeout_s=ffmpeg_timeout_s,
         soundfont_name=soundfont_path.name,
-        master=master,
     )
 
     primary_sha = _hash_file(wav_path)
@@ -873,17 +943,21 @@ def render_sketch(
     """Render a preview fast enough to sit inside an interactive turn.
 
     Same music as `render_audio` — the same SMF, the same font, the same
-    gain, so the same WAV byte for byte — with the loudnorm master and
-    half the Opus bitrate skipped. What is lost is mastering, not content:
-    a sketch is what a user listens to while choosing between drafts, and
-    never the artifact they download.
+    gain, so the same mix — with the loudnorm master and half the Opus
+    bitrate skipped. What is lost is mastering, not content: a sketch is
+    what a user listens to while choosing between drafts, and never the
+    artifact they download.
+
+    A sketch is therefore *not* level-matched to the delivered piece: its
+    `audio.wav` is the raw mix where the delivered one is mastered, so the
+    sketch plays quieter by however much the master lifts this particular
+    font. That is the one difference between the two files, and it is the
+    reason a sketch must never be offered as a download.
 
     This exists as a named entry point rather than `master=False` at the
     call site because a draft being a sketch is a load-bearing part of the
     loop's design, and the two settings that make one belong in a single
-    place with a reason attached. The sketch OGG is intentionally not
-    level-matched to the delivered one; unifying the deliverables'
-    loudness is separate, tracked work.
+    place with a reason attached.
     """
     return render_audio(
         plan,
@@ -914,6 +988,7 @@ __all__ = [
     "encode_opus",
     "find_ffmpeg",
     "find_fluidsynth",
+    "master_wav",
     "render_audio",
     "render_sketch",
     "run_fluidsynth",
