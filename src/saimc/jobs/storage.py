@@ -33,8 +33,13 @@ from pathlib import Path
 from typing import Any
 
 from saimc.canonical import canonical_dumps
+from saimc.compose.plan import (
+    CompositionPlan,
+    PlanError,
+    UnsupportedPlanVersionError,
+)
 from saimc.jobs.state import JobState
-from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, UnsupportedSpecVersionError
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +98,24 @@ class Job:
     current_stage: str
     input_prompt: str
     input_spec: CompositionSpec | None
+    input_plan: CompositionPlan | None = None
+    """The plan this job composes under, or `None` for the engine's defaults.
+
+    Stored materialized, for the reason `plan.py` gives: a plan that came
+    back from a module table at read time would make this job's
+    reproducibility a claim about this build rather than about the job.
+    `None` is the caller saying nothing about the music beyond the spec,
+    which is what every job written before this field existed also says.
+    """
     artifacts: dict[str, ArtifactRecord] = field(default_factory=dict)
     error: JobError | None = None
     engine_version: str = "0.1.0"
     seed: int | None = None
     parser_source: str | None = None
+    model: str | None = None
+    """The LLM that served this job's parse, when one did (§9: the manifest
+    records the model identifier alongside `parser_source`). None for a
+    fallback-only parse, and for jobs written before this field existed."""
     attempts: int = 0
 
     def is_terminal(self) -> bool:
@@ -248,6 +266,9 @@ class JobStorage:
         spec_payload: dict[str, Any] | None = (
             job.input_spec.model_dump(mode="json") if job.input_spec is not None else None
         )
+        plan_payload: dict[str, Any] | None = (
+            job.input_plan.to_canonical_dict() if job.input_plan is not None else None
+        )
         return {
             "job_id": job.job_id,
             "created_at": job.created_at.isoformat(),
@@ -257,6 +278,7 @@ class JobStorage:
             "current_stage": job.current_stage,
             "input_prompt": job.input_prompt,
             "input_spec": spec_payload,
+            "input_plan": plan_payload,
             "artifacts": {
                 kind: {
                     "kind": a.kind,
@@ -281,6 +303,7 @@ class JobStorage:
             "engine_version": job.engine_version,
             "seed": job.seed,
             "parser_source": job.parser_source,
+            "model": job.model,
             "attempts": job.attempts,
         }
 
@@ -296,6 +319,23 @@ class JobStorage:
                     f"{SPEC_SCHEMA_VERSION}; upgrade saimc or delete the job directory."
                 )
         spec = CompositionSpec.model_validate(spec_payload) if spec_payload is not None else None
+        plan_payload = payload.get("input_plan")
+        # A plan document of any version but this build's is refused rather
+        # than coerced, unlike a spec: the spec is widened additively and
+        # Pydantic fills what it is missing, while a plan is stored
+        # *materialized*, so a version it cannot read is a plan whose
+        # fields it cannot know. Reading one anyway would make the job's
+        # reproducibility a claim this build cannot honour while still
+        # loading it successfully.
+        plan: CompositionPlan | None = None
+        if plan_payload is not None:
+            try:
+                plan = CompositionPlan.from_canonical_dict(plan_payload)
+            except PlanError as exc:
+                raise UnsupportedPlanVersionError(
+                    f"job {payload.get('job_id', '?')} carries a composition plan this "
+                    f"build cannot read ({exc}); upgrade saimc or delete the job directory."
+                ) from exc
         error = (
             JobError(
                 error_code=payload["error"]["error_code"],
@@ -326,17 +366,15 @@ class JobStorage:
             current_stage=payload["current_stage"],
             input_prompt=payload["input_prompt"],
             input_spec=spec,
+            input_plan=plan,
             artifacts=artifacts,
             error=error,
             engine_version=payload["engine_version"],
             seed=payload.get("seed"),
             parser_source=payload.get("parser_source"),
+            model=payload.get("model"),
             attempts=payload.get("attempts", 0),
         )
-
-
-class UnsupportedSpecVersionError(Exception):
-    """Raised when a persisted job's spec schema is newer than this build."""
 
 
 __all__ = [
@@ -347,5 +385,4 @@ __all__ = [
     "Job",
     "JobError",
     "JobStorage",
-    "UnsupportedSpecVersionError",
 ]

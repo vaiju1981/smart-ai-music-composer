@@ -8,10 +8,17 @@
 # The render-service (Node) is a one-shot CLI invoked by the worker's
 # sheet stage, so there is nothing to daemonize for it.
 #
-# Usage: run.sh {start|stop|restart|status} [service...]
-#   run.sh start            start everything
+# Usage: run.sh {start|stop|restart|status|bootstrap} [service...]
+#   run.sh start            set up what is missing, then start everything
 #   run.sh start worker api start only some services
+#   run.sh bootstrap        set up only, start nothing
 #   run.sh status
+#
+# `start` bootstraps first, because the setup steps are not things anyone
+# should have to remember: a venv, an editable install, the console scripts,
+# the Node render-service, and the two system packages the services need.
+# Nothing is reinstalled when it is already current, so the common path is a
+# few checks. Set SAIMC_SKIP_BOOTSTRAP=1 to start without them.
 #
 # PID files and logs live under var/run/; job artifacts under var/jobs/.
 
@@ -45,6 +52,13 @@ valid_port "$VALKEY_PORT" || {
 }
 
 export SAIMC_JOBS_DIR="${SAIMC_JOBS_DIR:-$REPO_ROOT/var/jobs}"
+# Sessions and the preference log each get their own root, and the server is
+# where that becomes visible: the three stores default their roots from the
+# environment, so this is the one place a deployment says where its state
+# lives. The preference log is never pruned and must not sit under a root that
+# is, which is the reason it is named here rather than left to the default.
+export SAIMC_SESSIONS_DIR="${SAIMC_SESSIONS_DIR:-$REPO_ROOT/var/sessions}"
+export SAIMC_PREFERENCES_DIR="${SAIMC_PREFERENCES_DIR:-$REPO_ROOT/var/preferences}"
 export SAIMC_VALKEY_URL="$VALKEY_URL"
 # Prefer the repo's audited LGPL build over any GPL ffmpeg on PATH —
 # the render audit gate would (correctly) reject the latter.
@@ -257,7 +271,7 @@ start_worker() {
 start_api() {
     [ -x "$UVICORN_BIN" ] || { echo "uvicorn missing: $UVICORN_BIN"; return 1; }
     start_one api api "$UVICORN_BIN" \
-        saimc.jobs.api:create_app --factory \
+        saimc.jobs.api:create_served_app --factory \
         --host "$API_HOST" --port "$API_PORT" || return 1
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         if pid_alive "$RUN_DIR/api.pid" && api_ping; then
@@ -277,6 +291,170 @@ start_api() {
 
 ALL_SERVICES="valkey worker api"
 
+# --- bootstrap -------------------------------------------------------------
+#
+# Everything `start` needs before a service can run. Each step is skipped when
+# it is already current, so a normal start costs a few file checks; only a
+# missing or stale piece does work. The steps are ordered by dependency: the
+# venv, then the install, then the scripts it should have produced, then the
+# Node build, then the system packages the services themselves need.
+
+# The interpreter the venv is built from, which is not the venv's own python.
+find_base_python() {
+    if [ -n "${SAIMC_BASE_PYTHON:-}" ]; then
+        [ -x "$SAIMC_BASE_PYTHON" ] && { printf '%s' "$SAIMC_BASE_PYTHON"; return 0; }
+        return 1
+    fi
+    # pyproject requires >= 3.11, so an older python3 is not a candidate —
+    # failing here beats building a venv that cannot install the project.
+    local candidate
+    for candidate in python3 python; do
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# npm sits beside node, so a node found through nvm brings its own npm.
+find_npm() {
+    if [ -n "${SAIMC_NPM_BIN:-}" ]; then
+        [ -x "$SAIMC_NPM_BIN" ] && { printf '%s' "$SAIMC_NPM_BIN"; return 0; }
+        return 1
+    fi
+    if command -v npm >/dev/null 2>&1; then
+        command -v npm
+        return 0
+    fi
+    local node_bin
+    node_bin="$(find_node)" || return 1
+    local candidate="$(dirname "$node_bin")/npm"
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+    return 1
+}
+
+ensure_brew_pkg() {
+    local pkg="$1"
+    local why="$2"
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "$pkg: missing ($why) and Homebrew is not installed — install Homebrew, then: brew install $pkg" >&2
+        return 1
+    fi
+    echo "$pkg: missing ($why), installing"
+    brew install "$pkg" || return 1
+    # A package installed into a PATH directory this shell has already searched
+    # is invisible until the lookup cache is dropped.
+    hash -r 2>/dev/null || true
+    echo "$pkg: installed"
+}
+
+ensure_venv() {
+    if [ -x "$PYTHON_BIN" ]; then
+        echo "venv: present"
+        return 0
+    fi
+    local base
+    base="$(find_base_python)" || {
+        echo "venv: no python >= 3.11 on PATH (set SAIMC_BASE_PYTHON to one)" >&2
+        return 1
+    }
+    echo "venv: creating $REPO_ROOT/.venv with $base"
+    "$base" -m venv "$REPO_ROOT/.venv" || return 1
+}
+
+# The stamp is what makes "stale" precise. Comparing pyproject's mtime against
+# a marker written by the last successful install catches the two ways an
+# install goes quietly out of date: a new dependency, and — the one that has
+# bitten before — a changed `[project.scripts]` whose console-script shims are
+# only regenerated by reinstalling. Editing the file and re-running is then
+# enough; nothing has to remember to reinstall.
+ensure_install() {
+    local stamp="$REPO_ROOT/pyproject.toml"
+    local marker="$REPO_ROOT/.venv/.saimc-installed"
+    if [ -f "$marker" ] && [ "$marker" -nt "$stamp" ] && "$PYTHON_BIN" -c 'import saimc' 2>/dev/null; then
+        echo "install: current"
+        return 0
+    fi
+    echo "install: pip install -e \".[dev]\""
+    local log="$RUN_DIR/bootstrap-install.log"
+    if ! "$PYTHON_BIN" -m pip install --disable-pip-version-check -e ".[dev]" >"$log" 2>&1; then
+        echo "install: failed — see $log" >&2
+        tail -n 20 "$log" >&2
+        return 1
+    fi
+    touch "$marker"
+}
+
+# Every `[project.scripts]` entry has to exist, resolve, and — for the typer
+# ones — actually answer `--help`. The script says at length why that is the
+# check that matters and why it is applied only to the typer CLIs.
+#
+# It is a script rather than a heredoc here so that CI runs the same one: the
+# defect it catches (an entry naming a decorated command instead of its runner)
+# shipped once because nothing invoked the entry points, and CI was that
+# nothing. One implementation, two callers, and neither can drift from the other.
+verify_scripts() {
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/check_console_scripts.py"
+}
+
+ensure_render_service() {
+    local service="$REPO_ROOT/render-service"
+    [ -f "$service/package.json" ] || {
+        echo "render-service: no package.json, skipped"
+        return 0
+    }
+    local cli=""
+    local candidate
+    for candidate in "$service/dist/src/cli.js" "$service/dist/cli.js"; do
+        if [ -f "$candidate" ]; then
+            cli="$candidate"
+            break
+        fi
+    done
+    if [ -n "$cli" ] && [ -d "$service/node_modules" ] && [ ! "$service/package.json" -nt "$cli" ]; then
+        echo "render-service: built"
+        return 0
+    fi
+    local npm_bin
+    npm_bin="$(find_npm)" || {
+        echo "render-service: npm missing (install Node >=18 or set SAIMC_NPM_BIN)" >&2
+        return 1
+    }
+    echo "render-service: npm install && npm run build"
+    local log="$RUN_DIR/bootstrap-render.log"
+    if ! ( cd "$service" && "$npm_bin" install && "$npm_bin" run build ) >"$log" 2>&1; then
+        echo "render-service: build failed — see $log" >&2
+        tail -n 20 "$log" >&2
+        return 1
+    fi
+}
+
+ensure_system_deps() {
+    local rc=0
+    # Either broker is acceptable — RQ speaks RESP to both — so valkey is only
+    # installed when neither is present.
+    find_broker_server >/dev/null || ensure_brew_pkg valkey "the job queue broker" || rc=1
+    find_node >/dev/null || ensure_brew_pkg node "the render-service and worker need it" || rc=1
+    return "$rc"
+}
+
+cmd_bootstrap() {
+    local rc=0
+    ensure_venv || return 1
+    ensure_install || return 1
+    verify_scripts || rc=1
+    ensure_render_service || rc=1
+    ensure_system_deps || rc=1
+    if [ "$rc" -eq 0 ]; then
+        echo "bootstrap: ready"
+    else
+        echo "bootstrap: finished with problems above" >&2
+    fi
+    return "$rc"
+}
+
 normalize_services() {
     if [ $# -eq 0 ]; then
         printf '%s\n' $ALL_SERVICES
@@ -284,13 +462,19 @@ normalize_services() {
         for s in "$@"; do
             case "$s" in
                 valkey|worker|api) printf '%s\n' "$s" ;;
-                *) echo "unknown service: $s (choose from: $ALL_SERVICES)"; return 1 ;;
+                # stderr, because both callers read this function through a
+                # command substitution: a message on stdout is captured as the
+                # service list and never reaches the user.
+                *) echo "unknown service: $s (choose from: $ALL_SERVICES)" >&2; return 1 ;;
             esac
         done
     fi
 }
 
 cmd_start() {
+    if [ -z "${SAIMC_SKIP_BOOTSTRAP:-}" ]; then
+        cmd_bootstrap || return 1
+    fi
     local services
     services="$(normalize_services "$@")" || return 1
     local rc=0
@@ -366,8 +550,9 @@ case "${1:-}" in
     stop) shift; cmd_stop "$@" ;;
     restart) shift; cmd_restart "$@" ;;
     status) cmd_status ;;
+    bootstrap) cmd_bootstrap ;;
     *)
-        echo "usage: run.sh {start|stop|restart|status} [valkey|worker|api ...]" >&2
+        echo "usage: run.sh {start|stop|restart|status|bootstrap} [valkey|worker|api ...]" >&2
         exit 2
         ;;
 esac

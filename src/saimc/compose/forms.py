@@ -23,16 +23,31 @@ mapping.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from saimc.compose.score import KeySignature
+from saimc.compose.score import PPQ, KeySignature
 from saimc.spec import WesternKey
 
 PHRASE_BARS: int = 4
 """The phrase unit: the melody breathes at least once per phrase, and
 the CC11 swells ride one rise-and-fall per phrase."""
+
+BREATH_TICKS: int = PPQ // 2
+"""How long the melody's phrase-ending rest lasts: an eighth note.
+
+An eighth is the shortest silence an ear reads as air rather than as
+articulation, and it is deliberately the same length as the anacrusis
+pickup the breathing bar would otherwise have carried — *the bar either
+leads into the next one or breathes for exactly that long*, so the two
+are the same slot spent two ways rather than two independent numbers
+that can drift apart.
+
+The bar's own rhythm is what gets truncated to make the room (see
+`engine._melody_bar`): halving the last slot instead let a bar that
+closed on a 16th leave a 60-tick rest, which is a 32nd — measured as a
+breath by the marking pass and heard as nothing at all."""
 
 
 class ChordSlot(NamedTuple):
@@ -292,37 +307,218 @@ def _extend_template(template: ChordTemplate, target_bars: int) -> ChordTemplate
     )
 
 
+def apply_harmonic_rhythm(template: ChordTemplate, pattern: Sequence[int]) -> ChordTemplate:
+    """Re-cut a template's bars so its chords change at the pattern's rate.
+
+    The degrees are the template's and keep their order; the pattern decides
+    how long each one lasts, and both cycle when the other runs out. A
+    one-bar pattern therefore walks the whole progression a bar at a time and
+    a four-bar pattern holds each chord twice as long as the default two. A
+    pattern holding more than one duration is what gives a progression a
+    rhythm rather than a pulse, which is what `harmonic_rhythm_variety`
+    measures — a uniform pattern, at any rate, still reads as a pulse.
+
+    The last chord is shortened to land exactly on the template's bar count,
+    so the bar arithmetic every caller does with a template still holds. It
+    is never shortened to nothing: a slot of zero bars is a chord that never
+    sounds, and `_truncate_template` leaves one behind when a truncation
+    lands on a slot boundary, which is a defect the engine's walk has to skip
+    by name rather than one this function should add to.
+    """
+    if not pattern or min(pattern) < 1:
+        raise ValueError(
+            "a harmonic rhythm is a pattern of chord durations in bars, each at "
+            f"least one; got {tuple(pattern)}"
+        )
+    kept: list[ChordSlot] = []
+    consumed = 0
+    index = 0
+    while consumed < template.bars:
+        duration = min(pattern[index % len(pattern)], template.bars - consumed)
+        kept.append(template.chords[index % len(template.chords)]._replace(bars=duration))
+        consumed += duration
+        index += 1
+    return ChordTemplate(name=f"{template.name}_rhythm", bars=template.bars, chords=tuple(kept))
+
+
 # Cadential close per mood: electrifying resolves with an authentic
 # dominant cadence (V -> I); calming and sleep with a plagal one
 # (IV -> I). The final section's last two bars are rewritten to this
 # cadence, so every piece ends at home instead of on whatever chord the
 # template's tail happens to land on.
-_CADENCE_DEGREE: Mapping[str, int] = {
+CADENCE_DEGREE: Mapping[str, int] = {
     "calming": 3,  # IV
     "electrifying": 4,  # V
     "sleep": 3,  # IV
 }
 
+DEFAULT_CADENCE_DEGREE: int = 4
+"""The cadence an unlisted mood gets: a dominant, the stronger close."""
 
-def apply_final_cadence(template: ChordTemplate, mood: str) -> ChordTemplate:
-    """Rewrite a template's last two bars as its mood's cadence.
+CADENCE_SEVENTH: Mapping[str, bool] = {
+    "electrifying": True,
+}
+"""Whether the cadence chord is a seventh.
 
-    The bar before the final tonic becomes the dominant (V) for
-    electrifying — as a V7 — or the subdominant (IV) for calming/sleep,
-    giving the melody a harmonic target to resolve onto. Both cadence
-    chords are pinned to root-position bass (`bass_degree`) so the
-    final close lands on the tonic's root, not on a walking inversion.
-    Bar count is preserved: the cadence bars replace the template's
-    last two bars, so duration arithmetic is unaffected. Templates
-    shorter than three bars are returned unchanged (there is no room
-    for a 2-bar close).
+Only electrifying's dominant is a V7; a seventh under the plagal close
+would be heard as an added sixth over the tonic that follows it. The
+other moods take `DEFAULT_CADENCE_SEVENTH`, which is the triad.
+"""
+
+DEFAULT_CADENCE_SEVENTH: bool = False
+"""The cadence an unlisted mood gets: the triad, which is the plain close."""
+
+MODULATION_OFFSET: int = 2
+"""Semitones a long piece's final repetition is lifted by.
+
+A whole step, and the lift *is* the ending: the piece arrives in the new
+key and stays there through the coda. It lives here, with `transposed_key`
+and the rest of the key arithmetic, rather than in `engine.py` where it was
+declared — a plan has to be able to read it, and `engine.py` imports
+`plan.py`, so the dependency cannot run the other way.
+"""
+
+
+def cadence_degree_for(mood: str) -> int:
+    """The scale degree this mood's final cadence approaches the tonic from."""
+    return CADENCE_DEGREE.get(mood, DEFAULT_CADENCE_DEGREE)
+
+
+def cadence_seventh_for(mood: str) -> bool:
+    """Whether this mood's final cadence chord is a seventh."""
+    return CADENCE_SEVENTH.get(mood, DEFAULT_CADENCE_SEVENTH)
+
+
+HALF_CADENCE_APPROACH_DEGREE: int = 1
+"""The predominant a half cadence leaves from: the supertonic.
+
+ii in major, ii° in minor — the degree whose function is to lead to the
+dominant, which is what makes the close a cadence rather than two chords.
+"""
+
+HALF_CADENCE_TARGET_DEGREE: int = 4
+"""The degree a half cadence stops on: the dominant, unresolved."""
+
+
+SECTION_CLOSES: tuple[str, ...] = ("hold", "half", "full")
+"""How a section that is not the piece's last one closes.
+
+A closed vocabulary rather than a free string, because the choice reaches
+the notes through `apply_section_close` and a name outside it would be a
+section that silently closed some third way. `hold` is what the engine did
+before the choice existed — the template's last chord sounds to the end of
+the form — and it is kept as a legal value rather than dropped: it is the
+shape a piece has when every section runs on, and a plan that asks for it
+should get it rather than be told the request is unknown.
+"""
+
+DEFAULT_SECTION_CLOSE: str = "half"
+"""The close an interior section gets: a half cadence.
+
+Measured before it was chosen. Over 108 pieces the engine wrote 384 interior
+sections and **not one of them closed**: every one ended with the last chord
+of the template's tail sounding into the final bar, 56.3% of them on a
+predominant and 43.8% on a dominant, and 18.8% of the seams landed on a
+motion (IV -> vi) that resolves nothing. So a piece had exactly one cadence,
+at its end, and the sections before it stopped rather than closed.
+
+A half cadence is the classical answer and the one the melody pass already
+anticipated — `_generate_section`'s breath rule lifts onto "the dominant's
+root when the chord there is the V (a half cadence)" — because it points
+home without arriving: the V of the close resolves into the I that the next
+section opens on. It also moves the harmony where the phrase ends, which is
+the *only* place a rhythm of uniform chords can move without inventing
+chords, so it is what makes "varied harmonic rhythm" true as well.
+"""
+
+
+def apply_section_close(
+    template: ChordTemplate,
+    *,
+    close: str,
+    cadence_degree: int,
+    seventh: bool,
+) -> ChordTemplate:
+    """Rewrite a template's last two bars as the close the plan names.
+
+    The three values are the three ways a section can end: `hold` returns
+    the template untouched (the tail sounds into the final bar), `half`
+    writes the half cadence below, and `full` writes the plan's own
+    cadence through `apply_final_cadence`. One function rather than two
+    call sites, so the policy is the thing an engine read names and the
+    thing a critic's hint can point at.
+
+    `cadence_degree` and `seventh` are read only by the `full` arm: a half
+    cadence's two chords are what a half cadence *is* rather than a taste a
+    plan holds, so they are the module's constants and not fields.
     """
-    cadence_degree = _CADENCE_DEGREE.get(mood, 4)
+    if close == "hold":
+        return template
+    if close == "half":
+        return apply_half_cadence(template)
+    if close == "full":
+        return apply_final_cadence(template, cadence_degree=cadence_degree, seventh=seventh)
+    # Unreachable through a plan, whose validator refuses a name the
+    # vocabulary does not hold; a direct call can still make it, and a
+    # template silently left alone is not a named refusal.
+    raise ValueError(f"unknown section close {close!r}; expected one of {SECTION_CLOSES}")
+
+
+def apply_half_cadence(template: ChordTemplate) -> ChordTemplate:
+    """Rewrite a template's last two bars as a ii-V half cadence.
+
+    The classical phrase ending: a predominant for one bar, then the
+    dominant for one, both in root position so the bass states the two
+    chords where they change. It approaches the dominant rather than the
+    tonic — the close points home and does not arrive, which is what makes
+    it a *half* cadence, and what lets the resolution happen across the
+    section boundary where the next section's tonic opens.
+
+    The two degrees are the definition of the cadence and live beside it
+    rather than in the plan, the way `apply_final_cadence` takes its pair
+    as arguments while `CADENCE_DEGREE` maps a mood to one. Bar count is
+    preserved and templates shorter than three bars are returned unchanged,
+    both for `apply_final_cadence`'s reasons.
+    """
     if template.bars < 3:
         return template
     kept = _truncate_template(template, template.bars - 2).chords
     cadence = (
-        ChordSlot(cadence_degree, 1, seventh=(mood == "electrifying"), bass_degree=cadence_degree),
+        ChordSlot(HALF_CADENCE_APPROACH_DEGREE, 1, bass_degree=HALF_CADENCE_APPROACH_DEGREE),
+        ChordSlot(HALF_CADENCE_TARGET_DEGREE, 1, bass_degree=HALF_CADENCE_TARGET_DEGREE),
+    )
+    return ChordTemplate(
+        name=f"{template.name}_half",
+        bars=template.bars,
+        chords=(*kept, *cadence),
+    )
+
+
+def apply_final_cadence(
+    template: ChordTemplate, *, cadence_degree: int, seventh: bool
+) -> ChordTemplate:
+    """Rewrite a template's last two bars as the cadence it is given.
+
+    The bar before the final tonic becomes the degree named — the dominant
+    (V) for electrifying, the subdominant (IV) for calming/sleep — giving
+    the melody a harmonic target to resolve onto, as a seventh chord when
+    `seventh`. Both cadence chords are pinned to root-position bass
+    (`bass_degree`) so the final close lands on the tonic's root, not on a
+    walking inversion. Bar count is preserved: the cadence bars replace the
+    template's last two bars, so duration arithmetic is unaffected.
+    Templates shorter than three bars are returned unchanged (there is no
+    room for a 2-bar close).
+
+    The degree and the seventh arrive as arguments rather than as a mood
+    name so the whole cadence is a value a plan carries; `CADENCE_DEGREE`
+    and `cadence_degree_for` remain how the *default* plan finds this
+    mood's pair.
+    """
+    if template.bars < 3:
+        return template
+    kept = _truncate_template(template, template.bars - 2).chords
+    cadence = (
+        ChordSlot(cadence_degree, 1, seventh=seventh, bass_degree=cadence_degree),
         ChordSlot(0, 1, bass_degree=0),
     )
     return ChordTemplate(
@@ -406,6 +602,36 @@ def chord_intervals(
     return table[degree % 7]
 
 
+def chord_root_offset(degree: int, key: KeySignature, *, borrowed: bool = False) -> int:
+    """A chord's root, in semitones above the key's tonic.
+
+    The companion to `chord_intervals`, which gives the tones *above* a
+    root this one locates. A borrowed chord is drawn from the parallel
+    mode's table, so its root is that mode's degree and not this key's:
+    the two modes disagree on exactly the three degrees the minor scale
+    flattens (2, 5 and 6), a semitone below in minor and therefore a
+    semitone above in major. Reading the root off the borrowed table is
+    the same swap `chord_intervals` makes, which is what makes the
+    invariant `bar_scale_intervals` documents an identity rather than a
+    coincidence — a bar's chord *is* the tones its own scale spells at
+    degrees 0, 2 and 4 (and 6 for a seventh).
+
+    Both directions are load-bearing. Written as an adjustment to the
+    key's own degree and applied only when the key is major, a borrowed
+    root in a minor key sat a semitone below the root of the scale the
+    line over it walks, so the melody's degree-0 tone was not the chord's
+    root and the triad was spelled off the bar's own scale. Reachable
+    through any explicitly named minor key — the extended electrifying
+    template's borrowed degree-6 slot, which the golden corpus's own A
+    minor cells already sound — and widened by the mood key pools, two of
+    whose six electrifying entries are minor.
+    """
+    mode = key.mode
+    if borrowed:
+        mode = "minor" if mode == "major" else "major"
+    return scale_pitch_offset(degree, mode)
+
+
 # Root-to-semitone mapping for major/minor keys. The key name in
 # CompositionSpec.WesternKey uses a compact form ("C", "G", "Am",
 # "F#m"); we normalize to a (root-name, mode) tuple.
@@ -428,13 +654,51 @@ _KEY_ROOTS: Mapping[str, int] = {
 }
 
 
-def key_signature_from_spec_key(spec_key: WesternKey | None) -> KeySignature:
-    """Resolve a CompositionSpec WesternKey to a KeySignature.
+# The keys a mood may be written in when the spec names none, in pool order,
+# and the pool an unlisted mood gets. **A musical judgement, stated as one.**
+# Nothing measures these: every one of the 25 keys `WesternKey` admits
+# composes clean in every mood, in every ensemble, at every duration (a
+# 225-cell sweep), so no key is the engine's to refuse and the choice is
+# taste rather than a finding. It is pinned as a literal, with a ratchet on
+# the table's shape, the way the arbiter's metric order is. Each pool varies
+# on the two axes a key varies on — the root and the mode — which is the
+# pair the golden corpus holds fixed.
+#
+# **The first entry is the key the mood falls back to**, because the engine
+# picks `pool[seed % len(pool)]` and a spec naming no seed resolves to seed
+# 0 the way the engine's other seed reads do. So the order is a decision,
+# not a formatting accident.
+MOOD_KEY_POOLS: Mapping[str, tuple[str, ...]] = {
+    # Warm and open, on the plain side of the signature: the majors a slow
+    # I-vi-IV-V idiom sits in without effort, with the two minor keys that
+    # colour a calm piece rather than darken it.
+    "calming": ("C", "F", "G", "Bb", "Am", "Dm"),
+    # The flat side, for the sparse, drone-adjacent end of the vocabulary.
+    "sleep": ("F", "Bb", "Eb", "Ab", "Dm", "Gm"),
+    # Sharp side, majors and minors alike: the keys a driving tempo and a
+    # guitar-shaped idiom live in.
+    "electrifying": ("A", "E", "D", "G", "Am", "Em"),
+}
 
-    If the spec key is None, return C major (the Phase 1 default).
+DEFAULT_KEY_POOL: tuple[str, ...] = ("C", "G", "F", "D", "Em", "Am")
+"""The pool an unlisted mood gets: the commonest keys, majors leading."""
+
+
+def key_pool_for(mood: str) -> tuple[str, ...]:
+    """The keys this mood may be written in, when the spec names none."""
+    return MOOD_KEY_POOLS.get(mood, DEFAULT_KEY_POOL)
+
+
+def key_signature_from_spec_key(spec_key: WesternKey) -> KeySignature:
+    """Resolve the key a spec names to a KeySignature.
+
+    The parameter is not optional, and that is the point of it: an unset
+    key is not this function's to answer. It used to return C major for
+    `None` — which is exactly the constant the engine's "engine chooses"
+    used to be — and `chosen_key` below is the path that makes that choice
+    now. Narrowing the type rather than keeping a `None` branch leaves no
+    call site that can quietly reinstate it.
     """
-    if spec_key is None:
-        return KeySignature(root="C", mode="major")
     value = spec_key.value
     if value.endswith("m"):
         root = value[:-1]
@@ -448,14 +712,32 @@ def key_signature_from_spec_key(spec_key: WesternKey | None) -> KeySignature:
     return KeySignature(root=root, mode=mode_lit)  # type: ignore[arg-type]
 
 
-def key_signature_from_spec(spec) -> KeySignature:  # type: ignore[no-untyped-def]
-    """Resolve a CompositionSpec's key to a KeySignature.
+def chosen_key(
+    spec_key: WesternKey | None, *, pool: Sequence[str], seed: int | None
+) -> KeySignature:
+    """The key a piece is written in: the spec's, or the seed's pick.
 
-    Convenience wrapper for `key_signature_from_spec_key` that takes
-    the whole spec. Imported only in the engine; the type is left
-    loose so this module doesn't need to import CompositionSpec.
+    A spec that names a key gets it, and the pool is dead for that piece. A
+    spec that does not gets `pool[seed % len(pool)]` — so varying the seed
+    *walks* the pool rather than rolling against it, consecutive seeds of a
+    fan-out land on different keys, and a caller that names no seed (which
+    resolves to seed 0, as the engine's other seed reads do) gets the pool's
+    first entry, which each pool declares as the mood's fallback.
+
+    The pool arrives as an argument rather than being read from
+    `MOOD_KEY_POOLS` here, because the plan is materialized: a stored piece
+    has to replay against the pool it was written under and not against this
+    build's table. `key_pool_for` is how the *default* plan finds one.
     """
-    return key_signature_from_spec_key(spec.key)
+    if spec_key is not None:
+        return key_signature_from_spec_key(spec_key)
+    if not pool:
+        # The plan refuses an empty pool, so an engine call cannot reach
+        # this; a direct call can, and a bare ZeroDivisionError is not a
+        # named refusal. Same rule, and the same shape, as an empty bass
+        # vocabulary.
+        raise ValueError("a key pool must name at least one key")
+    return key_signature_from_spec_key(WesternKey(pool[(seed or 0) % len(pool)]))
 
 
 def key_root_midi(key: KeySignature) -> int:
@@ -562,6 +844,42 @@ def key_scale_pcs(key: KeySignature) -> frozenset[int]:
     return frozenset((tonic_pc + offset) % 12 for offset in _SCALE_TABLES[key.mode])
 
 
+# `_KEY_ROOTS` read backwards, for naming the key a modulation lands on.
+# Three pitch classes have two spellings (C#/Db, F#/Gb, Ab/G#); the table
+# already prefers the sharp for the first two and `Ab` for the third, and
+# the inverse keeps those choices, so a lift changes no spelling by itself.
+_KEY_ROOT_NAMES: Mapping[int, str] = {
+    0: "C",
+    1: "C#",
+    2: "D",
+    3: "Eb",
+    4: "E",
+    5: "F",
+    6: "F#",
+    7: "G",
+    8: "Ab",
+    9: "A",
+    10: "Bb",
+    11: "B",
+}
+
+
+def transposed_key(key: KeySignature, semitones: int) -> KeySignature:
+    """The key `semitones` above `key`, mode unchanged.
+
+    The modulation lift takes a long piece's final repetition a whole step
+    up, and every bar the lift carries belongs to the *new* key. Which key
+    that is cannot be recovered from the bar's chord — a lifted IV is the
+    home key's V, spelled identically — so the engine publishes it per bar
+    and the linter's passing-tone licence reads the bar it was written
+    against rather than guessing and refusing the new key's own notes.
+    """
+    if semitones == 0:
+        return key
+    root = (_KEY_ROOTS[key.root] + semitones) % 12
+    return KeySignature(root=_KEY_ROOT_NAMES[root], mode=key.mode)
+
+
 # Every major and natural-minor scale, for recovering which scale a bar's
 # harmony belongs to when the key alone does not say (see
 # `bar_diatonic_pcs`). Two per root: the mode is part of the reading.
@@ -616,27 +934,46 @@ def bar_diatonic_pcs(chord_pcs: tuple[int, ...], key: KeySignature) -> frozenset
 
 
 __all__ = [
+    "CADENCE_DEGREE",
+    "CADENCE_SEVENTH",
+    "DEFAULT_CADENCE_DEGREE",
+    "DEFAULT_CADENCE_SEVENTH",
+    "DEFAULT_KEY_POOL",
+    "DEFAULT_SECTION_CLOSE",
+    "HALF_CADENCE_APPROACH_DEGREE",
+    "HALF_CADENCE_TARGET_DEGREE",
     "LEAP_MIN_SEMITONES",
+    "MODULATION_OFFSET",
+    "MOOD_KEY_POOLS",
     "MOOD_PROFILES",
     "PHRASE_BARS",
     "PHRASE_SIZES",
+    "SECTION_CLOSES",
     "STEP_MAX_SEMITONES",
     "TEMPO_RANGE_BPM",
     "ChordSlot",
     "ChordTemplate",
     "MoodProfile",
     "apply_final_cadence",
+    "apply_half_cadence",
+    "apply_section_close",
     "bar_diatonic_pcs",
     "bar_scale_intervals",
+    "cadence_degree_for",
+    "cadence_seventh_for",
+    "chord_intervals",
+    "chord_root_offset",
     "chord_tone_degrees",
+    "chosen_key",
     "get_mood_profile",
     "get_template_for_form",
+    "key_pool_for",
     "key_root_midi",
     "key_scale_pcs",
-    "key_signature_from_spec",
     "key_signature_from_spec_key",
     "scale_intervals",
     "scale_pitch_offset",
     "scale_semitones",
     "scale_walk",
+    "transposed_key",
 ]

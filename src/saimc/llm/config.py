@@ -18,6 +18,10 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from saimc.llm.ollama import OllamaAdapter
 
 CONFIG_ENV_VAR = "SAIMC_CONFIG"
 CONFIG_FILENAME = "saimc.toml"
@@ -68,11 +72,48 @@ def load_llm_config() -> LLMConfig:
     return LLMConfig(base_url=base_url.rstrip("/"), model=model, api_key=api_key)
 
 
+def build_ollama_adapter(model: str | None = None) -> OllamaAdapter | None:
+    """The configured adapter, or `None` when there is no configuration to build one from.
+
+    `None` rather than a stub client, because the two callers do different
+    things with the absence and both have to tell it apart from a model that
+    answered nothing: the worker wraps it in a client whose every call refuses
+    with a named reason, and the session API leaves the slot empty, where every
+    deterministic tool still runs and only the conductor's own turn needs a
+    model. A stub here would be a second source of `llm_not_configured`, and
+    two places deciding what "not configured" means is one too many.
+
+    `model` overrides the configured tag for one adapter, and everything else —
+    host, key, timeout — still comes from the configuration. That is what §10
+    #3 step 3 needs to sweep several candidates without a config edit per
+    candidate, and it is a keyword here rather than a second construction site
+    in the benchmark CLI because the alternative puts a second deferred import
+    and a second reading of "what does configured mean" in the caller. An empty
+    string is treated as no override, the same way `OllamaAdapter` reads it.
+
+    The adapter import stays deferred, as it always has been in the worker that
+    used to hold this: `saimc.llm.ollama` pulls in the provider's transport, and
+    a process with no configuration should not pay for it.
+    """
+    try:
+        config = load_llm_config()
+    except ValueError:
+        return None
+    from saimc.llm.ollama import OllamaAdapter
+
+    return OllamaAdapter(
+        base_url=config.base_url,
+        model=model or config.model,
+        api_key=config.api_key,
+    )
+
+
 __all__ = [
     "CONFIG_ENV_VAR",
     "CONFIG_FILENAME",
     "DEFAULT_BASE_URL",
     "DEFAULT_MODEL",
     "LLMConfig",
+    "build_ollama_adapter",
     "load_llm_config",
 ]

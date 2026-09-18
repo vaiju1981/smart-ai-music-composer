@@ -7,6 +7,12 @@ fails here rather than in a release gate.
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import replace
+
+from saimc.compose.engine import compose
+from saimc.compose.motif import FIGURES_BY_MOTION
+from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     PPQ,
     VOICE_BASS,
@@ -19,12 +25,22 @@ from saimc.compose.score import (
     NoteEvent,
 )
 from saimc.quality import (
+    _LOCALISERS,
+    AXES,
+    QUALITY_HARMONIC_RHYTHM_VARIETY_MIN,
+    QUALITY_HARMONY_PAD_COVERAGE_MIN,
     QUALITY_TESSITURA_OVERLAP_MAX,
     QUALITY_THRESHOLDS,
+    BarSpan,
     PieceQuality,
+    QualityFinding,
+    _spans,
+    _voice_notes,
+    localize,
     score_corpus,
     score_piece,
 )
+from saimc.spec import CompositionSpec, Mood
 
 BAR_TICKS = 1920
 
@@ -61,6 +77,52 @@ def _melody(pitches: list[int], *, duration: int = 480) -> list[NoteEvent]:
     ]
 
 
+def _clean_line() -> list[NoteEvent]:
+    """A solo line every metric that applies to a solo clears.
+
+    It has to carry a leap and it has to mix steps with something else, which
+    the all-steps line this fixture used to be could not do: a line of nothing
+    but seconds measures `step_ratio` 1.0 — past the cap as well as off the
+    floor — and `leap_ratio` 0.0, so it was clean only while the scorecard was
+    blind to both faults. Three whole tones up to E, a minor sixth to the
+    octave C, a semitone back down to B and two tones back up and over: five
+    of the six moves are steps, the sixth is a leap, and the leap is answered.
+    It is the fixture for "this part has nothing to say": a test that needs a
+    clean axis adds its offending part to this line, so whatever is reported
+    can be attributed to what it added rather than to the tune underneath.
+    """
+    return [
+        NoteEvent(voice_id=VOICE_MELODY, pitch_midi=pitch, tick=tick, duration_ticks=duration)
+        for pitch, tick, duration in (
+            (60, 0, 480),
+            (62, 480, 480),
+            (64, 960, 960),
+            (72, 1440, 480),
+            (71, 1920, 1920),
+            (72, 2400, 480),
+            (74, 2880, 1920),
+        )
+    ]
+
+
+def _bass(pitch_classes: list[int | None]) -> list[NoteEvent]:
+    """One bass note on each bar line, or nothing where the entry is None.
+
+    The pitch class is what the harmonic rhythm reads, so a case names the
+    chords it means and the octave is the fixture's business.
+    """
+    return [
+        NoteEvent(
+            voice_id=VOICE_BASS,
+            pitch_midi=36 + pitch_class,
+            tick=index * BAR_TICKS,
+            duration_ticks=BAR_TICKS,
+        )
+        for index, pitch_class in enumerate(pitch_classes)
+        if pitch_class is not None
+    ]
+
+
 class TestMelodicIntervals:
     def test_a_stepwise_line_scores_all_steps(self) -> None:
         # C D E F G — every interval is a major second.
@@ -88,9 +150,7 @@ class TestMelodicIntervals:
         # onset as an interval would manufacture a repetition.
         notes = [
             NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=0, duration_ticks=960),
-            NoteEvent(
-                voice_id=VOICE_MELODY, pitch_midi=60, tick=960, duration_ticks=480, tie=True
-            ),
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=960, duration_ticks=480, tie=True),
             NoteEvent(voice_id=VOICE_MELODY, pitch_midi=62, tick=1440, duration_ticks=480),
         ]
         piece = score_piece(_score(notes))
@@ -115,6 +175,31 @@ class TestMelodicIntervals:
     def test_no_leap_means_no_recovery_to_report(self) -> None:
         piece = score_piece(_score(_melody([60, 62, 64])))
         assert piece.leap_recovery_ratio is None
+
+    def test_a_leap_is_counted_apart_from_the_steps_around_it(self) -> None:
+        # C D E, up a minor sixth to C, a semitone back down, then two tones
+        # up and over: five of the six moves are steps and the sixth is a
+        # leap, so the two readings are the two halves of the same moves.
+        piece = score_piece(_score(_melody([60, 62, 64, 72, 71, 72, 74])))
+        assert piece.step_ratio == 5 / 6
+        assert piece.leap_ratio == 1 / 6
+
+    def test_a_line_of_nothing_but_steps_has_no_leap_in_it(self) -> None:
+        # The floor's own fault, and one no other bar can report: with no
+        # leap at all `leap_recovery_ratio` is None and `max_leap_semitones`
+        # is 2, so a line that never leaves the step is invisible to both.
+        piece = score_piece(_score(_melody([60, 62, 64, 66])))
+        assert piece.leap_ratio == 0.0
+        assert piece.leap_recovery_ratio is None
+        assert piece.max_leap_semitones == 2
+
+    def test_a_third_is_neither_a_step_nor_a_leap(self) -> None:
+        # Why the cap and the floor are two statements rather than one read
+        # twice: three steps and a third clears the cap and leaps nowhere, so
+        # this line is reported by the floor alone.
+        piece = score_piece(_score(_melody([60, 62, 64, 67, 69])))
+        assert piece.step_ratio == 3 / 4
+        assert piece.leap_ratio == 0.0
 
     def test_a_single_note_has_no_intervals(self) -> None:
         piece = score_piece(_score(_melody([60])))
@@ -194,7 +279,9 @@ class TestRegisters:
             NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=1920),
         ]
         piece = score_piece(_score(notes))
-        assert piece.register_separation_semitones == 19.0
+        # The distance between the ranges: the melody starts at 72, the
+        # harmony ends at 55, so 17 semitones of clear air between them.
+        assert piece.register_separation_semitones == 17.0
         assert piece.tessitura_overlap_semitones == 0
 
     def test_a_harmony_reaching_into_the_melody_overlaps(self) -> None:
@@ -206,10 +293,70 @@ class TestRegisters:
         # The harmony sits on one pitch inside the melody's 72..76 band,
         # so one semitone is shared — not a zero-width span.
         assert piece.tessitura_overlap_semitones == 1
-        assert piece.register_separation_semitones == -1.0
+        # And no separation at all: the two ranges interlock, so the
+        # distance is zero rather than a negative "mean below mean".
+        assert piece.register_separation_semitones == 0.0
+
+    def test_a_far_off_mean_cannot_hide_a_voice_in_the_melody_s_octave(self) -> None:
+        # The failure the mean-based metric could not report: a harmony
+        # part that spends most of its time an octave and a half below the
+        # tune but reaches into its band. Three voices doing this averaged
+        # 19.12 semitones of separation while piling into one octave.
+        notes = [
+            *_melody([72, 74, 76]),
+            *[
+                NoteEvent(
+                    voice_id=VOICE_HARMONY, pitch_midi=pitch, tick=index * 480, duration_ticks=480
+                )
+                for index, pitch in enumerate([45, 45, 45, 45, 45, 45, 73])
+            ],
+        ]
+        piece = score_piece(_score(notes, bars=2))
+        assert piece.register_separation_semitones == 0.0
+        assert piece.tessitura_overlap_semitones == 1
+
+    def test_the_nearest_harmony_voice_sets_the_separation(self) -> None:
+        # One voice folded well below the tune is not evidence that the
+        # other one is clear of it: the minimum over voices is the number.
+        notes = [
+            *_melody([72, 74, 76]),
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=45, tick=0, duration_ticks=1920),
+            NoteEvent(voice_id=VOICE_HARMONY + 1, pitch_midi=64, tick=0, duration_ticks=1920),
+        ]
+        piece = score_piece(_score(notes))
+        assert piece.register_separation_semitones == 8.0
+
+    def test_a_pad_spanning_the_melody_sounds_none_of_it(self) -> None:
+        # An arpeggio whose compass brackets the tune but folds below it:
+        # the ranges intersect, the notes do not. The overlap counts what
+        # is heard.
+        notes = [
+            *_melody([72, 74, 76]),
+            *[
+                NoteEvent(
+                    voice_id=VOICE_HARMONY, pitch_midi=pitch, tick=index * 480, duration_ticks=480
+                )
+                for index, pitch in enumerate([36, 48, 60, 48, 36, 48, 60, 48])
+            ],
+        ]
+        piece = score_piece(_score(notes, bars=2))
+        assert piece.tessitura_overlap_semitones == 0
+        assert piece.register_separation_semitones == 12.0
 
     def test_a_solo_piece_has_no_register_metrics(self) -> None:
         piece = score_piece(_score(_melody([60, 62, 64])))
+        assert piece.register_separation_semitones is None
+        assert piece.tessitura_overlap_semitones is None
+
+    def test_the_bass_is_not_one_of_the_harmony_voices(self) -> None:
+        # A bass line belongs under the tune and a low ensemble may share
+        # its register legitimately; the register metric is about the
+        # accompaniment that has a choice.
+        notes = [
+            *_melody([72, 74, 76]),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=45, tick=0, duration_ticks=1920),
+        ]
+        piece = score_piece(_score(notes))
         assert piece.register_separation_semitones is None
         assert piece.tessitura_overlap_semitones is None
 
@@ -237,25 +384,496 @@ class TestBassFigures:
         assert score_piece(_score(_melody([60, 62]))).bass_onset_patterns is None
 
 
-class TestFindings:
-    def test_a_clean_piece_reports_no_findings(self) -> None:
-        # Whole-tone steps up an octave, three note values, melody alone:
-        # every metric that applies to a solo clears its bar.
+class TestTheHarmonyBed:
+    """The bed's coverage: does the accompaniment hold a chord anywhere?
+
+    A hand-written score per case, so a metric that starts measuring
+    something else — the bars the harmony *sounds* in rather than the bars
+    it holds through — fails here rather than in a release gate.
+    """
+
+    def test_a_chord_held_through_its_bar_covers_it(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 1.0
+
+    def test_a_broken_chord_covers_nothing(self) -> None:
+        # The arpeggio's own step is a quarter of a bar: a chord stated and
+        # released leaves the bar unsustained however many notes state it.
         notes = [
-            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=pitch, tick=tick, duration_ticks=duration)
-            for pitch, tick, duration in (
-                (60, 0, 480),
-                (62, 480, 480),
-                (64, 960, 960),
-                (66, 1440, 480),
-                (68, 1920, 1920),
-                (70, 2400, 480),
-                (72, 2880, 1920),
+            NoteEvent(
+                voice_id=VOICE_HARMONY,
+                pitch_midi=60 + step,
+                tick=step * 240,
+                duration_ticks=240,
+            )
+            for step in range(4)
+        ]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 0.0
+
+    def test_half_a_bar_is_a_sustained_note(self) -> None:
+        """The boundary the metric turns on, asserted rather than assumed."""
+        notes = [
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS // 2)
+        ]
+        assert score_piece(_score(notes)).harmony_pad_coverage == 1.0
+
+    def test_the_share_is_of_the_piece_and_not_of_the_bars_it_sounds_in(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=60, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes, bars=4)).harmony_pad_coverage == 0.25
+
+    def test_the_last_bar_is_measured_to_the_end_of_the_score(self) -> None:
+        """The final bar has no start after it, so its length comes from the
+        score's own end — a case no middle bar can reach."""
+        notes = [
+            NoteEvent(
+                voice_id=VOICE_HARMONY, pitch_midi=60, tick=2 * BAR_TICKS, duration_ticks=BAR_TICKS
             )
         ]
-        piece = score_piece(_score(notes, bars=3))
-        assert piece.step_ratio == 1.0
-        assert piece.range_semitones == 12
+        assert score_piece(_score(notes, bars=3)).harmony_pad_coverage == 1 / 3
+
+    def test_a_solo_piece_has_no_bed_to_sustain(self) -> None:
+        assert score_piece(_score(_melody([60, 62]))).harmony_pad_coverage is None
+
+    def test_a_held_bass_note_is_a_pedal_and_not_a_bed(self) -> None:
+        notes = [NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=BAR_TICKS)]
+        assert score_piece(_score(notes)).harmony_pad_coverage is None
+
+    def test_a_bed_that_never_sustains_is_reported_with_the_knob_that_moves_it(self) -> None:
+        notes = _melody([60, 62, 64, 65])
+        notes.append(NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=240))
+        bed = next(
+            finding
+            for finding in score_piece(_score(notes)).findings()
+            if finding.metric == "harmony_pad_coverage"
+        )
+        assert bed.direction == "min"
+        assert bed.target == QUALITY_HARMONY_PAD_COVERAGE_MIN
+        assert "harmony_broken_chord" in bed.hint
+
+
+class TestTheBedBarIsReachable:
+    """The bar is fired against a real piece, not asserted.
+
+    A threshold no plan can move is a guard that cannot fail, which is the
+    one thing this repo keeps finding and deleting. So the metric's own knob
+    is exercised end to end — the default electrifying texture sustains
+    nothing, and the plan field the finding's hint names is what fixes it.
+    """
+
+    def _coverage(self, *, broken_chord: bool) -> float | None:
+        spec = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=5)
+        plan = replace(default_plan(spec), harmony_broken_chord=broken_chord)
+        return score_piece(compose(spec, plan=plan).notation_score).harmony_pad_coverage
+
+    def test_the_default_texture_misses_the_bar(self) -> None:
+        assert self._coverage(broken_chord=True) == 0.0
+        assert QUALITY_HARMONY_PAD_COVERAGE_MIN > 0.0
+
+    def test_the_bar_clears_once_the_plan_stops_breaking_the_chord(self) -> None:
+        coverage = self._coverage(broken_chord=False)
+        assert coverage is not None
+        assert coverage >= QUALITY_HARMONY_PAD_COVERAGE_MIN
+
+
+class TestHarmonicRhythm:
+    """How often the harmony changes: a rate, not a metronome.
+
+    The reading is the share of the piece's chord durations that differ from
+    its commonest one, where a chord lasts as long as a run of consecutive
+    bars sharing the bass's pitch class on the bar line. A hand-written bass
+    per case, so a metric that starts counting bars or onsets instead of
+    changes fails here rather than in a release gate.
+    """
+
+    def test_a_chord_that_lasts_the_whole_piece_is_no_variety(self) -> None:
+        assert score_piece(_score(_bass([0, 0, 0, 0]), bars=4)).harmonic_rhythm_variety == 0.0
+
+    def test_a_chord_that_lasts_a_different_number_of_bars_is_variety(self) -> None:
+        # Two chords of two bars and one of three: one change in three outlasts
+        # the commonest duration.
+        score = _score(_bass([0, 0, 7, 7, 5, 5, 5]), bars=7)
+        assert score_piece(score).harmonic_rhythm_variety == 1 / 3
+
+    def test_the_reading_is_taken_at_the_bar_line_and_not_inside_the_bar(self) -> None:
+        """A move inside a bar is a broken chord, not a chord change.
+
+        Every bar states the same chord on its line, and no reading of the
+        notes inside them agrees. Read at the lines the piece is one chord for
+        three bars; read at the note a bar ends on it is two-and-one; read over
+        the runs the bass's onsets make it is six one-note chords.
+        """
+        notes = [
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=480),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=480, duration_ticks=480),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=41, tick=960, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=BAR_TICKS, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=41, tick=BAR_TICKS + 960, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS, duration_ticks=960),
+            NoteEvent(
+                voice_id=VOICE_BASS, pitch_midi=43, tick=2 * BAR_TICKS + 960, duration_ticks=960
+            ),
+        ]
+        assert score_piece(_score(notes, bars=3)).harmonic_rhythm_variety == 0.0
+
+    def test_a_bar_with_no_bar_line_bass_ends_a_run_and_starts_none(self) -> None:
+        """The bar the bass is silent through is not a chord of its own.
+
+        Two bars of one chord and one bar of another, and the silent bar
+        belongs to neither — so the piece has two durations rather than the
+        one it would have if the hole simply continued the run it fell in.
+        """
+        assert score_piece(_score(_bass([0, 0, None, 0]), bars=4)).harmonic_rhythm_variety == 0.5
+
+    def test_a_piece_without_a_bass_voice_has_no_reading(self) -> None:
+        assert score_piece(_score(_melody([60, 62]))).harmonic_rhythm_variety is None
+
+    def test_a_bass_that_never_sounds_on_a_bar_line_has_no_reading(self) -> None:
+        # One note, off the line: there are no chord durations to compare, which
+        # is a different absence from a piece with no bass at all.
+        notes = [NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=480, duration_ticks=480)]
+        assert score_piece(_score(notes, bars=2)).harmonic_rhythm_variety is None
+
+    def test_a_harmony_that_never_moves_is_reported_with_the_knob_that_moves_it(self) -> None:
+        score = _score([*_melody([60, 62, 64, 65]), *_bass([0, 0])], bars=2)
+        harmony = next(
+            finding
+            for finding in score_piece(score).findings()
+            if finding.metric == "harmonic_rhythm_variety"
+        )
+        assert harmony.direction == "min"
+        assert harmony.target == QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+        assert "section_close" in harmony.hint
+        assert harmony.axis == "harmony"
+
+
+class TestTheHarmonicRhythmBarIsReachable:
+    """The bar is fired against a real piece, not asserted.
+
+    A threshold no plan can move is a guard that cannot fail, so the knob the
+    finding's hint names is exercised end to end: the plan's own `section_close`
+    decides whether every section ends on a cadence or runs on, and that is the
+    difference between a progression that moves at a rate and one that pulses.
+    """
+
+    def _variety(self, *, close: str | None) -> float | None:
+        spec = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=180, seed=5)
+        plan = None if close is None else replace(default_plan(spec), section_close=close)
+        return score_piece(compose(spec, plan=plan).notation_score).harmonic_rhythm_variety
+
+    def test_the_shipped_default_clears_the_bar(self) -> None:
+        variety = self._variety(close=None)
+        assert variety is not None
+        assert variety >= QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+        assert QUALITY_HARMONIC_RHYTHM_VARIETY_MIN > 0.0
+
+    def test_the_bar_fires_on_a_plan_that_lets_the_sections_run_on(self) -> None:
+        variety = self._variety(close="hold")
+        assert variety is not None
+        assert variety < QUALITY_HARMONIC_RHYTHM_VARIETY_MIN
+
+    def test_the_premise_the_reading_stands_on_is_sampled(self) -> None:
+        """Every bar of a real piece carries exactly one bass note on its line.
+
+        The reading is only a proxy for a chord duration while that holds, so
+        it is checked against the engine rather than assumed. The bass is read
+        the way the metric reads it — ties dropped, since a note held across a
+        bar line is not an attack on it. Sampled across the moods and the
+        lengths rather than swept: the corpus-wide count is 0 missing and 0
+        doubled in 18,360 bars, and 243 composes cost 21 s.
+        """
+        bars = 0
+        for mood in Mood:
+            for duration in (30, 180, 600):
+                spec = CompositionSpec(mood=mood, duration_seconds=duration, seed=5)
+                score = compose(spec, plan=None).notation_score
+                on_line = Counter(note.tick for note in _voice_notes(score, VOICE_BASS))
+                at_line = [on_line.get(bar.start_tick, 0) for bar in score.measures]
+                assert at_line, f"{mood.value} {duration}s has no bars"
+                bars += len(at_line)
+                assert set(at_line) == {1}, f"{mood.value} {duration}s: {Counter(at_line)}"
+        assert bars > 200, "the sample has gone too short to stand for the corpus"
+
+
+class TestWhatTheScoreCannotMeasure:
+    """The premises behind the metrics this module deliberately does not have.
+
+    Each is a claim in the module docstring about a table the score does not
+    carry, pinned here so that a change to the table fails a case instead of
+    quietly making the note false.
+    """
+
+    def test_every_bass_figure_states_the_bar_s_root_on_its_downbeat(self) -> None:
+        for motion, figure in FIGURES_BY_MOTION.items():
+            assert figure[0][0] == 0, motion
+            assert figure[0][2] == 0, motion
+
+
+_AXIS_BY_METRIC = {
+    "step_ratio": "melody",
+    "leap_ratio": "melody",
+    "leap_recovery_ratio": "melody",
+    "repeat_ratio": "melody",
+    "range_semitones": "melody",
+    "max_leap_semitones": "melody",
+    "distinct_durations": "melody",
+    "texture_hierarchy": "accompaniment",
+    "register_separation_semitones": "accompaniment",
+    "tessitura_overlap_semitones": "accompaniment",
+    "harmony_pad_coverage": "accompaniment",
+    "bass_onset_patterns": "bass",
+    "harmonic_rhythm_variety": "harmony",
+}
+
+_UNLOCALISED_METRICS = (
+    "leap_ratio",
+    "range_semitones",
+    "distinct_durations",
+    "register_separation_semitones",
+    "tessitura_overlap_semitones",
+)
+"""The five metrics no bar can hold, named so that the partition is a ratchet.
+
+Four of them count a relation between things rather than an event in a bar.
+The fifth, `leap_ratio`, counts the *absence* of one: a piece under the floor
+is a piece a leap is not in, and every bar of it is a bar the piece is
+entitled to, so naming any of them would be naming the music's good bars.
+"""
+
+
+class TestTheAxisTable:
+    """One axis per metric, and the axes are the parts a remedy can move.
+
+    Pinned as a literal, in the idiom the arbiter's metric tiers are pinned
+    in: the axis is a judgement recorded once, so re-deciding which critic
+    owns a bar is a declared edit rather than a swap that leaves every test
+    green while the melody's report fills with the accompaniment's misses.
+    """
+
+    def test_the_table_is_the_partition_it_is_written_as(self) -> None:
+        assert {t.metric: t.axis for t in QUALITY_THRESHOLDS} == _AXIS_BY_METRIC
+
+    def test_the_axes_are_exactly_the_parts_the_table_names(self) -> None:
+        assert set(_AXIS_BY_METRIC.values()) == set(AXES)
+
+    def test_no_metric_pretends_to_say_where_it_is_when_no_bar_holds_it(self) -> None:
+        """The localised metrics and the five without a bar partition the
+        table, so a sixth absent one arrives as a failed test rather than as a
+        finding silently reported without bars."""
+        assert set(_LOCALISERS) | set(_UNLOCALISED_METRICS) == set(_AXIS_BY_METRIC)
+        assert not set(_LOCALISERS) & set(_UNLOCALISED_METRICS)
+
+
+class TestBarSpans:
+    def test_no_bars_is_no_spans(self) -> None:
+        assert _spans([]) == ()
+
+    def test_a_run_of_bars_reads_as_one_span(self) -> None:
+        assert _spans([0, 1, 3]) == (BarSpan(1, 2), BarSpan(4, 4))
+
+    def test_indices_are_sorted_and_deduplicated_before_they_are_merged(self) -> None:
+        # A localiser collects bars in a set, so neither order nor repetition
+        # is information — but both arrive from a reading rather than a
+        # choice, and a span built from either would be a span built from
+        # iteration order.
+        assert _spans([3, 0, 3, 1]) == (BarSpan(1, 2), BarSpan(4, 4))
+
+    def test_a_bar_is_numbered_the_way_a_reader_counts_it(self) -> None:
+        assert BarSpan(7, 7).label() == "bar 7"
+        assert BarSpan(3, 6).label() == "bars 3-6"
+
+
+def _finding_for(metric: str, *, direction: str = "min") -> QualityFinding:
+    """A finding named for one metric, so a localisation case names its own.
+
+    Only the metric selects a localiser, so the numbers are placeholders and
+    the axis and the remedy come from the shipped table — what is under test
+    is a reading of the *score*, and a case that first had to make a metric
+    breach its bar would be testing the bar as well as the bars it names. The
+    direction is an argument for the one bar that is missed on both sides, and
+    it is the direction a case has to choose because the offenders are not the
+    same intervals on either side of it.
+    """
+    bar = next(threshold for threshold in QUALITY_THRESHOLDS if threshold.metric == metric)
+    return QualityFinding(
+        metric=bar.metric,
+        measured=0.0,
+        target=0.0,
+        direction=direction,
+        rationale=bar.rationale,
+        hint=bar.hint,
+        axis=bar.axis,
+    )
+
+
+def _bars(score: NotationScore, metric: str, *, direction: str = "min") -> tuple[BarSpan, ...]:
+    """The bars `localize` reports for one metric on a hand-written score."""
+    (localised,) = localize(score, [_finding_for(metric, direction=direction)])
+    return localised.bars
+
+
+class TestLocalisation:
+    """Where a miss sits, read off the score its metrics were taken from.
+
+    Each case is a hand-written score whose answer is known by construction,
+    and by the same reading the metric itself makes: the bars named are the
+    bars the metric's own counted events sit in, so a localisation that
+    disagreed with its measurement would fail here.
+    """
+
+    def test_a_leap_is_placed_in_the_bar_it_lands_in(self) -> None:
+        # Four quarters of steps, then a fifth: the interval is heard where
+        # it arrives, which is beat 1 of bar 2.
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        assert [span.label() for span in _bars(score, "step_ratio")] == ["bar 2"]
+
+    def test_the_step_cap_names_the_bars_where_every_move_is_a_step(self) -> None:
+        """The same bar read the other way round, and the offenders are not
+        the same intervals.
+
+        A floor miss counts the moves wider than a step; a cap miss counts
+        the bars where *every* move is one, because those are the bars a line
+        of nothing but steps is made of. Bar 1 here is three whole tones and
+        bar 2 opens with a sixth, so the floor names bar 2 and the cap names
+        its complement among the bars the line moves in — bar 1. A localiser
+        that named the wide intervals whichever way the bar was missed would
+        point a piece like this at the one bar with any shape in it.
+        """
+        score = _score(_melody([60, 62, 64, 65, 72, 74, 76, 77]), bars=2)
+        assert _bars(score, "step_ratio", direction="min") == (BarSpan(2, 2),)
+        assert _bars(score, "step_ratio", direction="max") == (BarSpan(1, 1),)
+
+    def test_a_repeat_is_placed_in_the_bar_it_sits_in(self) -> None:
+        score = _score(_melody([60, 62, 62, 64]))
+        assert [span.label() for span in _bars(score, "repeat_ratio")] == ["bar 1"]
+
+    def test_a_repeat_is_not_an_offence_against_the_step_bar(self) -> None:
+        # `step_ratio` measures the line's *moves*, and a repeat is not one —
+        # it is scored by `repeat_ratio` — so the same interval must not be
+        # reported against both bars.
+        score = _score(_melody([60, 60, 62, 64]))
+        assert _bars(score, "step_ratio") == ()
+
+    def test_a_leap_past_the_cap_is_placed_where_it_lands(self) -> None:
+        score = _score(_melody([60, 84]))
+        assert [span.label() for span in _bars(score, "max_leap_semitones")] == ["bar 1"]
+
+    def test_an_answered_leap_is_not_placed_at_all(self) -> None:
+        score = _score(_melody([60, 67, 65]))
+        assert _bars(score, "leap_recovery_ratio") == ()
+
+    def test_an_unanswered_leap_is_placed_in_the_bar_it_lands_in(self) -> None:
+        score = _score(_melody([60, 67, 69]))
+        assert [span.label() for span in _bars(score, "leap_recovery_ratio")] == ["bar 1"]
+
+    def test_a_leap_at_the_very_end_of_the_line_is_not_placed(self) -> None:
+        # `_leap_recovery` does not count a closing leap — nothing follows it
+        # to answer it — so the localisation must not name a bar for one.
+        score = _score(_melody([60, 67]))
+        assert _bars(score, "leap_recovery_ratio") == ()
+
+    def test_consecutive_offending_bars_read_as_one_span(self) -> None:
+        # Steps for two bars, then thirds for two: every interval of bars 3
+        # and 4 is offending, and the two bars are one address.
+        line = [60, 62, 64, 65, 67, 69, 71, 72, 76, 80, 84, 88, 84, 80, 76, 72]
+        score = _score(_melody(line), bars=4)
+        assert _bars(score, "step_ratio") == (BarSpan(3, 4),)
+
+    def test_an_outcounting_voice_is_placed_in_the_bar_it_outcounts_in(self) -> None:
+        # The bed plays four notes in bar 1 and holds its tongue in bar 2, so
+        # the bar the tune is crowded in is the bar with the figure in it.
+        notes = [
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=60, tick=0, duration_ticks=960),
+            NoteEvent(voice_id=VOICE_MELODY, pitch_midi=62, tick=BAR_TICKS, duration_ticks=960),
+            *(
+                NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=tick, duration_ticks=480)
+                for tick in (0, 480, 960, 1440)
+            ),
+        ]
+        score = _score(notes, bars=2)
+        assert [span.label() for span in _bars(score, "texture_hierarchy")] == ["bar 1"]
+
+    def test_an_unsustained_bar_is_placed_and_not_the_bed_s_own_bar(self) -> None:
+        notes = _melody([60, 62, 64, 65, 67, 69, 71, 72])
+        notes.append(NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=0, duration_ticks=480))
+        notes.append(
+            NoteEvent(
+                voice_id=VOICE_HARMONY, pitch_midi=57, tick=BAR_TICKS, duration_ticks=BAR_TICKS
+            )
+        )
+        score = _score(notes, bars=2)
+        # The bed holds bar 2 through and only states bar 1, so bar 1 is the
+        # bar with nothing held — the complement of the metric's own reading.
+        assert _bars(score, "harmony_pad_coverage") == (BarSpan(1, 1),)
+
+    def test_the_bars_the_bass_repeats_its_commonest_figure_in(self) -> None:
+        notes = [
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=0, duration_ticks=BAR_TICKS),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=BAR_TICKS, duration_ticks=BAR_TICKS),
+            NoteEvent(voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS, duration_ticks=960),
+            NoteEvent(
+                voice_id=VOICE_BASS, pitch_midi=36, tick=2 * BAR_TICKS + 960, duration_ticks=960
+            ),
+        ]
+        score = _score(notes, bars=3)
+        assert [span.label() for span in _bars(score, "bass_onset_patterns")] == ["bars 1-2"]
+
+    def test_the_chord_durations_the_piece_falls_back_on(self) -> None:
+        """Where the harmony does not move, and the tie that decides where.
+
+        Two one-bar chords and two two-bar ones: the commonest duration is a
+        tie, and it goes to the length heard first, so the bars named are the
+        first two. The reading is a half whichever way the tie falls, which is
+        why the tiebreak is visible from here and nowhere else.
+        """
+        score = _score(_bass([0, 7, 5, 5, 3, 3]), bars=6)
+        assert score_piece(score).harmonic_rhythm_variety == 0.5
+        assert [span.label() for span in _bars(score, "harmonic_rhythm_variety")] == ["bars 1-2"]
+
+    def test_a_metric_that_counts_a_relation_is_placed_nowhere(self) -> None:
+        """The five absences, asserted rather than left to the docstring.
+
+        No bar holds a relation between the line's two extremes, and no bar
+        holds the absence of a leap either — a piece under the floor is a
+        piece the leap is not in, so naming bars for it would name the bars
+        where the piece is legal.
+        """
+        score = _score(_melody([60, 84, 60]))
+        for metric in _UNLOCALISED_METRICS:
+            assert _bars(score, metric) == (), metric
+        # The contrast, so that "no bars" cannot be "nobody asked for the
+        # score": the widest leap in the same line is placed.
+        assert _bars(score, "max_leap_semitones")
+
+    def test_a_scorecard_alone_carries_no_bars(self) -> None:
+        # A `PieceQuality` is a block of numbers and has no notes to
+        # attribute, which is the other cause of an empty `bars` — and the
+        # difference between "nowhere" and "not asked".
+        piece = score_piece(_score(_melody([60, 84, 60])))
+        assert piece.findings()
+        assert all(finding.bars == () for finding in piece.findings())
+
+    def test_localizing_a_finding_moves_nothing_but_the_bars(self) -> None:
+        finding = _finding_for("step_ratio")
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        assert localize(score, [finding]) == (replace(finding, bars=(BarSpan(2, 2),)),)
+
+    def test_a_localized_message_names_the_bars_it_speaks_of(self) -> None:
+        score = _score(_melody([60, 62, 64, 65, 72]), bars=2)
+        (finding,) = localize(score, [_finding_for("step_ratio")])
+        assert "(bar 2)" in finding.message()
+
+
+class TestFindings:
+    def test_a_clean_piece_reports_no_findings(self) -> None:
+        piece = score_piece(_score(_clean_line(), bars=3))
+        # The fixture's own numbers, because "clean" is only interesting when
+        # the line is not trivially so: it misses the step cap by a sixth and
+        # clears the leap floor by the same sixth, which is the narrowest the
+        # two bars get on a line this short.
+        assert piece.step_ratio == 5 / 6
+        assert piece.leap_ratio == 1 / 6
+        assert piece.leap_recovery_ratio == 1.0
+        assert piece.range_semitones == 14
         assert piece.distinct_durations == 3
         assert piece.findings() == ()
 
@@ -283,6 +901,38 @@ class TestFindings:
         assert step.direction == "min"
         assert step.measured == 0.0
         assert step.target > 0
+
+
+class TestFindingsByAxis:
+    """One critic per axis, and every axis answers — a clean one included.
+
+    A report that listed only the axes which found something could not be
+    told from one whose other critics never ran, and "the melody is clean" is
+    exactly what a user asking about the melody wants to be told.
+    """
+
+    def test_every_axis_answers_even_when_it_has_nothing_to_say(self) -> None:
+        piece = score_piece(_score(_melody([60, 84, 60])))
+        grouped = piece.findings_by_axis()
+        assert set(grouped) == set(AXES)
+        assert grouped["bass"] == ()
+        # The melody is the axis this line offends, so the finding lands
+        # there and nowhere else: the two assertions together are what make
+        # "clean" a reading rather than a silence.
+        assert {f.metric for f in grouped["melody"]} == {f.metric for f in piece.findings()}
+
+    def test_a_finding_sits_under_the_part_its_remedy_moves(self) -> None:
+        # A clean tune, so the only thing that can be reported is the bed
+        # added underneath it — a broken chord, which sustains nothing.
+        notes = _clean_line()
+        notes.extend(
+            NoteEvent(voice_id=VOICE_HARMONY, pitch_midi=55, tick=step * 240, duration_ticks=240)
+            for step in range(4)
+        )
+        grouped = score_piece(_score(notes, bars=3)).findings_by_axis()
+        assert [f.metric for f in grouped["accompaniment"]] == ["harmony_pad_coverage"]
+        assert grouped["melody"] == ()
+        assert grouped["bass"] == ()
 
 
 class TestCorpusReport:
@@ -385,6 +1035,21 @@ class TestThresholdTable:
         bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "step_ratio")
         assert bar.describe(0.1) == f"step_ratio 0.10 < {bar.minimum:.2f}"
 
+    def test_the_step_bar_is_missed_from_both_sides(self) -> None:
+        # The only bar with offenders on each side of it, and the two faults
+        # are different pieces: every move a step is a line with no shape, no
+        # move a step is a line with no line. A piece in between is clean.
+        bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "step_ratio")
+        assert bar.violated_by(1.0)
+        assert bar.violated_by(0.0)
+        assert not bar.violated_by(5 / 6)
+
+    def test_the_leap_floor_reads_as_a_share_of_the_line_s_moves(self) -> None:
+        bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "leap_ratio")
+        assert bar.describe(0.0) == f"leap_ratio 0.00 < {bar.minimum:.2f}"
+        assert bar.violated_by(0.0)
+        assert not bar.violated_by(1 / 6)
+
     def test_a_maximum_miss_reads_as_greater_than(self) -> None:
         bar = next(t for t in QUALITY_THRESHOLDS if t.metric == "repeat_ratio")
         assert bar.describe(0.9) == f"repeat_ratio 0.90 > {bar.maximum:.2f}"
@@ -401,6 +1066,7 @@ class TestThresholdTable:
                 melody_notes=0,
                 melody_bars=0,
                 step_ratio=None,
+                leap_ratio=None,
                 repeat_ratio=None,
                 leap_recovery_ratio=None,
                 max_leap_semitones=None,
@@ -410,6 +1076,8 @@ class TestThresholdTable:
                 register_separation_semitones=None,
                 tessitura_overlap_semitones=None,
                 bass_onset_patterns=None,
+                harmony_pad_coverage=None,
+                harmonic_rhythm_variety=None,
             ).as_dict()
         )
         assert {t.metric for t in QUALITY_THRESHOLDS} == measured

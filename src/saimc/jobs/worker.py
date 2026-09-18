@@ -155,6 +155,52 @@ def enqueue_job(
     return rq_job.get_id()
 
 
+class QueueUnavailable(Exception):
+    """The broker refused a job that was already persisted.
+
+    Carries the job id because the caller's next move — an HTTP status, a
+    tool refusal — has to name *which* job did not start.
+    """
+
+    def __init__(self, job_id: str, message: str) -> None:
+        super().__init__(message)
+        self.job_id = job_id
+
+
+def enqueue_or_fail(
+    job: Job, storage: JobStorage, *, valkey_url: str | None = None
+) -> str:
+    """Put `job` on the queue, or mark it failed and refuse with a reason.
+
+    The job is persisted by the caller before this runs. If the broker write
+    fails, this transitions the record to `failed` rather than leaving it in
+    `queued`: history, and any client polling the id, would otherwise wait
+    forever for a broker entry that does not exist.
+
+    The transition lives here — once — because there are two callers with
+    two different ways of reporting it, not two policies: the HTTP endpoint
+    turns `QueueUnavailable` into a 503, and the session's `finalize` tool
+    turns it into a refused tool call. Both get the same record and the same
+    reason.
+    """
+    try:
+        return enqueue_job(job.job_id, valkey_url=valkey_url)
+    except Exception as exc:
+        transition = JobStateMachine().transition(job.state, JobState.FAILED)
+        job.state = transition.state
+        job.progress = transition.progress
+        job.current_stage = transition.current_stage
+        job.error = JobError(
+            error_code="queue_unavailable",
+            message="The job broker was unavailable when this job was submitted.",
+            stage="queued",
+        )
+        storage.save(job)
+        raise QueueUnavailable(
+            job.job_id, f"job queue unavailable; job {job.job_id} was not queued"
+        ) from exc
+
+
 def run_job(job_id: str, jobs_root: str | None = None) -> dict[str, Any]:
     """RQ job function — walks a job through every stage and persists state.
 
@@ -354,17 +400,26 @@ def _mark_failed(job: Job, storage: JobStorage, error: JobError) -> None:
 def _build_default_llm_client() -> Any:
     """Construct the default LLM client. Phase 1 uses OllamaAdapter.
 
-    Settings come from `saimc.config:load_llm_config` (config file,
-    env vars, or built-in defaults — see `saimc.llm.config`). The
-    import is deferred so that running `worker_entry` without a
-    reachable Ollama endpoint doesn't crash on import. If the
-    configuration is invalid, we fall back to a no-op client whose
-    `parse` always fails cleanly (the parser's fallback path then
-    handles in-vocabulary prompts).
+    Settings come from `saimc.llm.config:build_ollama_adapter` (config file,
+    env vars, or built-in defaults — see `saimc.llm.config`). The import is
+    deferred so that running `worker_entry` without a reachable Ollama
+    endpoint doesn't crash on import. If the configuration is invalid, we fall
+    back to a no-op client whose `parse` and `chat` both fail cleanly with a
+    named reason (the parser's fallback path then handles in-vocabulary
+    prompts, and every deterministic session tool still runs — only the
+    conductor's own turns need a model).
     """
-    from saimc.llm.base import ParseRequest, ParseResult
+    from saimc.llm.base import ChatRequest, ChatResult, LLMError, ParseRequest, ParseResult
+    from saimc.llm.config import build_ollama_adapter
 
     class _NoopLLM:
+        """Satisfies both LLMClient and ChatClient by refusing, not by pretending.
+
+        A client that answered `chat` with an empty reply would be read by
+        the conductor as a model that chose to say nothing, which is a
+        different situation from a model that is not there.
+        """
+
         async def parse(self, request: ParseRequest) -> ParseResult:
             return ParseResult(
                 parser_source="llm",
@@ -375,17 +430,21 @@ def _build_default_llm_client() -> Any:
                 ),
             )
 
+        async def chat(self, request: ChatRequest) -> ChatResult:
+            return ChatResult(
+                error=LLMError(
+                    error_code="llm_not_configured",
+                    message="No valid LLM configuration found.",
+                )
+            )
+
         async def aclose(self) -> None:
             return None
 
-    try:
-        from saimc.llm.config import load_llm_config
-        from saimc.llm.ollama import OllamaAdapter
-
-        cfg = load_llm_config()
-        return OllamaAdapter(base_url=cfg.base_url, model=cfg.model, api_key=cfg.api_key)
-    except ValueError:
-        return _NoopLLM()
+    client = build_ollama_adapter()
+    if client is not None:
+        return client
+    return _NoopLLM()
 
 
 def redis_url(url: str) -> str:
@@ -407,7 +466,9 @@ def _redis_from_url(url: str) -> Any:
 
 __all__ = [
     "DEFAULT_QUEUE",
+    "QueueUnavailable",
     "enqueue_job",
+    "enqueue_or_fail",
     "redis_url",
     "run_job",
     "worker_entry",

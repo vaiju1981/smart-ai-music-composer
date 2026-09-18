@@ -316,7 +316,14 @@ class CompositionSpec(BaseModel):
     seed: int | None = Field(
         default=None,
         ge=0,
-        description="RNG seed for reproducibility. None means engine chooses and reports.",
+        description=(
+            "RNG seed for reproducibility. None does not randomise the "
+            "piece: the engine composes against a fixed default seed of 0, "
+            "and the manifest records this field's None rather than that "
+            "resolved value. So None reproduces exactly, and seed=0 and "
+            "seed=None yield identical music. Pass an explicit seed to vary "
+            "a piece."
+        ),
     )
     humanization: Literal["none", "light", "expressive"] = Field(
         default="light",
@@ -412,6 +419,21 @@ class SpecError(BaseModel):
     attempts: NonNegativeInt = 0
 
 
+class UnsupportedSpecVersionError(Exception):
+    """A stored spec written by a newer build than this one.
+
+    Not a `SpecError`: that is a *parse* failure the model caused, with a
+    stage and an attempt count. This is a stored document this build
+    cannot faithfully complete, and it is raised by a reader rather than
+    by the parser.
+
+    It sits beside `CompositionSpec` rather than beside the storage that
+    raises it, because more than one container stores a spec: a job
+    carries one and a session's draft carries one, and both refuse it the
+    same way. The message names the container and its remedy.
+    """
+
+
 __all__ = [
     "DEDICATED_FONT_INSTRUMENTS",
     "DURATION_SECONDS_DEFAULT",
@@ -429,6 +451,7 @@ __all__ = [
     "RequestKind",
     "SpecError",
     "TimeSignature",
+    "UnsupportedSpecVersionError",
     "VoiceRole",
     "WesternKey",
 ]

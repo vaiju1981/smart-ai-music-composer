@@ -9,7 +9,9 @@ Required fields (per §9):
 - `job_id`, `created_at`, `completed_at`
 - `input_spec`: the full CompositionSpec (schema_version included) and its sha256
 - `seed`, `engine_version`
-- `parser_source`: `llm` | `fallback`, plus the model identifier when `llm`
+- `parser_source`: `llm` | `fallback` | `hybrid`, plus `model` (the model
+  identifier) when the LLM contributed. `model` is omitted, not nulled, for a
+  fallback-only parse, so its absence reads as "no model was involved".
 - `notation_score_sha256`, `performance_plan_sha256`
 - `artifacts`: per-artifact `{kind, container, codec, path, sha256, size_bytes}`
 - `toolchain`: per-artifact `{engine, version, build_sha, config}`
@@ -153,6 +155,21 @@ def build_manifest(job: Job, inputs: ManifestInputs) -> dict[str, Any]:
         "dependencies": dict(inputs.dependencies),
         "license_obligations": dict(inputs.license_obligations),
     }
+    # §9 requires the model identifier when the LLM contributed to the parse.
+    # Omitted rather than nulled for a fallback-only parse, so its absence
+    # reads as "no model was involved" instead of "the model is unknown".
+    if job.model is not None:
+        payload["model"] = job.model
+    # The plan, when the job named one, on the same rule as `model`: its
+    # absence reads as "the engine's defaults composed this", which is what
+    # every job written before the field existed also means. Recorded as the
+    # canonical document *and* its digest, like `input_spec`, so a reader can
+    # verify the plan rather than take it on trust — the plan is the artifact
+    # §6's determinism claim is made about, so a manifest that named only its
+    # hash would be asserting provenance it cannot show.
+    if job.input_plan is not None:
+        plan_payload = job.input_plan.to_canonical_dict()
+        payload["input_plan"] = {"plan": plan_payload, "sha256": _sha256_str(plan_payload)}
     if inputs.quality is not None:
         payload["quality"] = dict(inputs.quality)
     return payload

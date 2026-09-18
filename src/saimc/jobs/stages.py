@@ -141,6 +141,12 @@ def parse_stage(
         if result.spec.seed is not None:
             job.seed = result.spec.seed
         job.parser_source = result.parser_source
+        # §9: the manifest records which model served the parse, alongside
+        # the parser source. The adapter puts it in `extra`, and only the
+        # LLM paths have one — a fallback-only parse records None rather
+        # than a stale name.
+        if result.parser_source in ("llm", "hybrid"):
+            job.model = result.extra.get("model_identifier") or None
         job.attempts = result.attempts
         return StageResult(job=job, next_state=JobState.COMPOSING)
 
@@ -166,7 +172,7 @@ def parse_stage(
     )
 
 
-def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
+def _composer_for_ensemble(ensemble: Ensemble) -> Callable[..., Any]:
     """Resolve the composer for a spec's ensemble.
 
     The registry is the Phase 2 seam for dedicated engines (e.g. a
@@ -183,7 +189,7 @@ def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
     from saimc.compose.engine import compose as _phase1_compose
     from saimc.render.instruments import SUPPORTED_INSTRUMENTS
 
-    registry: dict[str, Callable[[Any], Any]] = {
+    registry: dict[str, Callable[..., Any]] = {
         # e.g. "sitar": _raga_compose — dedicated engines go here.
     }
     composer = registry.get(ensemble.melody)
@@ -200,13 +206,17 @@ def _composer_for_ensemble(ensemble: Ensemble) -> Callable[[Any], Any]:
 def compose_stage(
     job: Job,
     storage: JobStorage,
-    engine: Callable[[Any], Any] | None = None,
+    engine: Callable[..., Any] | None = None,
 ) -> StageResult:
     """Run the `composing` stage.
 
-    `engine` is a callable `(spec) -> EngineOutput`. When `None`, the
-    composer registered for the spec's instrumentation is used
+    `engine` is a callable `(spec, *, plan=None) -> EngineOutput`. When
+    `None`, the composer registered for the spec's instrumentation is used
     (Phase 1: piano -> `saimc.compose.engine.compose`).
+
+    The job's plan is passed as written and is never resolved here: a job
+    that named no plan composes under the engine's defaults, and the plan
+    that results is the engine's to publish (it lands in the sidecar).
     """
     if job.input_spec is None:
         return StageResult(
@@ -237,7 +247,7 @@ def compose_stage(
             )
 
     try:
-        output = engine(job.input_spec)
+        output = engine(job.input_spec, plan=job.input_plan)
     except CompositionEngineError as exc:
         return StageResult(
             job=job,
@@ -262,10 +272,17 @@ def compose_stage(
     # Successful compose: attach hashes for the manifest. Rebuilt from
     # the base version each time — a retried compose overwrites the
     # previous hashes instead of growing the string on every re-run.
+    # The second one is spelled out in full because `plan_hash` was
+    # ambiguous the moment a *composition* plan existed: this is the
+    # PerformancePlan's, and a reader of a persisted job cannot be left
+    # to guess which of the two it holds.
     score_hash = output.notation_score.compute_hash()
-    plan_hash = output.performance_plan.compute_hash()
+    performance_plan_hash = output.performance_plan.compute_hash()
     base_version = job.engine_version.split(";score_hash=", 1)[0]
-    job.engine_version = f"{base_version};score_hash={score_hash[:12]};plan_hash={plan_hash[:12]}"
+    job.engine_version = (
+        f"{base_version};score_hash={score_hash[:12]}"
+        f";performance_plan_hash={performance_plan_hash[:12]}"
+    )
     # Persist the full engine output as a sidecar so later render
     # stages (audio, sheet, animation) can read it without re-running
     # the composer.
@@ -276,10 +293,20 @@ def compose_stage(
     # The next-state decision (continue to validating or fail with
     # lint_unpassable) is made here. Lint is also re-checked inside the
     # engine, but we re-run here defensively in case a future engine
-    # raises before lint.
+    # raises before lint. Every argument the engine passed is passed
+    # again: an argument dropped here is a check silently weakened, and
+    # `voice_instruments` is what makes the range gate per-instrument
+    # rather than one compass for the whole score, while `bar_keys` is
+    # what makes the passing-tone licence read a modulated bar in the key
+    # it was written in.
     from saimc.compose.linter import lint
 
-    lint_report = lint(output.notation_score)
+    lint_report = lint(
+        output.notation_score,
+        chord_bars=output.chord_bars or None,
+        bar_keys=output.bar_keys or None,
+        voice_instruments={v.voice_id: v.instrument for v in output.voice_instruments},
+    )
     if not lint_report.passed:
         return StageResult(
             job=job,

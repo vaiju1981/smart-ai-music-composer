@@ -76,6 +76,17 @@ Prompt
 
 **Design implication:** the application depends on a small provider-neutral `LLMClient` interface. Phase 1 supplies one `OllamaAdapter`, configured by environment variables, which wraps the Ollama client. A future commercial provider would require its own adapter behind the same interface; provider-specific authentication and request mapping stay inside each adapter.
 
+**Two interfaces, not one, once the conductor exists.** `LLMClient.parse` is not a transport
+primitive: it is a chat call plus the reading of the reply as a `CompositionSpec`, and the repair
+loop and fallback around it already live in `parser.py`. The session conductor needs the layer
+underneath — messages and tool schemas in, tool calls out — so it is served by a second
+provider-neutral protocol, `ChatClient` (`llm/base.py`), which carries no music type at all: a
+tool call is a tool name and a JSON-args mapping. `OllamaAdapter` and the fallback client satisfy
+both protocols over one HTTP client; a future provider implements both. Keeping them separate is
+what lets `parse` later be re-expressed in terms of `chat` without a caller noticing, and what
+keeps `llm/` a package the music layers may never import (§3's provider-neutrality rule, enforced
+by the AST test in A3).
+
 | Setting | Dev (now) | Production (later) |
 |---|---|---|
 | `OLLAMA_BASE_URL` | Ollama Cloud endpoint | Self-hosted Ollama server URL |
@@ -229,6 +240,26 @@ This adds a render-service component (a small Node + headless-Chromium process) 
 - Local FastAPI web app: prompt in, job status, preview, downloads.
 - Job model + acceptance criteria implemented from day one (see §7, §8).
 
+*This section is the original Phase 1 plan and is kept as written. Phase 1
+as shipped went well past it, so read the bullets above as history, not as a
+description of the product.* Two divergences matter. **Instrumentation:**
+Phase 1 named a single instrument (piano, Salamander Grand Piano, one
+soundfont); the shipped `schema_version` 3 takes a role-tagged ensemble of up
+to five voices over a fifty-seven instrument palette — §6 records that schema
+history. **Moods:** still the three named above; the engine's musical
+vocabulary (forms, progressions, drum styles) grew underneath them. The
+engine still composes to fixed forms with predefined harmonic templates, and
+still uses no LLM for melodic or harmonic material — those two constraints
+held, and §6/§8 remain the contract. Every acceptance criterion in §8 is
+therefore applied to a considerably larger surface than the one it was
+written against. The instrument-range criterion was the one that had to be
+made real rather than re-scoped: the engine's single 64–84 melody band and
+the piano's range gate were replaced by `saimc/instruments.py`, one compass
+and tessitura per instrument, with the linter checking each voice against
+its own compass (§8, "All notes within instrument range"). The palette is
+sixty-six now, not fifty-seven — the table is drift-guarded against
+`saimc.spec.Instrument`.
+
 **Phase 2**
 - Known-piece catalog + transforms (Canon in D, etc.) — **the v1 contradiction with Phase 2 is resolved here**. Each catalog entry must carry **both** a composition-copyright column (is the underlying composition in the public domain in our target jurisdictions?) **and** an edition/file-licensing column (under what terms is the specific MusicXML/MIDI file we're shipping?). Both must be permissive per §4. Public-domain composition + non-permissive file = still fails the audit. Catalog entries without both columns filled in are not shippable.
 - Optional cloud-LLM creative assist for melody/harmony seeds (still Ollama-routed).
@@ -250,7 +281,7 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - `schema_version: int` — incremented on any breaking change.
 - `request_kind: enum` — `mood_generation` (only Phase 1 value); `famous_piece` is reserved.
 - `duration_seconds: int` — bounded (30 ≤ x ≤ 600), default 180. The engine reaches this target using the Phase 1 target/arrange/fine-tune policy and reports the realized duration.
-- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value. A non-`None` value is honoured whenever an arrangement at that exact bpm lands within the duration tolerance; when none exists the engine derives the tempo from the mood's range instead (an exact tempo makes the realised duration a step function of the bar count, and most (tempo, duration) pairs have no step within ±2%) — the duration promise outranks the tempo request.
+- `tempo_bpm: int | None` — bounded range (e.g. 40 ≤ 240); `None` means the engine derives it from the mood template and reports the chosen value. A non-`None` value is honoured whenever an arrangement at that exact bpm lands within the duration tolerance; when none exists the engine derives the tempo from the mood's range instead (an exact tempo makes the realised duration a step function of the bar count, and most (tempo, duration) pairs have no step within ±2%) — the duration promise outranks the tempo request. **The consequence is a contract, not a bug: the tempo and the duration are one decision, and a pinned tempo is a request the piece may decline.** Measured, a 30 s calming piece plays at 64 BPM whatever it is asked for, 60 s honours only 80, 180 s only 70 and 80, and 600 s nothing in 50–80. The delta layer therefore refuses a tempo the piece cannot hold — naming both numbers, the mood's range and the nearest legal request — rather than answering with a piece that quietly plays at another tempo. Settling this properly means one of two engine changes: a duration that yields to a pinned tempo, or a per-mood tempo range wide enough that the pin usually lands. Until one of them lands, the refusal is the contract, and a UI that offers both controls has to say so.
 - `key: enum | None` — bounded to Western keys; `None` means the engine chooses.
 - `time_signature: enum` — bounded to common signatures.
 - `mood: enum` — bounded Phase 1 vocabulary: `calming | electrifying | sleep`.
@@ -280,7 +311,7 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 
 ### Canonical symbolic serialization
 
-`CompositionSpec`, `NotationScore`, and `PerformancePlan` are persisted as canonical JSON documents, not hashed from in-memory Python or `music21` objects. Canonicalization rules are part of the format contract:
+`CompositionSpec`, `NotationScore`, `PerformancePlan`, and `CompositionPlan` are persisted as canonical JSON documents, not hashed from in-memory Python or `music21` objects. Canonicalization rules are part of the format contract:
 
 - UTF-8 JSON, sorted object keys, no insignificant whitespace, and no NaN/Infinity values;
 - integer musical ticks for score positions and durations;
@@ -288,6 +319,10 @@ A versioned Pydantic schema is the contract between the prompt parser and every 
 - integer MIDI pitches and velocities;
 - arrays remain in musically significant order, with deterministic secondary sorting where events share a timestamp; and
 - an explicit format version in each document.
+
+`CompositionPlan` is the resolved plan the engine composes under — the middle layer between the spec's ten fields and the bar-level decisions, and the artifact the conductor's determinism rests on. It is stored **materialized**: every field is written, none is re-derived from a module table at read time, because a plan that carried only overrides would make reproducibility a claim about the source rather than about the artifact. Its version tracks its *shape* rather than the encoding rules, so a reader refuses any version but its own rather than completing a document it cannot know.
+
+An engine-output sidecar carries its own version as well, in the same `{kind}:{version}` form. It is the one canonical document that wraps others: each nested document names only its own version, so the container has to name its own key set and nesting.
 
 Hashes are calculated over these canonical UTF-8 bytes. MusicXML, MIDI, PDF, audio, and video are derived renderer outputs and are not the canonical symbolic representation.
 
@@ -309,6 +344,7 @@ queued → parsing → composing → validating → rendering_audio → renderin
 - `state`, `progress` (0.0–1.0 per stage), `current_stage`
 - `input_prompt` (the original user prompt)
 - `input_spec` (the persisted CompositionSpec; null until parsing succeeds)
+- `input_plan` (the materialized CompositionPlan the job composes under, or null for the engine's defaults)
 - `artifacts`: `{audio: {path, sha256}, sheet: {path, sha256}, animation: {path, sha256}}`
 - `error`: structured error with stage + reason
 - `engine_version`, `seed` — for reproducibility
@@ -337,16 +373,26 @@ queued → parsing → composing → validating → rendering_audio → renderin
 Phase 1 is "done" only when every criterion below is met, measured by an automated test suite run against every release.
 
 **Spec & reproducibility:**
-- Canonically serialized `CompositionSpec`, `NotationScore`, and `PerformancePlan` are **byte-identical** given the same spec + seed + engine version + pinned composition dependencies. These are the canonical, hashed artifacts; their serialization rules are defined in §6.
+- Canonically serialized `CompositionSpec`, `NotationScore`, `PerformancePlan`, and `CompositionPlan` are **byte-identical** given the same spec + seed + engine version + pinned composition dependencies — or, where a plan is supplied, the same plan + seed + engine version + pinned composition dependencies. These are the canonical, hashed artifacts; their serialization rules are defined in §6.
+- Because a plan is stored materialized, `(plan, seed)` is the reproducible pair the artifacts answer to: `(spec, seed)` holds for as long as the module tables the default plan describes are unchanged, and `(plan, seed)` holds across a change to them. Where no plan is supplied the engine resolves the default, and the resolved plan is recorded in the sidecar and (when a job named one) in the manifest, so a piece can be re-composed from what was persisted rather than from what the build does today.
 - **Media artifacts (WAV/OGG, SVG/PNG/PDF, WebM) are not required to be byte-identical across runs, even on the same toolchain.** Encoders can include container metadata, timestamps, platform-specific font output, or non-deterministic muxing. Reproducibility for media is checked **semantically**: same set of scheduled note events, same durations within tolerance, same dimensions, and same audio levels within tolerance. The manifest's `toolchain` block records exactly how a specific media file was produced; its artifact hash verifies that stored file's integrity, not a promise that a future render will have the same hash.
 - Every accepted spec round-trips through the schema validator.
 
 **Composition correctness:**
-- All notes within instrument range.
+- All notes within instrument range. Each voice is checked against the
+  compass of the instrument that voice is rendered with, from
+  `saimc/instruments.py`; a linter call that is not given the voice→
+  instrument mapping falls back to one wide compass and says so in the
+  finding.
 - All measures complete (no dropped beats).
-- Every pitched note sounds a chord tone of its bar (the engine
-  publishes per-bar chord pitch classes to the linter; the anacrusis
-  pickup may anticipate the next chord in the bar's final eighth).
+- Every pitched note sounds a chord tone of its bar, with one licensed
+  exception: an unaccented, diatonic passing or neighbour tone that is
+  approached and left by step, with no rest between and no longer than
+  a quarter note. `compose.linter.legal_non_chord_tone` is the
+  definition of that exception, and it is the only one — every other
+  non-chord tone is a bug. (The engine publishes per-bar chord pitch
+  classes to the linter; the anacrusis pickup may anticipate the next
+  chord in the bar's final eighth.)
 - No close-position m2/M7 collisions between simultaneously sounding
   pitched voices — both tones belonging to the bar's chord is a
   voicing (a maj7 spread), a rubbed second is a bug.
@@ -374,8 +420,9 @@ Phase 1 is "done" only when every criterion below is met, measured by an automat
 **Parser robustness:**
 - The benchmark contains exactly 100 version-controlled, hand-labeled prompts at `tests/fixtures/parser_benchmark.jsonl`: in-scope paraphrases, boundary durations, malformed requests, and unsupported requests.
 - [`docs/parser-benchmark.md`](parser-benchmark.md) defines the corpus schema, category balance, labeling rules, ambiguity policy, review process, and benchmark command. Each expected result receives a second human review before the corpus is frozen; disagreements are adjudicated and recorded. Pre-adjudication field-level agreement must be at least 90%.
-- First responses are valid JSON matching `CompositionSpec` at least 98% of the time; after at most two repairs or deterministic fallback, all supported benchmark prompts parse successfully.
+- First responses are valid JSON matching `CompositionSpec` at least 98% of the time **across supported prompts**; after at most two repairs or deterministic fallback, all supported prompts parse successfully. "Across supported prompts" is the reading the scorer takes and the one that makes the bar meaningful — a model that returns a valid `CompositionSpec` for an *unsupported* request has not passed this bar, it has failed the rejection one — and a prompt whose first attempt read no model output at all (host unreachable, nothing configured, a body that was not a model's reply) is scored against neither: no first response exists to judge, and charging the model for the network's failure is what would make the bar meaningless on a flaky host.
 - Field-level semantic exact-match accuracy is at least 97% across supported prompts, and unsupported-request rejection accuracy is at least 95%.
+- The post-repair bar is 100% and is scored as `resolution_rate`: the share of supported prompts that end with a spec at all, by any route. It is distinct from the 97% bar above it (which asks whether the spec was *right*) and from the 98% bar (which asks about attempt one).
 - Cloud parsing p95 latency is ≤ 5 seconds on the recorded reference connection. A model that misses any quality threshold is disqualified regardless of speed or cost.
 
 ## 9. Artifact manifest (every completed job)
@@ -385,8 +432,13 @@ Every completed job emits a machine-readable `manifest.json` alongside the artif
 **Required fields:**
 - `job_id`, `created_at`, `completed_at`
 - `input_spec`: the full `CompositionSpec` (schema_version included) and its sha256
+- `input_plan`: the full `CompositionPlan` (format included) and its sha256, when the job named one. Omitted rather than nulled otherwise, on the same rule as the model identifier below: its absence reads as "the engine's defaults composed this".
 - `seed`, `engine_version`
-- `parser_source`: `llm` | `fallback`, plus the model identifier when `llm`
+- `parser_source`: `llm` | `fallback` | `hybrid`, plus the model identifier when
+  the LLM contributed (`llm` or `hybrid`). `hybrid` means the LLM's output never
+  validated and the deterministic fallback parser produced the spec. The field
+  is set on failure paths too, so it records which parser was in play, not that
+  parsing succeeded.
 - `notation_score_sha256`, `performance_plan_sha256`
 - `artifacts`: per-artifact `{kind, container, codec, path, sha256, size_bytes}`
 - `toolchain`: per-artifact `{engine, version, build_sha, config}` — e.g. `fluidsynth 2.x`, `osmd 1.x`, `chromium <revision>`, `ffmpeg <build-sha>` configured with `--enable-libvpx --enable-libopus`
