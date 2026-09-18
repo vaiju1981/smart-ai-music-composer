@@ -3,6 +3,11 @@
 The corpus lives at `tests/fixtures/parser_benchmark.jsonl`. This loader is
 the only code path that reads it; tests and the benchmark CLI both go
 through here so format drift is caught in one place.
+
+The corpus has a second file — the independent review pass required by
+`docs/model-fine-tuning.md` before any candidate model is scored — and it
+is in this same schema, so this loader validates both. See
+`DEFAULT_REVIEW_PATH` and `saimc.labels`.
 """
 
 from __future__ import annotations
@@ -11,12 +16,49 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-DEFAULT_CORPUS_PATH = (
-    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "parser_benchmark.jsonl"
-)
+_FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+
+DEFAULT_CORPUS_PATH = _FIXTURES_DIR / "parser_benchmark.jsonl"
+
+DEFAULT_REVIEW_PATH = _FIXTURES_DIR / "parser_benchmark_review.jsonl"
+"""The second labeling pass, in the primary corpus's own record schema.
+
+Written by `saimc-label` (`saimc/labeling_cli.py`) and committed once the
+two passes agree at or above `saimc.labels.MIN_FIELD_AGREEMENT`. It is a
+separate file rather than a second set of columns because the two passes
+must be *independent*: a reviewer who can see the first label is agreeing
+with the screen, not with the corpus.
+"""
+
+ExpectedErrorCode = Literal["empty_prompt", "out_of_vocabulary", "schema_invalid"]
+"""The closed vocabulary a rejected record's `expected_error` is drawn from.
+
+These are the codes `saimc/llm/fallback.py` names for a request it cannot
+honour, and they are what every rejected record in the corpus carries. The
+vocabulary is closed here rather than left a free-form string because it is
+a *label*: a typo in a review pass would otherwise enter the corpus as a code
+no parser can ever emit, and the agreement measure would score it as a
+disagreement about the request. The transport codes in `saimc/llm/base.py`
+(`llm_unreachable`, `llm_not_configured`) are deliberately not members — they
+describe a run rather than a request, and no record may be labelled with one.
+"""
+
+REJECTION_ERROR_CODES: frozenset[ExpectedErrorCode] = frozenset(get_args(ExpectedErrorCode))
+"""The same vocabulary as a set, for the labeling tool's menu.
+
+Derived from the `Literal` rather than restated, so the menu the tool offers
+and the vocabulary the loader enforces are one list: a `Literal` is one
+coverage hole at most, where a second hand-kept copy of the same three
+strings would be a hole per entry — the rule D2's harmony levels taught. It
+is typed over the `Literal` rather than `str` so the menu's answer can go
+straight into a record's `expected_error` without a cast: the tool is the
+writer, and a writer that has to assert what it is writing is a writer whose
+type says less than its code knows.
+"""
 
 
 class BenchmarkRecord(BaseModel):
@@ -29,7 +71,7 @@ class BenchmarkRecord(BaseModel):
     prompt: str
     expected_outcome: str  # "accepted" | "rejected"
     expected_spec: dict[str, object] | None
-    expected_error: str | None
+    expected_error: ExpectedErrorCode | None
     label_rationale: str
 
 
@@ -94,8 +136,11 @@ def iter_records(records: Iterable[BenchmarkRecord]) -> Iterable[BenchmarkRecord
 
 __all__ = [
     "DEFAULT_CORPUS_PATH",
+    "DEFAULT_REVIEW_PATH",
+    "REJECTION_ERROR_CODES",
     "BenchmarkRecord",
     "CorpusStats",
+    "ExpectedErrorCode",
     "iter_records",
     "load_corpus",
 ]
