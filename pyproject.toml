@@ -52,10 +52,14 @@ benchmark = [
 ]
 
 [project.scripts]
-saimc-benchmark = "saimc.benchmark_cli:main"
-saimc-label = "saimc.labeling_cli:main"
-saimc-preferences = "saimc.preferences_cli:main"
-saimc-quality = "saimc.quality_cli:main"
+# `:_entry` and not `:main` for the four typer CLIs. `main` is the
+# `@app.command()`-decorated function, so calling it directly bypasses typer's
+# parsing and hands the body the raw `typer.Option(...)` defaults as `OptionInfo`
+# objects. `_entry` is the runner that goes through `app()`.
+saimc-benchmark = "saimc.benchmark_cli:_entry"
+saimc-label = "saimc.labeling_cli:_entry"
+saimc-preferences = "saimc.preferences_cli:_entry"
+saimc-quality = "saimc.quality_cli:_entry"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
 saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
