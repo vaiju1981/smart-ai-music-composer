@@ -388,55 +388,15 @@ ensure_install() {
 }
 
 # Every `[project.scripts]` entry has to exist, resolve, and — for the typer
-# ones — actually answer `--help`. That last check is the only one that runs
-# the code, and it is the one that would have caught a console script pointing
-# at a decorated command instead of its runner, which fails on every
-# invocation while every import still succeeds.
+# ones — actually answer `--help`. The script says at length why that is the
+# check that matters and why it is applied only to the typer CLIs.
 #
-# It is applied to the typer CLIs alone, and deliberately: `--help` is safe
-# there because click exits before the body runs, whereas a plain `main()` may
-# perform its entire job when invoked — `saimc-build-ffmpeg` would start
-# building ffmpeg — so those are checked by resolution only.
+# It is a script rather than a heredoc here so that CI runs the same one: the
+# defect it catches (an entry naming a decorated command instead of its runner)
+# shipped once because nothing invoked the entry points, and CI was that
+# nothing. One implementation, two callers, and neither can drift from the other.
 verify_scripts() {
-    "$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
-import importlib
-import subprocess
-import sys
-import tomllib
-from pathlib import Path
-
-root = Path(sys.argv[1])
-scripts = tomllib.loads((root / "pyproject.toml").read_text())["project"]["scripts"]
-bin_dir = root / ".venv" / "bin"
-problems = []
-
-for name, target in scripts.items():
-    module_name, _, attr = target.partition(":")
-    executable = bin_dir / name
-    if not executable.exists():
-        problems.append(f"{name}: no {executable} (entry points are stale — reinstall)")
-        continue
-    try:
-        module = importlib.import_module(module_name)
-    except Exception as exc:
-        problems.append(f"{name}: cannot import {module_name}: {exc}")
-        continue
-    if not hasattr(module, attr):
-        problems.append(f"{name}: {module_name} has no {attr!r}")
-        continue
-    app = getattr(module, "app", None)
-    if type(app).__module__.split(".")[0] == "typer":
-        result = subprocess.run([str(executable), "--help"], capture_output=True, text=True)
-        if result.returncode != 0:
-            last = (result.stderr or result.stdout).strip().splitlines()
-            problems.append(f"{name}: --help failed: {last[-1] if last else result.returncode}")
-
-verified = len(scripts) - len(problems)
-print(f"scripts: {verified}/{len(scripts)} verified")
-for problem in problems:
-    print(f"  {problem}")
-sys.exit(1 if problems else 0)
-PY
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/check_console_scripts.py"
 }
 
 ensure_render_service() {
