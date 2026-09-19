@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import wave
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -42,7 +43,9 @@ from saimc.render.audio import (
     encode_opus,
     find_ffmpeg,
     find_fluidsynth,
+    master_wav,
     render_audio,
+    render_sketch,
 )
 from saimc.render.instruments import (
     GENERAL_SOUNDFONT,
@@ -485,20 +488,15 @@ class TestRenderAudioPipeline:
         fake_ff.write_text("#!/bin/sh\n")
         fake_ff.chmod(0o755)
 
-        # Mock safe_run to write a fake WAV / OGG on call.
+        # Mock safe_run to write a fake WAV / OGG on call, with the master's
+        # output carrying different samples from the mix it reads — so the
+        # delivered file can be attributed to the step that produced it.
         seen_cmds = []
+        master_bytes = b"\x01\x02\x03\x04"
 
         def _fake_safe_run(cmd, *, timeout_s, **kw):
-            seen_cmds.append(cmd)
-
-            # Find the output path (the second-to-last positional that's a real path).
-            for arg in cmd:
-                p = Path(arg)
-                if p.suffix in (".wav", ".ogg") and p.parent.exists():
-                    if p.suffix == ".wav":
-                        _write_wav(p)
-                    else:
-                        p.write_bytes(b"OggS\x00\x00fake-opus")
+            seen_cmds.append(list(cmd))
+            _fake_write_output(cmd, wav_data=master_bytes if "-af" in cmd else b"\x00\x00")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         out_dir = tmp_path / "out"
@@ -506,6 +504,7 @@ class TestRenderAudioPipeline:
             patch("shutil.which", return_value=str(fake_fs)),
             patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
             patch("saimc.render.audio.safe_run", side_effect=_fake_safe_run),
+            patch("saimc.render.audio._loudnorm_measure", return_value=None),
         ):
             mock_audit.return_value = MagicMock(
                 ok=True,
@@ -524,14 +523,36 @@ class TestRenderAudioPipeline:
             )
 
         assert artifact.primary_path.exists()
-        assert artifact.primary_path.suffix == ".wav"
+        assert artifact.primary_path == out_dir / "audio.wav"
         assert artifact.ogg_path is not None
         assert artifact.ogg_path.exists()
         assert artifact.ffmpeg_configuration == "--enable-libvpx --enable-libopus"
 
+        # The mix is FluidSynth's, the master writes the delivered WAV, and
+        # the encode cuts the OGG from that WAV with no filter of its own —
+        # which is what puts the two downloads at the same loudness.
+        mixed = next(c for c in seen_cmds if c[0].endswith("fluidsynth"))
+        assert mixed[2] == str(out_dir / "audio.mix.wav")
+        assert not (out_dir / "audio.mix.wav").exists(), "the mix must not survive the render"
+
+        master = next(c for c in seen_cmds if "-af" in c)
+        assert master[master.index("-i") + 1] == str(out_dir / "audio.mix.wav")
+        assert master[-1] == str(artifact.primary_path)
+
+        # ... and the delivered WAV is genuinely that step's output, not the
+        # mix renamed. Without this, a render that mastered into a file
+        # nobody reads and shipped the raw mix would pass every assertion
+        # above — the commands would all still look right.
+        with wave.open(str(artifact.primary_path)) as wf:
+            assert wf.readframes(2) == master_bytes, (
+                "the primary deliverable must be the mastered WAV"
+            )
+
         # The OGG carries the Salamander attribution as Vorbis comments
         # (roadmap §10 #12).
         ogg_cmd = next(c for c in seen_cmds if c[-1].endswith(".ogg"))
+        assert ogg_cmd[ogg_cmd.index("-i") + 1] == str(artifact.primary_path)
+        assert "-af" not in ogg_cmd
         metadata_args = ogg_cmd[ogg_cmd.index("-metadata") :]
         assert "AUTHOR=Alexander Holm" in metadata_args
         assert "LIBRARY=Salamander Grand Piano" in metadata_args
@@ -567,13 +588,317 @@ class TestRenderAudioPipeline:
         assert exc_info.value.code == AudioRenderErrorCode.FLUIDSYNTH_FAILED
 
 
-def _write_wav(path: Path) -> None:
-    """Write a minimal valid WAV file (44 byte header + 1 sample of silence)."""
+def _write_wav(path: Path, data: bytes = b"\x00\x00") -> None:
+    """Write a minimal valid WAV file (44 byte header + `data` as samples)."""
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(44100)
-        wf.writeframes(b"\x00\x00")
+        wf.writeframes(data)
+
+
+def _fake_write_output(cmd: list[str], *, wav_data: bytes = b"\x00\x00") -> None:
+    """Write a stand-in for the file the command was asked to produce.
+
+    FluidSynth names its output with `-F`; ffmpeg takes its output as the
+    last argument. Both are found by suffix rather than by position, and
+    the one rule that separates an output from an ffmpeg *input* is that
+    an input follows `-i`. That matters now that one render runs ffmpeg
+    twice over two different WAV names: a fake that wrote to every `.wav`
+    it saw would answer the master pass by rewriting the file it was
+    reading, and the delivered WAV would never appear.
+
+    `wav_data` lets a caller write distinguishable content per invocation,
+    so a test can say which step produced the file it is reading.
+    """
+    for index, arg in enumerate(cmd):
+        path = Path(arg)
+        if path.suffix not in (".wav", ".ogg") or not path.parent.exists():
+            continue
+        if index > 0 and cmd[index - 1] == "-i":
+            continue  # an ffmpeg input, not the thing it writes
+        if path.suffix == ".wav":
+            _write_wav(path, wav_data)
+        else:
+            path.write_bytes(b"OggS\x00\x00fake-opus")
+
+
+class TestMasterWav:
+    """The master is two passes, and it is what sets the delivery level.
+
+    Measure the mix, then apply the measurement as a single linear gain so
+    the dynamics survive. Both passes are the whole cost of mastering,
+    which is why the sketch skips the *step* rather than flipping a flag on
+    the encode: an unmeasured loudnorm would still be two ffmpeg
+    invocations and would still normalise a preview dynamically.
+    """
+
+    _MEASURED: ClassVar[dict[str, str]] = {
+        "input_i": "-20.0",
+        "input_tp": "-3.0",
+        "input_lra": "8.0",
+        "input_thresh": "-30.0",
+        "target_offset": "0.0",
+    }
+
+    @staticmethod
+    def _master(
+        tmp_path: Path,
+        *,
+        measured: dict[str, str] | None = None,
+        rc: int = 0,
+        writes_output: bool = True,
+    ) -> tuple[list[list[str]], MagicMock]:
+        wav = tmp_path / "audio.mix.wav"
+        _write_wav(wav)
+        fake_ff = tmp_path / "ffmpeg"
+        fake_ff.write_text("#!/bin/sh\n")
+        fake_ff.chmod(0o755)
+
+        seen_cmds: list[list[str]] = []
+
+        def _fake_safe_run(cmd, *, timeout_s, **kw):
+            seen_cmds.append(list(cmd))
+            if writes_output:
+                _fake_write_output(cmd)
+            return MagicMock(returncode=rc, stdout="", stderr="bad filter" if rc else "")
+
+        with (
+            patch("shutil.which", return_value=str(fake_ff)),
+            patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
+            patch("saimc.render.audio.safe_run", side_effect=_fake_safe_run),
+            patch("saimc.render.audio._loudnorm_measure", return_value=measured) as measure,
+        ):
+            mock_audit.return_value = MagicMock(
+                ok=True,
+                version="8.1.2",
+                binary_sha256="a" * 64,
+                configuration_line="--enable-libopus",
+            )
+            master_wav(wav, tmp_path / "audio.wav", ffmpeg_bin=str(fake_ff))
+        return seen_cmds, measure
+
+    def test_the_measurement_is_applied_as_a_linear_gain(self, tmp_path: Path) -> None:
+        cmds, measure = self._master(tmp_path, measured=self._MEASURED)
+        measure.assert_called_once()
+        assert len(cmds) == 1
+        joined = " ".join(cmds[-1])
+        assert "linear=true" in joined
+        assert "measured_I=-20.0" in joined
+        assert cmds[-1][cmds[-1].index("-i") + 1] == str(tmp_path / "audio.mix.wav")
+        assert cmds[-1][-1] == str(tmp_path / "audio.wav")
+
+    def test_an_unmeasurable_mix_still_masters(self, tmp_path: Path) -> None:
+        """A silent mix measures as -inf, which cannot drive a linear pass.
+
+        The dynamic filter still runs and still targets the same loudness,
+        so an unmeasurable mix is quieter than it should be rather than
+        delivered at whatever level FluidSynth happened to produce.
+        """
+        cmds, _ = self._master(tmp_path, measured=None)
+        joined = " ".join(cmds[-1])
+        assert "linear" not in joined
+        assert "measured_I" not in joined
+        assert (tmp_path / "audio.wav").exists()
+
+    def test_a_failed_master_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(AudioRenderError) as exc_info:
+            self._master(tmp_path, measured=self._MEASURED, rc=1)
+        assert exc_info.value.code == AudioRenderErrorCode.FFMPEG_FAILED
+
+    def test_a_master_that_writes_nothing_raises(self, tmp_path: Path) -> None:
+        """rc=0 with no file is a failure, not a silent unmastered delivery.
+
+        The delivered WAV is the thing every other deliverable descends
+        from, so an absent one has to stop the render rather than let the
+        encode read a missing path.
+        """
+        with pytest.raises(AudioRenderError) as exc_info:
+            self._master(tmp_path, measured=self._MEASURED, writes_output=False)
+        assert exc_info.value.code == AudioRenderErrorCode.FFMPEG_FAILED
+
+    def test_a_binary_that_fails_the_audit_is_refused_first(self, tmp_path: Path) -> None:
+        """The master is the render's first ffmpeg call, so it is where a GPL
+        binary is caught — before FluidSynth has spent its seconds."""
+        wav = tmp_path / "audio.mix.wav"
+        _write_wav(wav)
+        fake_ff = tmp_path / "ffmpeg"
+        fake_ff.write_text("#!/bin/sh\n")
+        fake_ff.chmod(0o755)
+
+        with patch("saimc.render.audio.audit_ffmpeg") as mock_audit:
+            mock_audit.return_value = MagicMock(ok=False, reasons=("missing --enable-libopus",))
+            with (
+                patch("shutil.which", return_value=str(fake_ff)),
+                pytest.raises(AudioRenderError) as exc_info,
+            ):
+                master_wav(wav, tmp_path / "audio.wav", ffmpeg_bin=str(fake_ff))
+        assert exc_info.value.code == AudioRenderErrorCode.FFMPEG_AUDIT_FAILED
+
+
+class TestEncodeOpus:
+    """The encode is one pass and applies no gain of its own.
+
+    The level is already in the WAV it is handed, so a filter here would
+    apply the master a second time. This is the assertion that keeps the
+    two downloads 16 dB apart from coming back.
+    """
+
+    @staticmethod
+    def _encode(tmp_path: Path, *, source: str) -> list[list[str]]:
+        wav = tmp_path / source
+        _write_wav(wav)
+        fake_ff = tmp_path / "ffmpeg"
+        fake_ff.write_text("#!/bin/sh\n")
+        fake_ff.chmod(0o755)
+
+        seen_cmds: list[list[str]] = []
+
+        def _fake_safe_run(cmd, *, timeout_s, **kw):
+            seen_cmds.append(list(cmd))
+            _fake_write_output(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("shutil.which", return_value=str(fake_ff)),
+            patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
+            patch("saimc.render.audio.safe_run", side_effect=_fake_safe_run),
+        ):
+            mock_audit.return_value = MagicMock(
+                ok=True,
+                version="8.1.2",
+                binary_sha256="a" * 64,
+                configuration_line="--enable-libopus",
+            )
+            encode_opus(wav, tmp_path / "audio.ogg", ffmpeg_bin=str(fake_ff))
+        return seen_cmds
+
+    def test_one_pass_and_no_filter(self, tmp_path: Path) -> None:
+        cmds = self._encode(tmp_path, source="audio.wav")
+        assert len(cmds) == 1
+        cmd = cmds[-1]
+        assert "-af" not in cmd
+        assert cmd[cmd.index("-i") + 1] == str(tmp_path / "audio.wav")
+        assert cmd[cmd.index("-b:a") + 1] == "128k"
+
+    def test_it_encodes_the_file_it_was_handed(self, tmp_path: Path) -> None:
+        """The name is the caller's to choose, and the sketch's is the mix."""
+        cmds = self._encode(tmp_path, source="audio.mix.wav")
+        assert cmds[-1][cmds[-1].index("-i") + 1] == str(tmp_path / "audio.mix.wav")
+
+    def test_the_encode_is_real(self, tmp_path: Path) -> None:
+        """Without this, an encoder that wrote nothing would pass the above."""
+        self._encode(tmp_path, source="audio.wav")
+        assert (tmp_path / "audio.ogg").read_bytes() == b"OggS\x00\x00fake-opus"
+
+
+class TestRenderSketch:
+    """A sketch is the same music as a full render, minus the mastering.
+
+    These assertions stop at the command line, because that is all a
+    mocked ffmpeg can honestly show. That the two OGGs actually differ in
+    their bytes is asserted against the real binary in
+    `tests/integration/test_sketch_render.py`.
+    """
+
+    def test_the_two_paths_share_a_mix_and_differ_after_it(self, tmp_path: Path) -> None:
+        """The property that makes a preview trustworthy.
+
+        A sketch the user approves must be the piece they get, so both
+        paths have to feed FluidSynth the same music — the same binary, the
+        same SMF, the same font, the same gain. Everything after that
+        differs: the full render masters the mix into the delivered WAV and
+        encodes *that*, while the sketch delivers the mix as it stands.
+
+        The comparison is over command lines rather than file bytes,
+        because a mocked ffmpeg writes the same stand-in file whatever it
+        is asked to do — a byte comparison here would pass on any two
+        renders at all.
+        """
+        sf = tmp_path / "Salamander.sf2"
+        sf.write_bytes(b"RIFF" * 100)
+
+        def _render(kind: str) -> list[list[str]]:
+            out_dir = tmp_path / kind
+            seen: list[list[str]] = []
+
+            def _record(cmd, *, timeout_s, **kw):
+                seen.append(list(cmd))
+                _fake_write_output(cmd)
+                return MagicMock(returncode=0, stdout="", stderr="")
+
+            with (
+                patch("saimc.render.audio.audit_ffmpeg") as mock_audit,
+                patch("saimc.render.audio.safe_run", side_effect=_record),
+                patch("saimc.render.audio._loudnorm_measure", return_value=None),
+            ):
+                mock_audit.return_value = MagicMock(
+                    ok=True,
+                    version="8.1.2",
+                    binary_sha256="a" * 64,
+                    configuration_line="--enable-libopus",
+                )
+                render = render_sketch if kind == "sketch" else render_audio
+                artifact = render(
+                    _plan_with_notes(),
+                    bpm=120.0,
+                    soundfont_path=sf,
+                    out_dir=out_dir,
+                    job_id="sketch-job",
+                    fluidsynth_bin="/bin/sh",
+                    ffmpeg_bin="/bin/sh",
+                )
+            assert artifact.primary_path == out_dir / "audio.wav"
+            return seen
+
+        sketch = _render("sketch")
+        full = _render("full")
+
+        # The music is the same down to the argument list; only the
+        # directory it lands in differs, and that is the whole of the split.
+        # FluidSynth writes the mix on both paths — the delivered WAV is
+        # only ever the mastered one or a rename of this.
+        def _shape(cmd: list[str], out_dir: Path) -> list[str]:
+            """The command with its own output directory factored out.
+
+            Both paths render into their own directory, so every path in
+            the two commands differs by construction. What has to match is
+            the argument list either side of that: the same binary, the
+            same gain, the same font, and the same two file *names*.
+            """
+            return [Path(arg).name if str(out_dir) in arg else arg for arg in cmd]
+
+        sketch_mix = next(cmd for cmd in sketch if "-F" in cmd)
+        full_mix = next(cmd for cmd in full if "-F" in cmd)
+        assert sketch_mix[2] == str(tmp_path / "sketch" / "audio.mix.wav")
+        assert full_mix[2] == str(tmp_path / "full" / "audio.mix.wav")
+        assert _shape(sketch_mix, tmp_path / "sketch") == _shape(full_mix, tmp_path / "full"), (
+            "a sketch must preview the delivered music"
+        )
+
+        # The full render masters the mix and encodes the delivered WAV.
+        # The sketch never masters anything, and its OGG comes off the mix.
+        full_master = next(cmd for cmd in full if "-af" in cmd)
+        assert full_master[full_master.index("-i") + 1] == str(
+            tmp_path / "full" / "audio.mix.wav"
+        )
+        assert full_master[-1] == str(tmp_path / "full" / "audio.wav")
+        assert not (tmp_path / "full" / "audio.mix.wav").exists()
+        assert not any("-af" in cmd for cmd in sketch), "a sketch is not mastered"
+
+        sketch_encode = next(cmd for cmd in sketch if str(cmd[-1]).endswith(".ogg"))
+        full_encode = next(cmd for cmd in full if str(cmd[-1]).endswith(".ogg"))
+        assert sketch_encode[sketch_encode.index("-i") + 1] == str(
+            tmp_path / "sketch" / "audio.wav"
+        )
+        assert full_encode[full_encode.index("-i") + 1] == str(tmp_path / "full" / "audio.wav")
+        assert "-af" not in sketch_encode
+        assert "-af" not in full_encode
+
+        # Bitrate is the other sketch setting; without this it could be
+        # dropped from `render_sketch` and the flag test would not notice.
+        assert "64k" in sketch_encode
+        assert "128k" in full_encode
 
 
 class TestEncodeOpusAuditFailure:
@@ -624,27 +949,19 @@ class TestJobSoundfontResolution:
 
     def test_piano_with_kit_still_loads_the_salamander_grand(self) -> None:
         (self.sf_dir.parent / "Salamander.sf2").write_bytes(b"RIFF")
-        assert (
-            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
-            == PIANO_SOUNDFONT
-        )
-        assert (
-            resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"})
-            == PIANO_SOUNDFONT
-        )
+        assert resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"}) == PIANO_SOUNDFONT
+        assert resolve_job_soundfont({0: "piano", 1: "piano", 2: "drum_set"}) == PIANO_SOUNDFONT
 
     def test_mixed_gm_ensemble_loads_the_general_font(self) -> None:
         (self.sf_dir / "FluidR3_GM.sf2").write_bytes(b"RIFF")
         assert (
-            resolve_job_soundfont({0: "contrabass", 1: "piano", 3: "strings"})
-            == GENERAL_SOUNDFONT
+            resolve_job_soundfont({0: "contrabass", 1: "piano", 3: "strings"}) == GENERAL_SOUNDFONT
         )
 
     def test_single_installed_font_only_voice_loads_its_font(self) -> None:
         (self.sf_dir / "Wetthasinghe_Harmonium.sf2").write_bytes(b"RIFF")
         assert (
-            resolve_job_soundfont({1: "harmonium"})
-            == SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2"
+            resolve_job_soundfont({1: "harmonium"}) == SOUNDFONT_DIR / "Wetthasinghe_Harmonium.sf2"
         )
 
     def test_mixed_font_only_files_fall_back_to_the_general_font(self) -> None:
@@ -1011,9 +1328,7 @@ class TestSmfExpressionEvents:
         order = [m.type for m in smf.tracks[0]]
         first_note_on = order.index("note_on")
         pedal_index = next(
-            i
-            for i, m in enumerate(smf.tracks[0])
-            if m.type == "control_change" and m.control == 64
+            i for i, m in enumerate(smf.tracks[0]) if m.type == "control_change" and m.control == 64
         )
         assert pedal_index < first_note_on
 

@@ -32,7 +32,16 @@ dependencies = [
     "rq==2.0.0",
     "valkey-glide==1.3.1",
     "httpx==0.27.2",
-    "typer==0.13.0",
+    # `click` is pinned rather than left to float, and the two pins move together.
+    # Click 8.2 made `Parameter.make_metavar(ctx)` take a required argument that
+    # typer 0.13.0 does not pass, so every `--help` died inside rich_utils; typer
+    # 0.15.4 guarded against it with `click<8.2` and 0.16.0 is where the call was
+    # fixed. Pinning click down instead would be worse than the crash: everything
+    # at or below 8.3.2 carries PYSEC-2026-2132, a command injection in
+    # `click.edit()`, so the compatible click is also the vulnerable one and the
+    # only safe direction is up.
+    "click==8.5.0",
+    "typer==0.16.0",
 ]
 
 [project.optional-dependencies]
@@ -41,7 +50,6 @@ dev = [
     "mypy==1.13.0",
     "pytest==8.3.4",
     "pytest-cov==6.0.0",
-    "pytest-asyncio==0.24.0",
     "types-requests",
 ]
 render = [
@@ -53,8 +61,14 @@ benchmark = [
 ]
 
 [project.scripts]
-saimc-benchmark = "saimc.benchmark_cli:main"
-saimc-quality = "saimc.quality_cli:main"
+# `:_entry` and not `:main` for the four typer CLIs. `main` is the
+# `@app.command()`-decorated function, so calling it directly bypasses typer's
+# parsing and hands the body the raw `typer.Option(...)` defaults as `OptionInfo`
+# objects. `_entry` is the runner that goes through `app()`.
+saimc-benchmark = "saimc.benchmark_cli:_entry"
+saimc-label = "saimc.labeling_cli:_entry"
+saimc-preferences = "saimc.preferences_cli:_entry"
+saimc-quality = "saimc.quality_cli:_entry"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
 saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
@@ -96,7 +110,9 @@ ignore = [
 "tests/**/*.py" = ["B008", "PT011"]
 "src/saimc/llm/**/*.py" = ["E501"]
 "src/saimc/benchmark_cli.py" = ["B008"]
+"src/saimc/labeling_cli.py" = ["B008"]
 "src/saimc/quality_cli.py" = ["B008"]
+"src/saimc/preferences_cli.py" = ["B008"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -135,7 +151,6 @@ warn_required_dynamic_aliases = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from saimc.compose.plan import PLAN_FORMAT
 from saimc.jobs.manifest import (
     AssetRecord,
     ManifestInputs,
@@ -162,6 +164,31 @@ class TestBuildManifest:
         m = build_manifest(completed_job, _inputs())
         assert m["dependencies"]["music21"] == "9.5.0"
 
+    def test_records_the_model_when_the_llm_served_the_parse(self, completed_job: Job) -> None:
+        """§9: `parser_source` is accompanied by the model identifier.
+
+        The adapter has always reported it in `ParseResult.extra`; before
+        this field existed nothing carried it as far as the manifest, so
+        the provenance record named a parser but not the model behind it.
+        """
+        completed_job.parser_source = "llm"
+        completed_job.model = "gemma4:31b-cloud"
+        m = build_manifest(completed_job, _inputs())
+        assert m["parser_source"] == "llm"
+        assert m["model"] == "gemma4:31b-cloud"
+
+    def test_omits_the_model_for_a_fallback_only_parse(self, completed_job: Job) -> None:
+        """Absence has to mean "no model was involved", not "unknown".
+
+        A null here would be indistinguishable from a failed lookup, so
+        the key is dropped rather than set when no LLM contributed.
+        """
+        completed_job.parser_source = "fallback"
+        completed_job.model = None
+        m = build_manifest(completed_job, _inputs())
+        assert m["parser_source"] == "fallback"
+        assert "model" not in m
+
     def test_license_obligations_point_at_l(self, completed_job: Job) -> None:
         m = build_manifest(completed_job, _inputs())
         assert m["license_obligations"]["ffmpeg"] == "LICENSES/ffmpeg.txt"
@@ -206,6 +233,57 @@ class TestBuildManifest:
         storage.save(job)
         with pytest.raises(ValueError, match="no artifacts"):
             build_manifest(job, _inputs())
+
+
+class TestTheManifestRecordsThePlan:
+    """§9: the manifest names the plan the piece was composed under.
+
+    Without it the manifest records the *inputs* and the *outputs* and
+    nothing about the decisions in between — and those decisions are what
+    §6's determinism claim is made about, since `(plan, seed) -> notes` is
+    the reproducible pair and `(spec, seed) -> notes` only holds while the
+    module tables hold still.
+    """
+
+    def test_a_job_with_no_plan_omits_the_block(self, completed_job: Job) -> None:
+        """Omitted, not nulled — the `model` rule. Its absence reads as
+        "the engine's defaults composed this", which is what every job
+        written before the field existed also means."""
+        m = build_manifest(completed_job, _inputs())
+        assert "input_plan" not in m
+
+    def test_the_block_carries_the_document_and_its_digest(self, completed_job: Job) -> None:
+        from saimc.canonical import canonical_dumps
+        from saimc.compose.plan import default_plan
+
+        completed_job.input_plan = default_plan(completed_job.input_spec)
+        m = build_manifest(completed_job, _inputs())
+        block = m["input_plan"]
+        assert set(block) == {"plan", "sha256"}
+        assert block["plan"]["format"] == PLAN_FORMAT
+        # The digest is of exactly the document in the same block, so a
+        # reader who has the manifest has everything needed to verify it.
+        document = canonical_dumps(block["plan"])
+        assert block["sha256"] == hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+    def test_the_recorded_plan_reads_back_as_the_plan(self, completed_job: Job) -> None:
+        """The document is the canonical form, so it is reloadable — a
+        manifest that recorded a plan no reader could rebuild would be a
+        provenance record in name only."""
+        from saimc.compose.plan import CompositionPlan, default_plan
+
+        completed_job.input_plan = default_plan(completed_job.input_spec)
+        block = build_manifest(completed_job, _inputs())["input_plan"]
+        assert CompositionPlan.from_canonical_dict(block["plan"]) == completed_job.input_plan
+
+    def test_the_block_survives_the_manifest_write(self, completed_job: Job, tmp_path: Path) -> None:
+        """Through canonical JSON on disk, which is how it is read."""
+        from saimc.compose.plan import default_plan
+
+        completed_job.input_plan = default_plan(completed_job.input_spec)
+        path = write_manifest(completed_job, _inputs(), tmp_path)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["input_plan"]["plan"]["format"] == PLAN_FORMAT
 
 
 class TestWriteManifest:

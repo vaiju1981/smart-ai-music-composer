@@ -27,6 +27,7 @@ into `arrange_for_duration()` to decide:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from saimc.compose.forms import (
     PHRASE_SIZES,
@@ -141,6 +142,104 @@ class DurationUnfulfillableError(Exception):
     """Raised when no valid tempo + repetition combination hits the target."""
 
 
+@dataclass(frozen=True)
+class ArrangementKnobs:
+    """What the arrangement layer reads from a plan.
+
+    A struct rather than seven parameters because the duration search
+    threads them through three functions. It lives here rather than in
+    `plan.py` because the plan imports this module for its own defaults,
+    so the dependency cannot also run the other way; `CompositionPlan`
+    builds one with its `arrangement_knobs()` method.
+
+    The defaults are today's module constants, which is what keeps every
+    caller that does not care about the plan — and `arrange_for_duration`
+    called with no `knobs` at all — producing exactly the arrangement it
+    produced before.
+    """
+
+    form_sizes: tuple[int, ...] = PHRASE_SIZES
+    max_repeats: int = MAX_REPEATS
+    duration_tolerance: float = DURATION_TOLERANCE
+    arc_min_reps: int = ARRANGEMENT_ARC_MIN_REPS
+    intro_bars: int = INTRO_BARS
+    ritardando_factor: float = RITARDANDO_FACTOR
+    ritardando_bars: int = RITARDANDO_BARS
+
+
+DEFAULT_ARRANGEMENT_KNOBS: Final[ArrangementKnobs] = ArrangementKnobs()
+"""Today's values, as the object every default reads through."""
+
+
+SECTION_VELOCITY_OPENING: Final[float] = 0.82
+"""The first section sits back: the arc has somewhere to rise to."""
+
+SECTION_VELOCITY_PEAK: Final[float] = 1.12
+"""The penultimate section is the piece's loudest."""
+
+SECTION_VELOCITY_FINAL: Final[float] = 0.95
+"""The last section settles slightly, so the cadence lands rather than shouts."""
+
+SECTION_VELOCITY_MIDDLE: Final[float] = 1.0
+"""Every other section: the piece's own dynamic, neither lifted nor held back."""
+
+HARMONY_TEXTURE_FIRST: Final[str] = "first"
+"""The leading harmony voice alone — the opening's thinner colour."""
+
+HARMONY_TEXTURE_REST: Final[str] = "rest"
+"""Every harmony voice but the leading one — the breakdown's contrasting colour."""
+
+HARMONY_TEXTURE_ALL: Final[str] = "all"
+"""The full section, as the ensemble states it."""
+
+HARMONY_TEXTURE_GROUPS: Final[frozenset[str]] = frozenset(
+    {HARMONY_TEXTURE_FIRST, HARMONY_TEXTURE_REST, HARMONY_TEXTURE_ALL}
+)
+"""The vocabulary a texture cycle is written in."""
+
+HARMONY_TEXTURE_CYCLE: Final[tuple[str, ...]] = (
+    HARMONY_TEXTURE_FIRST,
+    HARMONY_TEXTURE_ALL,
+    HARMONY_TEXTURE_REST,
+    HARMONY_TEXTURE_ALL,
+)
+"""Which harmony voices sound in each phase of the long-piece arc.
+
+The cycle repeats every four sections, so a four-section arc re-states
+itself: the opening presents the leading voice, the third section becomes
+the breakdown, and the sections between them combine. A single harmony
+voice has no grouping to do and sounds in every section.
+"""
+
+
+@dataclass(frozen=True)
+class SectionArc:
+    """What the sections layer reads from a plan.
+
+    The same one-way bridge `ArrangementKnobs` is, for the same reason:
+    `plan.py` imports this module for its defaults, so the dependency
+    cannot also run the other way. Four named energies rather than a tuple
+    because they are positional in the music — opening, peak, final, and
+    everything else — and a tuple would make a reader count.
+
+    `texture_cycle` is expressed as *groups* of voices rather than as
+    indices into them: the ensemble decides how many harmony voices a
+    piece has, and "the leading one" and "every voice but the leading one"
+    mean the same thing whether there are two or five. An index list could
+    only name a fixed number.
+    """
+
+    energy_opening: float = SECTION_VELOCITY_OPENING
+    energy_peak: float = SECTION_VELOCITY_PEAK
+    energy_final: float = SECTION_VELOCITY_FINAL
+    energy_middle: float = SECTION_VELOCITY_MIDDLE
+    texture_cycle: tuple[str, ...] = HARMONY_TEXTURE_CYCLE
+
+
+DEFAULT_SECTION_ARC: Final[SectionArc] = SectionArc()
+"""Today's values, as the object every default reads through."""
+
+
 def arrange_for_duration(
     *,
     mood: str,
@@ -149,12 +248,13 @@ def arrange_for_duration(
     base_form_bars: int | None = None,
     variant_index: int = 0,
     tempo_bpm: float | None = None,
+    knobs: ArrangementKnobs = DEFAULT_ARRANGEMENT_KNOBS,
 ) -> DurationArrangement:
     """Find (form, repetition_count, tempo) that fits `target_duration_seconds`.
 
     Strategy:
     1. Pick a base form (8/16/32 bars) - caller-supplied or auto.
-    2. For each valid repetition_count in 1..MAX_REPEATS, scan every
+    2. For each valid repetition_count in 1..`knobs.max_repeats`, scan every
        bpm in the mood's range at 0.5-BPM increments. Return the
        first combination whose realised duration is within
        ±DURATION_TOLERANCE. The first fitting repetition is the one
@@ -184,6 +284,7 @@ def arrange_for_duration(
             base_form_bars=base_form_bars,
             variant_index=variant_index,
             tempo_bpm=None,
+            knobs=knobs,
         )
     try:
         return _arrange_at_tempo(
@@ -193,6 +294,7 @@ def arrange_for_duration(
             base_form_bars=base_form_bars,
             variant_index=variant_index,
             tempo_bpm=tempo_bpm,
+            knobs=knobs,
         )
     except DurationUnfulfillableError:
         return _arrange_at_tempo(
@@ -202,6 +304,7 @@ def arrange_for_duration(
             base_form_bars=base_form_bars,
             variant_index=variant_index,
             tempo_bpm=None,
+            knobs=knobs,
         )
 
 
@@ -213,6 +316,7 @@ def _arrange_at_tempo(
     base_form_bars: int | None,
     variant_index: int,
     tempo_bpm: float | None,
+    knobs: ArrangementKnobs,
 ) -> DurationArrangement:
     """The duration search under one tempo rule: pinned bpm or derived.
 
@@ -221,15 +325,17 @@ def _arrange_at_tempo(
     exact bpm lands within tolerance are eligible.
     """
     if base_form_bars is None:
-        base_form_bars = _pick_base_form(mood, target_duration_seconds, time_signature)
-    if base_form_bars not in PHRASE_SIZES:
-        raise ValueError(f"base_form_bars must be one of {PHRASE_SIZES}; got {base_form_bars}")
+        base_form_bars = _pick_base_form(mood, target_duration_seconds, time_signature, knobs)
+    if base_form_bars not in knobs.form_sizes:
+        raise ValueError(
+            f"base_form_bars must be one of {knobs.form_sizes}; got {base_form_bars}"
+        )
 
     template = get_template_for_form(mood, base_form_bars, variant_index=variant_index)
     ticks_per_bar = bar_ticks(time_signature)
 
     low_bpm, high_bpm = get_mood_profile(mood).tempo_range_bpm
-    tolerance = DURATION_TOLERANCE
+    tolerance = knobs.duration_tolerance
     if tempo_bpm is not None and not low_bpm <= tempo_bpm <= high_bpm:
         raise DurationUnfulfillableError(
             f"requested tempo {tempo_bpm}bpm is outside the {mood!r} range {low_bpm}-{high_bpm}bpm"
@@ -242,7 +348,7 @@ def _arrange_at_tempo(
     # seconds could make a pinned tempo unfulfillable.
     may_ritardando = tempo_bpm is None
 
-    for repetition_count in range(1, MAX_REPEATS + 1):
+    for repetition_count in range(1, knobs.max_repeats + 1):
         total_bars = base_form_bars * repetition_count
         total_ticks = total_bars * ticks_per_bar
         bpm_candidates: list[float] = []
@@ -258,14 +364,16 @@ def _arrange_at_tempo(
                 low_bpm + 0.5 * i for i in range(int((high_bpm - low_bpm) * 2) + 1)
             )
         for bpm in bpm_candidates:
-            long_piece = repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+            long_piece = repetition_count >= knobs.arc_min_reps
             # A long piece eases in over its final cadence bars; the
             # slowed seconds are part of the math so the ±2% promise
             # holds for the piece the listener actually hears. Short
             # pieces sit too close to the tempo range's edges for the
             # slowdown to be compensable there.
             realised = (
-                _realised_rit_seconds(total_ticks, ticks_per_bar, bpm, RITARDANDO_FACTOR)
+                _realised_rit_seconds(
+                    total_ticks, ticks_per_bar, bpm, knobs.ritardando_factor, knobs
+                )
                 if long_piece and may_ritardando
                 else _realised_seconds(total_ticks, bpm)
             )
@@ -278,8 +386,8 @@ def _arrange_at_tempo(
                     repetition_count=repetition_count,
                     total_bars=total_bars,
                     tempo_bpm=chosen,
-                    intro_bars=INTRO_BARS if long_piece else 0,
-                    ritardando_factor=RITARDANDO_FACTOR
+                    intro_bars=knobs.intro_bars if long_piece else 0,
+                    ritardando_factor=knobs.ritardando_factor
                     if long_piece and may_ritardando
                     else 1.0,
                 )
@@ -296,7 +404,7 @@ def _arrange_at_tempo(
     if coda_bars >= base_form_bars:
         coda_bars = base_form_bars - 4 if base_form_bars >= 4 else 0
     if coda_bars >= 1:
-        for repetition_count in range(1, MAX_REPEATS + 1):
+        for repetition_count in range(1, knobs.max_repeats + 1):
             total_bars_no_coda = base_form_bars * repetition_count
             total_ticks_no_coda = total_bars_no_coda * ticks_per_bar
             coda_ticks = coda_bars * ticks_per_bar
@@ -317,7 +425,7 @@ def _arrange_at_tempo(
                 # for the piece the listener actually hears.
                 realised = (
                     _realised_coda_seconds(
-                        total_ticks_no_coda, coda_ticks, bpm, RITARDANDO_FACTOR
+                        total_ticks_no_coda, coda_ticks, bpm, knobs.ritardando_factor
                     )
                     if may_ritardando
                     else _realised_seconds(total_ticks_no_coda + coda_ticks, bpm)
@@ -332,10 +440,12 @@ def _arrange_at_tempo(
                         total_bars=total_bars_no_coda,
                         tempo_bpm=chosen,
                         coda_bars=coda_bars,
-                        intro_bars=INTRO_BARS
-                        if repetition_count >= ARRANGEMENT_ARC_MIN_REPS
+                        intro_bars=knobs.intro_bars
+                        if repetition_count >= knobs.arc_min_reps
                         else 0,
-                        ritardando_factor=RITARDANDO_FACTOR if may_ritardando else 1.0,
+                        ritardando_factor=knobs.ritardando_factor
+                        if may_ritardando
+                        else 1.0,
                     )
 
     # No in-tolerance arrangement exists — with or without a coda. Per
@@ -345,8 +455,8 @@ def _arrange_at_tempo(
     if best_no_coda is None:
         raise DurationUnfulfillableError(
             f"no (form, repetition, tempo) combination fits {target_duration_seconds}s "
-            f"for mood={mood!r} within ±{tolerance:.0%}; tried forms {PHRASE_SIZES}, "
-            f"repetitions 1..{MAX_REPEATS}, bpm {low_bpm}..{high_bpm}"
+            f"for mood={mood!r} within ±{tolerance:.0%}; tried forms {knobs.form_sizes}, "
+            f"repetitions 1..{knobs.max_repeats}, bpm {low_bpm}..{high_bpm}"
         )
     closest_delta, closest_rep, closest_bpm, closest_ticks = best_no_coda
     raise DurationUnfulfillableError(
@@ -358,11 +468,16 @@ def _arrange_at_tempo(
     )
 
 
-def _pick_base_form(mood: str, target_duration_seconds: float, time_signature: str) -> int:
+def _pick_base_form(
+    mood: str,
+    target_duration_seconds: float,
+    time_signature: str,
+    knobs: ArrangementKnobs,
+) -> int:
     """Pick the smallest form whose max repetition can hit the target duration.
 
     For each candidate form, compute the maximum seconds achievable at
-    MAX_REPEATS x the mood's slowest tempo in the spec's time
+    `knobs.max_repeats` x the mood's slowest tempo in the spec's time
     signature. If that maximum meets or exceeds the target, the form
     is a candidate. We then return the smallest such form (smallest
     repetition count in the downstream arrange_for_duration tends to
@@ -370,15 +485,15 @@ def _pick_base_form(mood: str, target_duration_seconds: float, time_signature: s
     """
     low_bpm, _high_bpm = get_mood_profile(mood).tempo_range_bpm
     beats_per_bar = bar_ticks(time_signature) / PPQ
-    for form in PHRASE_SIZES:
-        # Max achievable seconds for this form: MAX_REPEATS at lowest tempo.
-        max_seconds = (form * MAX_REPEATS * beats_per_bar / low_bpm) * 60.0
+    for form in knobs.form_sizes:
+        # Max achievable seconds for this form: max_repeats at lowest tempo.
+        max_seconds = (form * knobs.max_repeats * beats_per_bar / low_bpm) * 60.0
         if max_seconds >= target_duration_seconds:
             return form
     raise DurationUnfulfillableError(
         f"no Phase 1 form can reach {target_duration_seconds}s for mood={mood!r} "
         f"in {time_signature}; max achievable is "
-        f"{(PHRASE_SIZES[-1] * MAX_REPEATS * beats_per_bar / low_bpm) * 60.0:.1f}s"
+        f"{(knobs.form_sizes[-1] * knobs.max_repeats * beats_per_bar / low_bpm) * 60.0:.1f}s"
     )
 
 
@@ -387,10 +502,14 @@ def _realised_seconds(total_ticks: int, bpm: float) -> float:
 
 
 def _realised_rit_seconds(
-    total_ticks: int, ticks_per_bar: int, bpm: float, ritardando_factor: float
+    total_ticks: int,
+    ticks_per_bar: int,
+    bpm: float,
+    ritardando_factor: float,
+    knobs: ArrangementKnobs,
 ) -> float:
     """Realized seconds for a piece whose final cadence bars slow down."""
-    rit_ticks = min(RITARDANDO_BARS * ticks_per_bar, total_ticks)
+    rit_ticks = min(knobs.ritardando_bars * ticks_per_bar, total_ticks)
     return _realised_coda_seconds(
         total_ticks - rit_ticks, rit_ticks, bpm, ritardando_factor
     )
@@ -420,14 +539,27 @@ def section_seed(spec_seed: int | None, section_index: int) -> int:
 __all__ = [
     "ARRANGEMENT_ARC_MIN_REPS",
     "BAR_DURATIONS_TICKS",
+    "DEFAULT_ARRANGEMENT_KNOBS",
+    "DEFAULT_SECTION_ARC",
     "DURATION_TOLERANCE",
+    "HARMONY_TEXTURE_ALL",
+    "HARMONY_TEXTURE_CYCLE",
+    "HARMONY_TEXTURE_FIRST",
+    "HARMONY_TEXTURE_GROUPS",
+    "HARMONY_TEXTURE_REST",
     "INTRO_BARS",
     "MAX_REPEATS",
     "PPQ",
     "RITARDANDO_BARS",
     "RITARDANDO_FACTOR",
+    "SECTION_VELOCITY_FINAL",
+    "SECTION_VELOCITY_MIDDLE",
+    "SECTION_VELOCITY_OPENING",
+    "SECTION_VELOCITY_PEAK",
+    "ArrangementKnobs",
     "DurationArrangement",
     "DurationUnfulfillableError",
+    "SectionArc",
     "arrange_for_duration",
     "bar_ticks",
     "section_seed",

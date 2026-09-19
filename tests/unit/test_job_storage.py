@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from saimc.jobs.state import JobState
-from saimc.jobs.storage import (
-    ArtifactRecord,
-    JobStorage,
-    UnsupportedSpecVersionError,
+from saimc.compose.plan import (
+    PLAN_FORMAT,
+    UnsupportedPlanVersionError,
+    default_plan,
 )
-from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, Mood
+from saimc.jobs.state import JobState
+from saimc.jobs.storage import ArtifactRecord, JobStorage
+from saimc.spec import SPEC_SCHEMA_VERSION, CompositionSpec, Mood, UnsupportedSpecVersionError
 
 
 @pytest.fixture
@@ -167,3 +169,101 @@ class TestSchemaVersionGuard:
         reloaded = store.get(job.job_id)
         assert reloaded.input_spec is not None
         assert reloaded.input_spec.mood == Mood.CALMING
+
+
+class TestPlanPersistence:
+    """The job records the plan it composes under, materialized.
+
+    Stored rather than re-derived, for the reason `plan.py` gives: a plan
+    rebuilt from a module table at read time would make this job's
+    reproducibility a claim about the build rather than about the job.
+    """
+
+    def test_a_job_with_no_plan_stores_and_loads_none(self, store, tmp_path) -> None:
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        store.save(job)
+        assert store.get(job.job_id).input_plan is None
+        payload = json.loads((tmp_path / job.job_id / "job.json").read_text())
+        assert payload["input_plan"] is None
+
+    def test_a_jobs_plan_round_trips_unchanged(self, store) -> None:
+        spec = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=45, seed=3)
+        job = store.create("p")
+        job.input_spec = spec
+        job.input_plan = replace(default_plan(spec), harmony_pad_velocity=42)
+        store.save(job)
+
+        reloaded = store.get(job.job_id)
+        assert reloaded.input_plan is not None
+        assert reloaded.input_plan == job.input_plan
+        assert reloaded.input_plan.compute_hash() == job.input_plan.compute_hash()
+
+    def test_a_plan_from_the_future_is_refused(self, store, tmp_path) -> None:
+        """Refused rather than coerced, unlike the spec.
+
+        A spec is widened additively and Pydantic fills what it is
+        missing; a plan is stored *materialized*, so a version this build
+        cannot read is one whose fields it cannot know. Loading it anyway
+        would make the job's reproducibility a claim the build cannot
+        honour while still reporting success.
+        """
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        job.input_plan = default_plan(job.input_spec)
+        store.save(job)
+        job_file = tmp_path / job.job_id / "job.json"
+        payload = json.loads(job_file.read_text())
+        payload["input_plan"]["format"] = "CompositionPlan:999"
+        job_file.write_text(json.dumps(payload))
+
+        with pytest.raises(UnsupportedPlanVersionError) as exc_info:
+            store.get(job.job_id)
+        assert "CompositionPlan:999" in str(exc_info.value)
+        assert PLAN_FORMAT in str(exc_info.value)
+
+    def test_a_plan_from_the_past_is_refused_too(self, store, tmp_path) -> None:
+        """The other direction, which the spec guard does not have to care
+        about: an older plan is missing fields, so it is not a plan this
+        build can honour either."""
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        job.input_plan = default_plan(job.input_spec)
+        store.save(job)
+        job_file = tmp_path / job.job_id / "job.json"
+        payload = json.loads(job_file.read_text())
+        payload["input_plan"]["format"] = "CompositionPlan:0"
+        job_file.write_text(json.dumps(payload))
+
+        with pytest.raises(UnsupportedPlanVersionError):
+            store.get(job.job_id)
+
+    def test_a_job_written_before_plans_loads_with_none(self, store, tmp_path) -> None:
+        """The `.get()` read, which is what every job on disk today needs."""
+        job = store.create("p")
+        job.input_spec = CompositionSpec(mood=Mood.CALMING)
+        store.save(job)
+        job_file = tmp_path / job.job_id / "job.json"
+        payload = json.loads(job_file.read_text())
+        del payload["input_plan"]
+        job_file.write_text(json.dumps(payload))
+        assert store.get(job.job_id).input_plan is None
+
+    def test_an_unreadable_plan_does_not_break_a_listing(self, store, tmp_path) -> None:
+        """`list_all` skips what it cannot read, and a refused plan is one
+        of those — the same treatment the future spec version gets."""
+        good = store.create("good")
+        good.input_spec = CompositionSpec(mood=Mood.CALMING)
+        store.save(good)
+        bad = store.create("bad")
+        bad.input_spec = CompositionSpec(mood=Mood.CALMING)
+        bad.input_plan = default_plan(bad.input_spec)
+        store.save(bad)
+        bad_file = tmp_path / bad.job_id / "job.json"
+        payload = json.loads(bad_file.read_text())
+        payload["input_plan"]["format"] = "CompositionPlan:999"
+        bad_file.write_text(json.dumps(payload))
+
+        listed = {job.job_id for job in store.list_all()}
+        assert good.job_id in listed
+        assert bad.job_id not in listed

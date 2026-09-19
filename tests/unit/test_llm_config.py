@@ -85,6 +85,89 @@ class TestPrecedence:
         assert cfg.model == "file-model"  # env only overrides its own key
 
 
+class TestTheModelOverride:
+    """`build_ollama_adapter(model=…)`, which is how a sweep picks a candidate.
+
+    §10 #3 step 3 runs the corpus against several models, and the host, the key
+    and the timeout stay the configured ones for all of them — so the override
+    is one keyword on the existing factory rather than a second construction
+    site that would have to re-read the configuration and decide for itself
+    what "not configured" means.
+    """
+
+    def test_an_explicit_model_wins_over_the_configured_one(self, tmp_path: Path) -> None:
+        from saimc.llm.config import build_ollama_adapter
+
+        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        client = build_ollama_adapter(model="sweep-candidate")
+        assert client is not None
+        assert client.model_identifier == "sweep-candidate"
+
+    def test_everything_else_still_comes_from_the_configuration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The override moves the tag and nothing else: not the host, not the key.
+
+        Asserted against the construction call rather than against the built
+        adapter, because the host is not part of the adapter's public surface
+        and reaching into `_base_url` would read a spelling rather than the
+        contract. This *is* the contract: three keywords, one of them
+        overridden, so a version that rebuilt the adapter from the override
+        alone fails here.
+        """
+        import saimc.llm.ollama as ollama
+        from saimc.llm.config import build_ollama_adapter
+
+        (tmp_path / "saimc.toml").write_text(
+            '[llm]\nmodel = "configured-model"\n'
+            'base_url = "https://host.example.invalid"\n'
+            'api_key = "test-key"\n',
+            encoding="utf-8",
+        )
+        calls: list[dict[str, object]] = []
+
+        class _Recorder:
+            def __init__(self, **kwargs: object) -> None:
+                calls.append(dict(kwargs))
+
+        monkeypatch.setattr(ollama, "OllamaAdapter", _Recorder)
+        assert build_ollama_adapter(model="sweep-candidate") is not None
+        assert calls == [
+            {
+                "base_url": "https://host.example.invalid",
+                "model": "sweep-candidate",
+                "api_key": "test-key",
+            }
+        ]
+
+    def test_no_override_keeps_the_configured_model(self, tmp_path: Path) -> None:
+        from saimc.llm.config import build_ollama_adapter
+
+        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        client = build_ollama_adapter()
+        assert client is not None
+        assert client.model_identifier == "configured-model"
+
+    def test_an_empty_override_is_not_an_override(self, tmp_path: Path) -> None:
+        """An empty string would otherwise become an adapter with no model."""
+        from saimc.llm.config import build_ollama_adapter
+
+        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        client = build_ollama_adapter(model="")
+        assert client is not None
+        assert client.model_identifier == "configured-model"
+
+    def test_an_unreadable_config_still_yields_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The override does not smuggle in a second source of "configured"."""
+        from saimc.llm.config import build_ollama_adapter
+
+        def boom() -> None:
+            raise ValueError("bad config")
+
+        monkeypatch.setattr("saimc.llm.config.load_llm_config", boom)
+        assert build_ollama_adapter(model="sweep-candidate") is None
+
+
 class TestWorkerWiring:
     def test_worker_builds_adapter_from_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -39,12 +39,14 @@ def storage(tmp_path: Path) -> JobStorage:
 def client(storage: JobStorage, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # This suite deliberately walks jobs synchronously with run_job(); do not
     # leak an RQ/Valkey dependency into tests documented as broker-free.
-    monkeypatch.setattr("saimc.jobs.api.enqueue_job", lambda _job_id: "rq:test")
+    monkeypatch.setattr("saimc.jobs.worker.enqueue_job", lambda _job_id, **_: "rq:test")
     app = create_app(jobs_root=storage.root)
     return TestClient(app)
 
 
-def _stub_engine_returns(spec: CompositionSpec) -> tuple[object, object]:
+def _stub_engine_returns(
+    spec: CompositionSpec, *, plan: object | None = None
+) -> tuple[object, object]:
     """Stand-in for the slice-4 composition engine.
 
     Returns a real `EngineOutput` so downstream stages can read its

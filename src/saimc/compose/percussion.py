@@ -13,13 +13,21 @@ surface rhythm, not just harmony. All patterns are defined in PPQ=480
 ticks, matching the NotationScore, so a hit's offset is directly
 addable to the bar's start tick.
 
+Every style carries at least two variants per meter and at least one
+fill, because the rotation is only a change of pace if there is a second
+bar to change to: a single-variant style plays one bar for the whole
+piece. Which variant a section takes, and which of a style's fills hands
+it over, are read from the piece's seed as a phase of the rotation
+(`rotation_index`) — so the written kit differs between two pieces of one
+mood and meter, which it did not before.
+
 Licensing/licensing posture: the GM kit sounds come from the general
 soundfont (FluidR3_GM, MIT) — no dedicated drum font is needed.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 
 from saimc.compose.score import PPQ
@@ -214,13 +222,25 @@ FUNK = DrumStyle(
         )
     },
     fills={
-        # Ghosted 16th snare build over the last two beats, landing on
+        # F1: ghosted 16th snare build over the last two beats, landing on
         # the open hat that hands off to the next section.
         "4/4": (
             _hits(
                 (0, DRUM_KICK, 88),
                 *[(2 * BEAT + i * SIXTEENTH, DRUM_SNARE, 54 + i * 3) for i in range(7)],
                 (BAR_4_4 - EIGHTH, DRUM_OPEN_HIHAT, 66),
+            ),
+            # F2: the kick and the clap trading the back half — the same
+            # hand-off without a roll, for a section that should turn
+            # rather than build.
+            _hits(
+                (0, DRUM_KICK, 88),
+                (BEAT, DRUM_SNARE, 84),
+                (2 * BEAT, DRUM_KICK, 82),
+                (2 * BEAT + EIGHTH, DRUM_HAND_CLAP, 70),
+                (3 * BEAT, DRUM_SNARE, 86),
+                (3 * BEAT + SIXTEENTH, DRUM_SNARE, 66),
+                (3 * BEAT + EIGHTH, DRUM_KICK, 78),
             ),
         )
     },
@@ -266,6 +286,15 @@ BALLAD = DrumStyle(
                 (3 * BEAT, DRUM_SIDE_STICK, 62),
                 (3 * BEAT + EIGHTH, DRUM_CLOSED_HIHAT, 48),
             ),
+            # The quieter turn: a single cross-stick on the last beat,
+            # for a hand-off under a melody that is still singing.
+            _hits(
+                (0, DRUM_KICK, 70),
+                (BEAT, DRUM_CLOSED_HIHAT, 38),
+                (2 * BEAT, DRUM_KICK, 60),
+                (2 * BEAT, DRUM_CLOSED_HIHAT, 38),
+                (3 * BEAT, DRUM_SIDE_STICK, 58),
+            ),
         )
     },
 )
@@ -284,6 +313,31 @@ BOSSA = DrumStyle(
                 (2 * BEAT + DOTTED_EIGHTH, DRUM_SIDE_STICK, 60),
                 *[(o, DRUM_CLOSED_HIHAT, 48) for o in range(0, BAR_4_4, EIGHTH)],
             ),
+            # B: the same clave answered, with the open hat closing the
+            # bar and the kick pushed onto the "and" of 2.
+            _hits(
+                (0, DRUM_KICK, 74),
+                (DOTTED_BEAT, DRUM_KICK, 62),
+                (3 * BEAT + EIGHTH, DRUM_KICK, 66),
+                (EIGHTH, DRUM_SIDE_STICK, 62),
+                (2 * BEAT, DRUM_SIDE_STICK, 68),
+                (2 * BEAT + DOTTED_EIGHTH, DRUM_SIDE_STICK, 58),
+                *[(o, DRUM_CLOSED_HIHAT, 46) for o in range(0, BAR_4_4 - EIGHTH, EIGHTH)],
+                (BAR_4_4 - EIGHTH, DRUM_OPEN_HIHAT, 58),
+            ),
+        )
+    },
+    fills={
+        # The rim answers across the back half of the bar and hands the
+        # groove over without a roll — a bossa does not crescendo.
+        "4/4": (
+            _hits(
+                (0, DRUM_KICK, 70),
+                (2 * BEAT, DRUM_SIDE_STICK, 58),
+                (2 * BEAT + EIGHTH, DRUM_SIDE_STICK, 62),
+                (3 * BEAT, DRUM_SIDE_STICK, 66),
+                (3 * BEAT + EIGHTH, DRUM_CLOSED_HIHAT, 52),
+            ),
         )
     },
 )
@@ -292,13 +346,38 @@ SWING = DrumStyle(
     name="swing",
     variants={
         "4/4": (
-            # A: ride on the quarters, foot-hihat on 2 and 4. The swung
-            # eighths ride pattern belongs to a triplet grid, so the
-            # quarters carry the pulse until a triplet-time slice lands.
+            # A: ride on the quarters with the "and" of 2 and 4 answered on
+            # the same cymbal, foot-hihat on 2 and 4. The offbeat ride is
+            # written where a *straight* eighth sits, and `swing_ratio` is
+            # what moves it onto the triplet — so this is the swung ride at
+            # 2.0 and an even eighth ride at 1.0, which is why the quarter
+            # pulse no longer has to wait for a triplet grid.
             _hits(
                 *[(o, DRUM_RIDE, 64) for o in range(0, BAR_4_4, BEAT)],
+                (BEAT + EIGHTH, DRUM_RIDE, 54),
+                (3 * BEAT + EIGHTH, DRUM_RIDE, 54),
                 (480, DRUM_PEDAL_HIHAT, 56),
                 (3 * BEAT, DRUM_PEDAL_HIHAT, 56),
+            ),
+            # B: the quarters with the snare answering on 4 — the kit
+            # whispers the backbeat instead of keeping it on 2 and 4.
+            _hits(
+                *[(o, DRUM_RIDE, 62) for o in range(0, BAR_4_4, BEAT)],
+                (480, DRUM_PEDAL_HIHAT, 56),
+                (3 * BEAT, DRUM_SNARE, 54),
+            ),
+        )
+    },
+    fills={
+        # A pickup on the last beat: the ride keeps the pulse, the snare
+        # doubles it and a tom takes the bar over the line.
+        "4/4": (
+            _hits(
+                (0, DRUM_RIDE, 60),
+                (2 * BEAT, DRUM_PEDAL_HIHAT, 54),
+                (3 * BEAT, DRUM_SNARE, 52),
+                (3 * BEAT + EIGHTH, DRUM_SNARE, 58),
+                (BAR_4_4 - SIXTEENTH, DRUM_HIGH_TOM, 62),
             ),
         )
     },
@@ -315,6 +394,16 @@ MARCH = DrumStyle(
                 (2 * BEAT, DRUM_KICK, 84),
                 (BEAT, DRUM_SNARE, 76),
                 (3 * BEAT, DRUM_SNARE, 76),
+            ),
+            # B: the field-drum answer — the snares on the offbeats
+            # instead of the beats, which is a different strain of the
+            # same march rather than a busier one.
+            _hits(
+                (0, DRUM_KICK, 88),
+                (2 * BEAT, DRUM_KICK, 84),
+                (EIGHTH, DRUM_SNARE, 72),
+                (2 * BEAT + EIGHTH, DRUM_SNARE, 72),
+                (3 * BEAT + EIGHTH, DRUM_SNARE, 76),
             ),
         )
     },
@@ -347,6 +436,18 @@ WALTZ = DrumStyle(
                 (BEAT, DRUM_CLOSED_HIHAT, 40),
                 (2 * BEAT, DRUM_CLOSED_HIHAT, 40),
             ),
+            # B: the second strain — the kick pushes into 2 and the last
+            # beat opens the hat, so a repeated 3/4 section has a place
+            # to go that is not another fill.
+            _hits(
+                (0, DRUM_KICK, 80),
+                (BEAT - EIGHTH, DRUM_KICK, 62),
+                (BEAT, DRUM_SNARE, 64),
+                (2 * BEAT, DRUM_SNARE, 66),
+                (0, DRUM_CLOSED_HIHAT, 46),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_OPEN_HIHAT, 52),
+            ),
         ),
         # 6/8 has the same bar length as 3/4 (three dotted quarters),
         # so the waltz skeleton maps onto it directly.
@@ -358,6 +459,15 @@ WALTZ = DrumStyle(
                 (0, DRUM_CLOSED_HIHAT, 48),
                 (BEAT, DRUM_CLOSED_HIHAT, 40),
                 (2 * BEAT, DRUM_CLOSED_HIHAT, 40),
+            ),
+            _hits(
+                (0, DRUM_KICK, 80),
+                (BEAT - EIGHTH, DRUM_KICK, 62),
+                (BEAT, DRUM_SNARE, 64),
+                (2 * BEAT, DRUM_SNARE, 66),
+                (0, DRUM_CLOSED_HIHAT, 46),
+                (BEAT, DRUM_CLOSED_HIHAT, 40),
+                (2 * BEAT, DRUM_OPEN_HIHAT, 52),
             ),
         ),
     },
@@ -391,6 +501,17 @@ SHUFFLE = DrumStyle(
                 (2 * BEAT, DRUM_SNARE, 72),
                 *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
             ),
+            # B: the same bar with the snare answering the "and" of 2 —
+            # the shuffle's own syncopation, still on the eighth grid so
+            # it stays a shuffle and does not become a swing.
+            _hits(
+                (0, DRUM_KICK, 84),
+                (BEAT + EIGHTH, DRUM_KICK, 70),
+                (BEAT, DRUM_SNARE, 72),
+                (2 * BEAT, DRUM_SNARE, 72),
+                (2 * BEAT + EIGHTH, DRUM_SNARE, 58),
+                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
+            ),
         ),
         "6/8": (
             _hits(
@@ -398,6 +519,14 @@ SHUFFLE = DrumStyle(
                 (DOTTED_BEAT, DRUM_KICK, 72),
                 (BEAT, DRUM_SNARE, 72),
                 (2 * BEAT, DRUM_SNARE, 72),
+                *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
+            ),
+            _hits(
+                (0, DRUM_KICK, 84),
+                (BEAT + EIGHTH, DRUM_KICK, 70),
+                (BEAT, DRUM_SNARE, 72),
+                (2 * BEAT, DRUM_SNARE, 72),
+                (2 * BEAT + EIGHTH, DRUM_SNARE, 58),
                 *[(o, DRUM_CLOSED_HIHAT, 52) for o in range(0, BAR_3_4, EIGHTH)],
             ),
         ),
@@ -424,19 +553,148 @@ SHUFFLE = DrumStyle(
 # rather than the new normal.
 SECTION_CRASH_VELOCITY: int = 90
 
-_ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
+ROTATION_CYCLE: tuple[int, ...] = (0, 0, 1, 0)
+
+PERCUSSION_REST_SECTION: int = 1
+"""The mid-piece section a long piece's kit rests for.
+
+A hole in the texture before it refills, per §10 #10's demand that repeats
+differ. It lives here rather than in `engine.py`, where it was declared,
+because a plan has to be able to read it and the engine imports the plan.
+"""
+
+PERCUSSION_ENTRY_BAR: int = 2
+"""The first bar the kit may sound in, counting from zero.
+
+The groove is stated before the drums join it — the bed and the bass carry
+the first bars, and the kit arrives on the downbeat of the third. It is a
+floor rather than a position: a long piece whose intro outlasts it keeps
+resting through the intro, and this is the bar the kit comes back at when
+the intro is shorter than the kit's own entrance. Without it a short piece
+opened on a crash cymbal over bar one, which is the loudest possible first
+impression for a sleep ballad.
+"""
+
+PERCUSSION_KICK_VELOCITY: int = 84
+"""The kit's own kick level, for the places no pattern names one.
+
+Two places need a kick the template tables do not write: the downbeat mark,
+and the kick that follows the bass. Both are the kit playing its own
+accent rather than a chosen note, so they share one number.
+"""
+
+SWING_RATIO_STRAIGHT: float = 1.0
+"""A piece whose eighth notes are even. The identity of `swing_offset`."""
+
+SWING_RATIO_TRIPLET: float = 2.0
+"""The ratio that puts a beat's second eighth on the triplet.
+
+A swing ratio is the share of the beat the *first* eighth takes, so 1.0
+leaves the pair even, 1.5 is a light swing, and 2.0 is the triplet every
+jazz method writes. Past 2.0 the offbeat is later than the triplet, which
+is a dotted rhythm rather than a swing — and a dotted rhythm is something
+the pattern tables write directly, so the plan's bound stops here.
+"""
 
 
-def rotation_index(section_idx: int, variant_count: int) -> int:
+def swing_offset(offset: int, ratio: float = SWING_RATIO_STRAIGHT) -> int:
+    """Where a swing lands a hit the pattern wrote on a beat's second eighth.
+
+    The ratio divides the *beat*, not the bar: its first eighth takes
+    `ratio / (ratio + 1)` of the beat and the second the rest, so 1.0
+    leaves the hit where it was written and 2.0 lands it on the triplet.
+    Everything else is untouched — a hit on the beat, on a sixteenth, or on
+    a dotted value is where the pattern put it, and the offbeat eighth is
+    the one position a swing displaces. That is why the arithmetic needs no
+    triplet grid: the grid would only decide where the offbeat goes, and
+    the ratio decides exactly that.
+    """
+    beat_start = offset - offset % PPQ
+    if offset - beat_start != EIGHTH:
+        return offset
+    return beat_start + round(PPQ * ratio / (ratio + 1.0))
+
+
+def swing_pattern(
+    pattern: tuple[DrumHit, ...], ratio: float = SWING_RATIO_STRAIGHT
+) -> tuple[DrumHit, ...]:
+    """A bar template with its offbeat eighths displaced by the ratio.
+
+    Returns the pattern itself at `SWING_RATIO_STRAIGHT`, which is what
+    makes a straight piece byte-identical to the one this module wrote
+    before a ratio existed. A displacement moves a hit later inside its own
+    beat and never across a beat line, so the pattern's order survives.
+    """
+    if ratio == SWING_RATIO_STRAIGHT:
+        return pattern
+    return tuple(
+        replace(hit, offset_ticks=swing_offset(hit.offset_ticks, ratio)) for hit in pattern
+    )
+
+
+def rotation_index(
+    section_idx: int,
+    variant_count: int,
+    *,
+    cycle: tuple[int, ...] = ROTATION_CYCLE,
+    seed: int = 0,
+) -> int:
     """The pattern variant for a section, on a longer cycle than A/B.
 
     With one variant every section plays it. With more, the cycle holds
     A for two sections, changes pace with B for one, then returns — a
     B pattern every other section would stop feeling like a change.
+
+    The cycle is an argument rather than the module constant because the
+    plan carries it, and this module is where the plan and the engine
+    both read it. An entry past the last variant wraps rather than going
+    silent — `DrumStyle.pattern` is where that is decided.
+
+    `seed` is the piece's, and it enters as a *phase*: the same cycle read
+    from a different starting point, so two pieces of one mood and meter
+    place their change of pace in different sections instead of sharing a
+    drum part. Before this the written kit was byte-identical for every
+    seed — the notation, not merely the render — and the drums were the
+    one voice the seed did not reach. The plan cannot carry the offset: a
+    plan is derived from the spec and does not hold the seed (the arbiter
+    depends on that), and which section changes pace is a realisation of
+    the plan's cycle rather than a second vocabulary. The default of 0 is
+    the cycle as written.
     """
     if variant_count < 2:
         return 0
-    return _ROTATION_CYCLE[section_idx % len(_ROTATION_CYCLE)]
+    return cycle[(section_idx + seed) % len(cycle)]
+
+
+@dataclass(frozen=True)
+class DrumKit:
+    """How the kit is written for one piece, as the struct `engine.py` reads.
+
+    One-way bridge, for B2's reason: the engine's percussion pass takes no
+    plan, and a plan cannot hold a `DrumStyle` — a style is a table of bar
+    templates, and the plan is a canonical JSON document. So the plan
+    carries the style's *name* and the four values beside it, and this
+    is where the name becomes the style.
+
+    A style with no template for the piece's meter writes no drums at
+    all, which is what `style_for` does today for an exotic meter: the
+    honest skip beats a wrong pattern. The name is the one thing here the
+    plan validates — an unknown one is refused where it is written, not
+    silently resolved to silence.
+
+    `style=None` is a piece with no kit, which is the default for a
+    caller that never named one.
+    """
+
+    style: DrumStyle | None = None
+    rotation_cycle: tuple[int, ...] = ROTATION_CYCLE
+    velocity_scale: float = 1.0
+    crash_velocity: int = SECTION_CRASH_VELOCITY
+    swing_ratio: float = SWING_RATIO_STRAIGHT
+
+
+DEFAULT_DRUM_KIT: DrumKit = DrumKit()
+"""No kit: every value the module's own, and no style to write with."""
 
 # --- Mood-driven selection ---------------------------------------------------
 
@@ -490,12 +748,30 @@ def style_for(mood: str, time_signature: str) -> DrumStyle | None:
     return DRUM_STYLES.get(name)
 
 
+def style_name_for(mood: str, time_signature: str) -> str | None:
+    """The name of the drum style for a mood + meter, or None for no drums.
+
+    The meter decides when it has an opinion — 3/4 is a waltz, 6/8 a
+    shuffle — and otherwise 4/4 falls to the mood's style while every
+    exotic meter stays silent. The name rather than the `DrumStyle` is
+    what a composition plan carries, so the choice is a value a caller
+    can read, write, diff and store rather than an object it cannot.
+    """
+    meter_style = METER_STYLES.get(time_signature)
+    if meter_style is not None:
+        return meter_style
+    if time_signature != "4/4":
+        return None
+    return MOOD_STYLES_4_4.get(mood)
+
+
 __all__ = [
     "BALLAD",
     "BAR_3_4",
     "BAR_4_4",
     "BEAT",
     "BOSSA",
+    "DEFAULT_DRUM_KIT",
     "DOTTED_BEAT",
     "DOTTED_EIGHTH",
     "DRUM_CLOSED_HIHAT",
@@ -517,16 +793,26 @@ __all__ = [
     "METER_STYLES",
     "MOOD_STYLES_4_4",
     "MOOD_VELOCITY_SCALE",
+    "PERCUSSION_ENTRY_BAR",
+    "PERCUSSION_KICK_VELOCITY",
     "PERCUSSION_NOTE_TICKS",
+    "PERCUSSION_REST_SECTION",
     "PERCUSSION_VELOCITY_MAX",
     "ROCK",
+    "ROTATION_CYCLE",
     "SECTION_CRASH_VELOCITY",
     "SHUFFLE",
     "SIXTEENTH",
     "SWING",
+    "SWING_RATIO_STRAIGHT",
+    "SWING_RATIO_TRIPLET",
     "WALTZ",
     "DrumHit",
+    "DrumKit",
     "DrumStyle",
     "rotation_index",
     "style_for",
+    "style_name_for",
+    "swing_offset",
+    "swing_pattern",
 ]

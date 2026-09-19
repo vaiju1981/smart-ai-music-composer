@@ -81,8 +81,18 @@ def manifest_document(kind: str, body: Mapping[str, Any]) -> dict[str, Any]:
     """Wrap a canonical body with its format-version tag.
 
     The format-version tag is `"<kind>:{CANONICAL_FORMAT_VERSION}"`. It is
-    the first key when sorted, so consumers can detect and dispatch on it
-    without parsing the rest.
+    written first here, but "first when sorted" is a property of the
+    *body*, not of this function: it holds for `NotationScore` and
+    `PerformancePlan`, whose keys all sort after `format`, and not for
+    `CompositionPlan`, whose `arc_min_reps`, `bass_figures` and
+    `cadence_degree` sort before it. §6 requires an explicit version in
+    every document, not a leading one, so nothing depends on the order —
+    but a consumer that wants to dispatch on the tag without parsing the
+    rest has to read it by name rather than assume it comes first.
+
+    This function is unused in production: every canonical document in the
+    repo inlines its own `format` string, because each carries a version
+    that tracks its own shape rather than the encoding rules.
     """
     if not kind:
         raise ValueError("kind must be a non-empty string")

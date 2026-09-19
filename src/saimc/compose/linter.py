@@ -17,7 +17,7 @@ issues; the engine is responsible for producing a score that passes.
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -26,19 +26,35 @@ from saimc.compose.forms import PHRASE_BARS, STEP_MAX_SEMITONES, bar_diatonic_pc
 from saimc.compose.score import (
     VOICE_MELODY,
     VOICE_PERCUSSION,
+    KeySignature,
     NotationScore,
     NoteEvent,
 )
+from saimc.instruments import range_for
 
-# Phase 1 is piano-only. The piano range MIDI is 21 (A0) to 108 (C8).
-# We give a 1-note margin at each end to allow idiomatic voicings
-# without forcing the engine to reach the physical extremes.
-PIANO_MIN_MIDI: int = 22
-PIANO_MAX_MIDI: int = 107
+# The compass a note is checked against when the score is linted without
+# its voice→instrument mapping — the piano's, less a note of margin at
+# each end so idiomatic voicings need not reach the physical extremes.
+# Every production call site passes `voice_instruments`, because the
+# range gate is only as strong as the instrument it knows: applied
+# blindly this is the widest compass in the table, and §8's "all notes
+# within instrument range" then means "physically soundable by
+# something", never "playable as written" — a tuba written at E4 passes.
+# It is kept for a detached score: a fixture, or a sidecar that has gone
+# missing. It is deliberately not a default *band* — the melody's band
+# belongs to its instrument and has no fallback.
+FALLBACK_MIN_MIDI: int = 22
+FALLBACK_MAX_MIDI: int = 107
 
-# Maximum simultaneous note count. Piano can't physically play more
-# than 10 notes at once; the engine caps at 8 to leave headroom for
-# the humanizer.
+# Maximum simultaneous note count, justified by a pianist's two hands
+# and applied to every voice — including the single-line winds and
+# brass, which cannot sound more than one note at a time. It is a
+# backstop against pathological voicings, not a playability check. The
+# per-instrument polyphony in `saimc.instruments` is the number that
+# would make it one, and it is not enforced here yet: the engine's pad
+# writes two-note dyads for every instrument, so enforcing it today
+# would refuse every piece whose harmony voice is a wind or a brass.
+# The pad has to become monophonic-aware first.
 MAX_SIMULTANEOUS_NOTES: int = 8
 
 # Close-position dissonances between simultaneously sounding voices:
@@ -87,7 +103,13 @@ class LintReport:
     passed: bool
 
 
-def lint(score: NotationScore, *, chord_bars: tuple[tuple[int, ...], ...] | None = None) -> LintReport:
+def lint(
+    score: NotationScore,
+    *,
+    chord_bars: tuple[tuple[int, ...], ...] | None = None,
+    bar_keys: tuple[KeySignature, ...] | None = None,
+    voice_instruments: Mapping[int, str] | None = None,
+) -> LintReport:
     """Run every linter check and return a structured report.
 
     `chord_bars` carries the chord pitch classes sounding in each bar
@@ -98,9 +120,24 @@ def lint(score: NotationScore, *, chord_bars: tuple[tuple[int, ...], ...] | None
     the sounding chord (a maj7 voicing is intended, a rubbed second is
     not). Without it the two harmony checks are skipped — a chord-less
     score cannot state its intent.
+
+    `bar_keys` carries the key each of those bars belongs to, in the same
+    order, which is the score's own key unless a modulation moved it. The
+    passing-tone licence is a question about the bar's key, and the key
+    cannot be recovered from the chord — a lifted IV is spelled exactly
+    like the home key's V — so a lifted bar read against the home key
+    refuses the new key's own notes. Pass it wherever it is known; a bar
+    without it is read against the score's key.
+
+    `voice_instruments` maps engine voice ids to instrument names, and
+    it is what makes the range check per-instrument: each voice is
+    measured against its own compass instead of one compass for the
+    whole score (see `_check_range`). Without it every voice falls back
+    to the widest compass in the table, so pass it wherever the mapping
+    is known.
     """
     issues: list[LintIssue] = []
-    issues.extend(_check_range(score))
+    issues.extend(_check_range(score, voice_instruments))
     issues.extend(_check_measures_complete(score))
     issues.extend(_check_simultaneous_notes(score))
     issues.extend(_check_time_signature_consistency(score))
@@ -108,7 +145,7 @@ def lint(score: NotationScore, *, chord_bars: tuple[tuple[int, ...], ...] | None
     issues.extend(_check_nonempty(score))
     issues.extend(_check_ends_on_tonic(score))
     if chord_bars is not None:
-        issues.extend(_check_chord_tones(score, chord_bars))
+        issues.extend(_check_chord_tones(score, chord_bars, bar_keys))
         issues.extend(_check_dissonant_collisions(score, chord_bars))
     issues.extend(_check_phrase_gaps(score))
 
@@ -119,22 +156,46 @@ def lint(score: NotationScore, *, chord_bars: tuple[tuple[int, ...], ...] | None
     )
 
 
-def _check_range(score: NotationScore) -> list[LintIssue]:
+def _check_range(
+    score: NotationScore,
+    voice_instruments: Mapping[int, str] | None = None,
+) -> list[LintIssue]:
+    """Every note must be inside its own voice's compass.
+
+    The compass comes from `saimc.instruments`, keyed by the instrument
+    that voice is actually rendered with. A voice whose instrument is
+    unknown — no mapping passed, or a voice the mapping does not name —
+    is measured against the fallback compass instead, which is the
+    piano's; that is a weaker check than it looks and the message says
+    which compass was applied, so a fallback finding and a real one are
+    never confused.
+    """
     issues: list[LintIssue] = []
     for note in score.notes:
-        if note.pitch_midi < PIANO_MIN_MIDI or note.pitch_midi > PIANO_MAX_MIDI:
-            issues.append(
-                LintIssue(
-                    code=LintCode.NOTE_OUT_OF_RANGE,
-                    message=(
-                        f"pitch {note.pitch_midi} is outside the piano range "
-                        f"[{PIANO_MIN_MIDI}, {PIANO_MAX_MIDI}]"
-                    ),
-                    tick=note.tick,
-                    voice_id=note.voice_id,
-                    pitch_midi=note.pitch_midi,
-                )
+        instrument = (
+            voice_instruments.get(note.voice_id) if voice_instruments is not None else None
+        )
+        if instrument is None:
+            if FALLBACK_MIN_MIDI <= note.pitch_midi <= FALLBACK_MAX_MIDI:
+                continue
+            low, high, whose = FALLBACK_MIN_MIDI, FALLBACK_MAX_MIDI, "the fallback compass"
+        else:
+            span = range_for(instrument)
+            if span.contains(note.pitch_midi):
+                continue
+            low, high, whose = span.low_midi, span.high_midi, instrument
+        issues.append(
+            LintIssue(
+                code=LintCode.NOTE_OUT_OF_RANGE,
+                message=(
+                    f"pitch {note.pitch_midi} is outside the range "
+                    f"[{low}, {high}] of {whose}"
+                ),
+                tick=note.tick,
+                voice_id=note.voice_id,
+                pitch_midi=note.pitch_midi,
             )
+        )
     return issues
 
 
@@ -369,6 +430,7 @@ def _voice_neighbours(
 def _check_chord_tones(
     score: NotationScore,
     chord_bars: tuple[tuple[int, ...], ...],
+    bar_keys: tuple[KeySignature, ...] | None = None,
 ) -> list[LintIssue]:
     """Every pitched note must sound a chord tone of its bar, or be a legal one.
 
@@ -388,7 +450,18 @@ def _check_chord_tones(
     neighbours = _voice_neighbours(score)
     # Per bar, not per note: the scale a bar's harmony belongs to is a
     # property of the bar, and recovering it scans 24 candidate scales.
-    diatonic = [bar_diatonic_pcs(tuple(bar), score.key) for bar in chord_bars]
+    # The key it is recovered against is the bar's own, which is the
+    # score's unless a modulation moved it: a lifted bar read against the
+    # home key refuses the new key's notes wherever the lifted chord is
+    # also the home key's (a lifted IV reads as the home V).
+    keys = bar_keys or ()
+    diatonic = [
+        bar_diatonic_pcs(
+            tuple(bar),
+            keys[bar_index] if bar_index < len(keys) else score.key,
+        )
+        for bar_index, bar in enumerate(chord_bars)
+    ]
     for position, note in enumerate(score.notes):
         if note.voice_id == VOICE_PERCUSSION:
             continue
@@ -555,9 +628,9 @@ def _is_anacrusis_pickup(note: NoteEvent, ticks_per_bar: int, ppq: int) -> bool:
 
 
 __all__ = [
+    "FALLBACK_MAX_MIDI",
+    "FALLBACK_MIN_MIDI",
     "MAX_SIMULTANEOUS_NOTES",
-    "PIANO_MAX_MIDI",
-    "PIANO_MIN_MIDI",
     "LintCode",
     "LintIssue",
     "LintReport",

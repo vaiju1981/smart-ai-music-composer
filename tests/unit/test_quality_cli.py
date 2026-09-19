@@ -81,18 +81,24 @@ class TestLabel:
 
 
 class TestBarText:
+    # Synthetic bars: the axis is a field of the table rather than of the
+    # rendering, so any of the three does for a test of the text.
     def test_a_one_sided_minimum_reads_as_at_least(self) -> None:
         bar = QualityThreshold(
-            metric="x", minimum=0.45, maximum=None, rationale="r", hint="h"
+            metric="x", minimum=0.45, maximum=None, rationale="r", hint="h", axis="melody"
         )
         assert _bar_text(bar) == ">= 0.45"
 
     def test_a_one_sided_maximum_reads_as_at_most(self) -> None:
-        bar = QualityThreshold(metric="x", minimum=None, maximum=0.25, rationale="r", hint="h")
+        bar = QualityThreshold(
+            metric="x", minimum=None, maximum=0.25, rationale="r", hint="h", axis="melody"
+        )
         assert _bar_text(bar) == "<= 0.25"
 
     def test_a_two_sided_bar_reads_as_a_band(self) -> None:
-        bar = QualityThreshold(metric="x", minimum=7.0, maximum=24.0, rationale="r", hint="h")
+        bar = QualityThreshold(
+            metric="x", minimum=7.0, maximum=24.0, rationale="r", hint="h", axis="melody"
+        )
         assert _bar_text(bar) == "in [7.00, 24.00]"
 
     def test_every_shipped_threshold_renders(self) -> None:

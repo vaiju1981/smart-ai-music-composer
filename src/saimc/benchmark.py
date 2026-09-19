@@ -2,17 +2,27 @@
 
 Per `docs/roadmap.md` §8 (Parser robustness):
 
-- First-response schema validity ≥ 98%
-- Post-repair (or fallback) supported-prompt success ≥ 100% (implicit)
-- Field-level semantic exact-match ≥ 97%
-- Unsupported-request rejection accuracy ≥ 95%
-- p95 latency ≤ 5 seconds (Cloud reference)
+- First-response schema validity ≥ 98% (`QUALITY_FIRST_PASS_VALIDITY`)
+- Post-repair (or fallback) supported-prompt success = 100%
+  (`QUALITY_SUPPORTED_RESOLUTION`)
+- Field-level semantic exact-match ≥ 97% (`QUALITY_FIELD_LEVEL_ACCURACY`)
+- Unsupported-request rejection accuracy ≥ 95% (`QUALITY_UNSUPPORTED_REJECTION`)
+- p95 latency ≤ 5 seconds (Cloud reference) (`LATENCY_P95_MAX_S`)
 - A model that misses any quality threshold is disqualified regardless of speed or cost.
 
-This module defines the scoring logic; the actual orchestration (prompt the
-adapter, time it, compare against expected) lives in `scripts/benchmark_models.py`
-(which we will add in Slice 2.9). Keeping the scorer pure makes it unit-testable
-without a live Ollama host.
+All four quality bars are scored here. The orchestration that feeds them —
+prompting the adapter, timing it, comparing against expected — lives in
+`saimc/benchmark_cli.py`. Keeping the scorer pure makes it unit-testable without
+a live Ollama host, which is why `score_corpus` takes observations rather than a
+client.
+
+Two fields here distinguish "measured, and the measurement is zero" from "not
+measured at all", and both are `None` in the second case rather than `0.0`:
+`ParseObservation.raw_first_response_valid` (no model output was read) and
+`ParseObservation.cost_usd` (nothing meters or prices a call in this codebase).
+The distinction is the repo's existing convention for this (`PieceQuality.as_dict`)
+and it is not cosmetic: a `0.0` that means "free" and a `0.0` that means
+"unpriced" read the same to every consumer, and only one of them is evidence.
 """
 
 from __future__ import annotations
@@ -27,6 +37,11 @@ from saimc.spec import CompositionSpec
 QUALITY_FIRST_PASS_VALIDITY: float = 0.98
 QUALITY_FIELD_LEVEL_ACCURACY: float = 0.97
 QUALITY_UNSUPPORTED_REJECTION: float = 0.95
+QUALITY_SUPPORTED_RESOLUTION: float = 1.0
+"""§8: "after at most two repairs or deterministic fallback, *all* supported
+benchmark prompts parse successfully" — a 100% bar, and the reason it is 1.0
+rather than "very high"."""
+
 LATENCY_P95_MAX_S: float = 5.0
 CORPUS_SIZE: int = 100
 
@@ -58,12 +73,30 @@ class BenchmarkReport:
 
     client_label: str
     corpus_size: int
-    first_pass_validity: float
+    first_pass_validity: float | None
+    """`None` when no observation was judgeable — see
+    `ParseObservation.raw_first_response_valid`. Not `0.0`: a run in which no
+    model answered has not *failed* §8's first bar, it has left it unmeasured,
+    and `score_corpus` fails the report with a reason saying so."""
+
     field_level_accuracy: float
     unsupported_rejection_accuracy: float
+    resolution_rate: float
+    """Share of supported prompts that ended with a spec at all, by any route.
+
+    §8's "all supported benchmark prompts parse successfully". Distinct from
+    both of its neighbours: `field_level_accuracy` asks whether the resulting
+    spec was *right*, and `first_pass_validity` asks about attempt one. This one
+    asks only whether the prompt resolved, which is the bar the repair loop and
+    the fallback exist to meet."""
+
     latency_p50_s: float
     latency_p95_s: float
-    cost_total_usd: float
+    cost_total_usd: float | None
+    """The sum over observations, or `None` if any of them was unmetered. A
+    partly-priced run's total is unknown, and reporting the priced part as if it
+    were the whole is the defect this type is written to prevent."""
+
     passed: bool
     failure_reasons: tuple[str, ...] = ()
     outcomes: tuple[RecordOutcome, ...] = ()
@@ -75,6 +108,7 @@ class BenchmarkReport:
             "first_pass_validity": self.first_pass_validity,
             "field_level_accuracy": self.field_level_accuracy,
             "unsupported_rejection_accuracy": self.unsupported_rejection_accuracy,
+            "resolution_rate": self.resolution_rate,
             "latency_p50_s": self.latency_p50_s,
             "latency_p95_s": self.latency_p95_s,
             "cost_total_usd": self.cost_total_usd,
@@ -107,6 +141,17 @@ class ParseObservation:
     parseable JSON object that successfully validated against
     CompositionSpec. Subsequent repair attempts are rolled into the final
     `spec` / `error`.
+
+    **It is `bool | None`, and the `None` is a third state rather than a
+    missing value.** `None` means no model output was read at all — the host
+    was unreachable, none was configured, or the response body was not a
+    model's response — which is `saimc.parser.ParseResult.first_attempt`'s own
+    third state seen from here, and the same state a fallback-only run is in for
+    every record because it asks no model. It is not `False`: §8's bar is about
+    a model's first *response*, and a run with no response cannot fail it. The
+    flag was a hardcoded `True` on the fallback-only path until this was fixed,
+    which is why the one runnable benchmark reported a validity of `1.0` for a
+    run that called no model.
     """
 
     spec: CompositionSpec | None
@@ -115,8 +160,13 @@ class ParseObservation:
     attempts: int
     structured_output: bool
     latency_ms: int
-    raw_first_response_valid: bool
-    cost_usd: float
+    raw_first_response_valid: bool | None
+    cost_usd: float | None
+    """`None` when nothing measured a price, which is every call today: no
+    code in this repo meters or prices a model call, and the configured dev host
+    is a local proxy to a cloud provider whose inference is billed to an account
+    the app cannot read. A fallback-only run's `0.0` is a genuine zero — it makes
+    no call — and that is the distinction the type carries."""
 
 
 def score_record(record: BenchmarkRecord, obs: ParseObservation) -> RecordOutcome:
@@ -169,21 +219,44 @@ def score_corpus(
     observations: Iterable[ParseObservation],
 ) -> BenchmarkReport:
     """Aggregate per-record outcomes into a §8 report."""
+    # Materialized once, because the report reads the observations three times
+    # (paired with the outcomes, again for the first-pass numerator, and once
+    # for the cost total) while the signature promises only an `Iterable`. A
+    # generator argument satisfies the annotation and then dies on the second
+    # walk with `zip() argument 2 is shorter than argument 1` from the
+    # `strict=True` below — a caller-facing lie in a signature, fixed here
+    # rather than by narrowing the annotation onto every future caller.
+    observations = list(observations)
     outcomes = [score_record(r, o) for r, o in zip(records, observations, strict=True)]
 
-    first_pass_denominator = sum(1 for o in outcomes if o.expected_outcome == "accepted")
-    first_pass_numerator = sum(
-        1
-        for o, obs in zip(outcomes, observations, strict=True)
-        if o.expected_outcome == "accepted" and obs.raw_first_response_valid
-    )
-    first_pass_validity = (
-        first_pass_numerator / first_pass_denominator if first_pass_denominator else 0.0
+    supported = [
+        (outcome, obs)
+        for outcome, obs in zip(outcomes, observations, strict=True)
+        if outcome.expected_outcome == "accepted"
+    ]
+    # §8's first bar is scored over the supported prompts that produced
+    # something to judge. The reading is deliberate: a model that returns a
+    # valid spec for an *unsupported* request has failed rather than passed, so
+    # those records belong to the rejection bar and not this one — and a record
+    # whose first attempt read no model output belongs to neither, because a
+    # network failure is not a first response.
+    judged = [obs for _, obs in supported if obs.raw_first_response_valid is not None]
+    first_pass_validity: float | None = (
+        sum(1 for obs in judged if obs.raw_first_response_valid) / len(judged) if judged else None
     )
 
-    accepted_records = [o for o in outcomes if o.expected_outcome == "accepted"]
-    field_exact_count = sum(1 for o in accepted_records if o.field_exact_match)
-    field_level_accuracy = field_exact_count / len(accepted_records) if accepted_records else 0.0
+    # §8: "all supported benchmark prompts parse successfully" by any route.
+    # A supported prompt that produced no spec at all is the failure this bar
+    # names, and it is the only one of the four that the repair loop and the
+    # fallback exist to hold at 100%.
+    resolution_rate = (
+        sum(1 for outcome, _ in supported if outcome.matched) / len(supported)
+        if supported
+        else 0.0
+    )
+
+    field_exact_count = sum(1 for outcome, _ in supported if outcome.field_exact_match)
+    field_level_accuracy = field_exact_count / len(supported) if supported else 0.0
 
     unsupported = [o for o in outcomes if o.expected_outcome == "rejected"]
     unsupported_correct = sum(1 for o in unsupported if o.matched)
@@ -197,12 +270,26 @@ def score_corpus(
     else:
         p50 = p95 = 0.0
 
-    cost_total = sum(obs.cost_usd for obs in observations)
+    # A total is `None` unless every observation carried a price: one unmetered
+    # call makes the run's cost unknown, and summing the rest would report the
+    # priced part as though it were the whole.
+    priced = [obs.cost_usd for obs in observations if obs.cost_usd is not None]
+    cost_total: float | None = sum(priced) if len(priced) == len(observations) else None
 
     failures: list[str] = []
-    if first_pass_validity < QUALITY_FIRST_PASS_VALIDITY:
+    if first_pass_validity is None:
+        # A report that passed while its flagship bar went unmeasured would be
+        # the hardcoded `1.0` this change exists to remove, one layer up.
+        failures.append(
+            "first_pass_validity not measured: no supported observation recorded a first attempt"
+        )
+    elif first_pass_validity < QUALITY_FIRST_PASS_VALIDITY:
         failures.append(
             f"first_pass_validity {first_pass_validity:.2%} < {QUALITY_FIRST_PASS_VALIDITY:.0%}"
+        )
+    if resolution_rate < QUALITY_SUPPORTED_RESOLUTION:
+        failures.append(
+            f"resolution_rate {resolution_rate:.2%} < {QUALITY_SUPPORTED_RESOLUTION:.0%}"
         )
     if field_level_accuracy < QUALITY_FIELD_LEVEL_ACCURACY:
         failures.append(
@@ -222,6 +309,7 @@ def score_corpus(
         first_pass_validity=first_pass_validity,
         field_level_accuracy=field_level_accuracy,
         unsupported_rejection_accuracy=unsupported_rejection_accuracy,
+        resolution_rate=resolution_rate,
         latency_p50_s=p50,
         latency_p95_s=p95,
         cost_total_usd=cost_total,
@@ -270,6 +358,7 @@ __all__ = [
     "LATENCY_P95_MAX_S",
     "QUALITY_FIELD_LEVEL_ACCURACY",
     "QUALITY_FIRST_PASS_VALIDITY",
+    "QUALITY_SUPPORTED_RESOLUTION",
     "QUALITY_UNSUPPORTED_REJECTION",
     "BenchmarkReport",
     "ParseObservation",

@@ -177,6 +177,7 @@ def test_emit_manifest_records_the_quality_scorecard(tmp_path: Path) -> None:
         "register_separation_semitones",
         "tessitura_overlap_semitones",
         "bass_onset_patterns",
+        "harmony_pad_coverage",
     }
     assert metrics <= set(quality)
 
