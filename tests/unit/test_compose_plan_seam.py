@@ -172,9 +172,7 @@ percussion voice at all without `drum_set` — so a spec missing either
 would leave `percussion_rest_section` unobservable.
 """
 
-_PINNED_TEMPO_CODA_SPEC = CompositionSpec(
-    mood="calming", duration_seconds=59, seed=3, tempo_bpm=80
-)
+_PINNED_TEMPO_CODA_SPEC = CompositionSpec(mood="calming", duration_seconds=59, seed=3, tempo_bpm=80)
 """A coda over a repeated form, which a free tempo does not reach.
 
 With the tempo free, the search only enters its coda arm in the one gap its
@@ -906,7 +904,9 @@ class TestTheTextureCycleNeedsVoicesToChoose:
     def test_the_two_voice_spec_is_what_the_cycle_needs(self) -> None:
         """The premise, asserted rather than assumed."""
         arrangement = compose(_TWO_HARMONY_VOICES_SPEC).arrangement
-        assert arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps, (
+        assert (
+            arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps
+        ), (
             "the piece is not long, so `_active_harmony_voices` would return the "
             "voices untouched whatever the cycle said"
         )
@@ -1064,9 +1064,7 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
             for duration in (30, 60, 120, 180):
                 for seed in range(12):
                     spec = CompositionSpec(mood=mood, duration_seconds=duration, seed=seed)
-                    unlifted = compose(
-                        spec, plan=replace(default_plan(spec), modulation_offset=0)
-                    )
+                    unlifted = compose(spec, plan=replace(default_plan(spec), modulation_offset=0))
                     lifted_bar = unlifted.arrangement.total_bars - unlifted.arrangement.form_bars
                     for offset in (12, -12):
                         try:
@@ -1241,9 +1239,7 @@ _MELODY_SITES: dict[str, tuple[str, Any, Any]] = {
     "motif._apply_operation transposes by the plan's chord tone": (
         "chord_tone_degrees",
         4,
-        lambda shape: _apply_operation(
-            _TWO_CELL_MOTIF, "transpose", random.Random(0), shape=shape
-        ),
+        lambda shape: _apply_operation(_TWO_CELL_MOTIF, "transpose", random.Random(0), shape=shape),
     ),
     "engine._answer_leaps answers at the plan's leap size": (
         "leap_degrees",
@@ -1273,9 +1269,9 @@ _MELODY_SITES: dict[str, tuple[str, Any, Any]] = {
     "engine._walk_shape advances by the plan's chord tone": (
         "chord_tone_degrees",
         3,
-        lambda shape: _walk_shape(
-            _REPEATING_VARIANT, bar_ticks=4 * PPQ, tone_count=4, shape=shape
-        )[0],
+        lambda shape: _walk_shape(_REPEATING_VARIANT, bar_ticks=4 * PPQ, tone_count=4, shape=shape)[
+            0
+        ],
     ),
     "engine._closing_tone closes on the plan's chord tone": (
         "chord_tone_degrees",
@@ -1616,9 +1612,7 @@ class TestTheVoicesWritersReadTheirShape:
         )
 
 
-def _settled_pitches(
-    *, clearance: int, window: MelodyBand, melody_pitch: int
-) -> tuple[int, ...]:
+def _settled_pitches(*, clearance: int, window: MelodyBand, melody_pitch: int) -> tuple[int, ...]:
     """Where the settle pass puts a bed written at pitch 40 against this tune.
 
     The bed note is a chord tone two octaves under the tune's middle, so
@@ -1841,9 +1835,7 @@ def _kit_notes(
 
 def _hits(notes: list[NoteEvent]) -> list[tuple[int, int]]:
     """Every hit but the crash, as where and which drum it is."""
-    return [
-        (note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH
-    ]
+    return [(note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH]
 
 
 def _is_offbeat_eighth(tick: int) -> bool:
@@ -1853,9 +1845,7 @@ def _is_offbeat_eighth(tick: int) -> bool:
 
 def _crashes(notes: list[NoteEvent]) -> list[tuple[int, int]]:
     """The section downbeats, as where the crash is and how loud."""
-    return [
-        (note.tick, note.velocity) for note in notes if note.pitch_midi == DRUM_CRASH
-    ]
+    return [(note.tick, note.velocity) for note in notes if note.pitch_midi == DRUM_CRASH]
 
 
 class TestTheDrumWritersReadTheirShape:
@@ -1972,8 +1962,7 @@ class TestTheDrumWritersReadTheirShape:
         kit = DrumKit(style=DRUM_STYLES["rock"])
         assert kit.style is not None
         assert kit.style.fill("4/4", 0) != kit.style.fill("4/4", 1), (
-            "rock's two fills are the same bar, so no seed could be heard "
-            "in the handover"
+            "rock's two fills are the same bar, so no seed could be heard in the handover"
         )
         # The premise, so a cycle edit cannot silently move the attribution
         # of the difference below to the variant rather than the fill: at
@@ -1982,9 +1971,7 @@ class TestTheDrumWritersReadTheirShape:
         fill_bar = 3  # the first of two four-bar sections ends here
         filled = {
             seed: [
-                hit
-                for hit in _hits(_kit_notes(kit, seed=seed))
-                if hit[0] // (4 * PPQ) == fill_bar
+                hit for hit in _hits(_kit_notes(kit, seed=seed)) if hit[0] // (4 * PPQ) == fill_bar
             ]
             for seed in (0, 1)
         }
@@ -2018,9 +2005,7 @@ class TestTheDrumWritersReadTheirShape:
                 )
                 assert now.tick > was.tick
             else:
-                assert now.tick == was.tick, (
-                    "a swing displaces the offbeat eighth and nothing else"
-                )
+                assert now.tick == was.tick, "a swing displaces the offbeat eighth and nothing else"
 
     def test_a_bar_marked_on_its_downbeat_is_given_one_kick_not_two(self) -> None:
         """The bar's downbeat kick is one decision, not two.
@@ -2034,9 +2019,9 @@ class TestTheDrumWritersReadTheirShape:
         """
         swing = DrumKit(style=DRUM_STYLES["swing"])
         assert swing.style is not None
-        assert not [
-            h.offset_ticks for h in swing.style.variants["4/4"][0] if h.key == DRUM_KICK
-        ], "this style writes its own downbeat kick, so the collision cannot happen"
+        assert not [h.offset_ticks for h in swing.style.variants["4/4"][0] if h.key == DRUM_KICK], (
+            "this style writes its own downbeat kick, so the collision cannot happen"
+        )
         notes = _kit_notes(swing, bass_onsets=dict.fromkeys(range(8), (0, 480, 960, 1440)))
         assert [n for n in notes if n.tick == 0 and n.pitch_midi == DRUM_KICK], (
             "the downbeat was not marked at all"
@@ -2073,14 +2058,11 @@ class TestTheDrumWritersReadTheirShape:
         """
         kit = DrumKit(style=DRUM_STYLES["ballad"])
         assert kit.style is not None
-        variant = kit.style.pattern(
-            "4/4", rotation_index(0, 2, cycle=kit.rotation_cycle, seed=0)
-        )
+        variant = kit.style.pattern("4/4", rotation_index(0, 2, cycle=kit.rotation_cycle, seed=0))
         assert variant is not None
         levels = {h.velocity for h in variant if h.key == DRUM_KICK}
         assert len(levels) == 2, (
-            "this bar's pattern writes one kick level, so quietest and loudest "
-            "are the same reading"
+            "this bar's pattern writes one kick level, so quietest and loudest are the same reading"
         )
         quiet, loud = min(levels), max(levels)
         notes = _kit_notes(
@@ -2098,9 +2080,7 @@ class TestTheDrumWritersReadTheirShape:
             if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar in (480, 960, 1440)
         ]
         accented = [
-            n.velocity
-            for n in notes
-            if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar == 0
+            n.velocity for n in notes if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar == 0
         ]
         assert len(followed) == 3, "the bass's three attacks did not all draw a kick"
         assert len(accented) == 1, "the pattern's own downbeat kick is missing"
@@ -2230,9 +2210,7 @@ class TestAPlanTheEngineCannotHonourRefuses:
         with pytest.raises(CompositionEngineError) as caught:
             compose(_SPEC, plan=plan)
         assert caught.value.code is EngineErrorCode.DURATION_UNFULFILLABLE
-        assert "no Phase 1 form can reach" in str(caught.value) or "no (form" in str(
-            caught.value
-        )
+        assert "no Phase 1 form can reach" in str(caught.value) or "no (form" in str(caught.value)
 
     def test_an_intro_no_section_could_carve_never_reaches_the_engine(self) -> None:
         """The plan refuses it at construction, where both numbers are
@@ -2344,9 +2322,7 @@ class TestEveryPlanFieldIsCoveredByASeamCase:
         while the new name went uncovered."""
         declared = {field.name for field in fields(CompositionPlan)} - {"format"}
         extra = sorted(set().union(*_LAYER_INVENTORIES.values()) - declared)
-        assert not extra, (
-            f"the layer field sets name {extra}, which CompositionPlan does not have"
-        )
+        assert not extra, f"the layer field sets name {extra}, which CompositionPlan does not have"
 
     def test_no_field_is_claimed_by_two_layers(self) -> None:
         """Disjoint, not merely covering.

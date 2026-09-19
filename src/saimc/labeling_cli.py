@@ -149,9 +149,7 @@ def _range_text(low: int | None, high: int | None) -> str:
 _Choice = TypeVar("_Choice", bound=str)
 
 
-def _ask_choice(
-    label: str, values: tuple[_Choice, ...], *, allow_unset: bool
-) -> _Choice | None:
+def _ask_choice(label: str, values: tuple[_Choice, ...], *, allow_unset: bool) -> _Choice | None:
     """Ask for one value from a closed vocabulary, numbered.
 
     Returns `None` only when the vocabulary allows it and `-` was typed. Generic
@@ -171,15 +169,18 @@ def _ask_choice(
             return None
         if raw.isdigit() and 1 <= int(raw) <= len(values):
             return values[int(raw) - 1]
-        typer.echo(f"    enter a number from 1 to {len(values)}" + (
-            f", or {_UNSET} for unset" if allow_unset else ""
-        ))
+        typer.echo(
+            f"    enter a number from 1 to {len(values)}"
+            + (f", or {_UNSET} for unset" if allow_unset else "")
+        )
 
 
 def _ask_int(label: str, *, low: int | None, high: int | None, allow_unset: bool) -> int | None:
     """Ask for an integer inside a schema-declared range."""
     while True:
-        raw = typer.prompt(f"  {label} [{_range_text(low, high)}, or {_UNSET} to leave unset]").strip()
+        raw = typer.prompt(
+            f"  {label} [{_range_text(low, high)}, or {_UNSET} to leave unset]"
+        ).strip()
         if allow_unset and raw == _UNSET:
             return None
         if raw.lstrip("-").isdigit():
@@ -256,7 +257,9 @@ def _label_spec() -> dict[str, object]:
     tempo_node, tempo_nullable = _value_shape(props["tempo_bpm"], defs)
     key_node, key_nullable = _value_shape(props["key"], defs)
     key_values = _choices(key_node, defs) or ()
-    signature = _ask_choice("time_signature", _choices(props["time_signature"], defs) or (), allow_unset=False)
+    signature = _ask_choice(
+        "time_signature", _choices(props["time_signature"], defs) or (), allow_unset=False
+    )
     seed_node, seed_nullable = _value_shape(props["seed"], defs)
     humanization = _ask_choice(
         "humanization", _choices(props["humanization"], defs) or (), allow_unset=False
@@ -267,11 +270,15 @@ def _label_spec() -> dict[str, object]:
         "request_kind": RequestKind.MOOD_GENERATION.value,
         "mood": mood,
         "duration_seconds": _ask_int(
-            "duration_seconds", low=_bounds(duration_node)[0], high=_bounds(duration_node)[1],
+            "duration_seconds",
+            low=_bounds(duration_node)[0],
+            high=_bounds(duration_node)[1],
             allow_unset=False,
         ),
         "tempo_bpm": _ask_int(
-            "tempo_bpm", low=_bounds(tempo_node)[0], high=_bounds(tempo_node)[1],
+            "tempo_bpm",
+            low=_bounds(tempo_node)[0],
+            high=_bounds(tempo_node)[1],
             allow_unset=tempo_nullable,
         ),
         "key": _ask_choice("key", key_values, allow_unset=key_nullable),
@@ -374,11 +381,11 @@ def _report(corpus_path: Path, review_path: Path) -> None:
     )
     typer.echo(
         "  by field: "
-        + ", ".join(f"{entry.field} {entry.rate:.1%} ({entry.compared})" for entry in report.by_field)
+        + ", ".join(
+            f"{entry.field} {entry.rate:.1%} ({entry.compared})" for entry in report.by_field
+        )
     )
-    typer.echo(
-        f"  not compared (one value by construction): {', '.join(sorted(FIXED_BY_SCHEMA))}"
-    )
+    typer.echo(f"  not compared (one value by construction): {', '.join(sorted(FIXED_BY_SCHEMA))}")
     for reason in report.failure_reasons:
         typer.echo(f"  {reason}")
     for disagreement in report.disagreements:

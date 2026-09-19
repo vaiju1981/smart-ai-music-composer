@@ -879,9 +879,7 @@ class TestRenderSketch:
         # The full render masters the mix and encodes the delivered WAV.
         # The sketch never masters anything, and its OGG comes off the mix.
         full_master = next(cmd for cmd in full if "-af" in cmd)
-        assert full_master[full_master.index("-i") + 1] == str(
-            tmp_path / "full" / "audio.mix.wav"
-        )
+        assert full_master[full_master.index("-i") + 1] == str(tmp_path / "full" / "audio.mix.wav")
         assert full_master[-1] == str(tmp_path / "full" / "audio.wav")
         assert not (tmp_path / "full" / "audio.mix.wav").exists()
         assert not any("-af" in cmd for cmd in sketch), "a sketch is not mastered"

@@ -120,9 +120,7 @@ def resolve_ensemble(spec: CompositionSpec) -> Ensemble:
         melody=by_role[VoiceRole.MELODY][0],
         harmony=harmony[0] if harmony else None,
         bass=by_role[VoiceRole.BASS][0] if by_role.get(VoiceRole.BASS) else None,
-        percussion=by_role[VoiceRole.PERCUSSION][0]
-        if by_role.get(VoiceRole.PERCUSSION)
-        else None,
+        percussion=by_role[VoiceRole.PERCUSSION][0] if by_role.get(VoiceRole.PERCUSSION) else None,
         additional_harmonies=tuple(harmony[1:]),
     )
 
@@ -191,9 +189,7 @@ def normalize_instrumentation(raw: Any, mood: Any) -> list[dict[str, str]]:
         roles_present: set[str] = set()
         for item in raw:
             if not isinstance(item, dict):
-                raise ValueError(
-                    "instrumentation entries must be objects with role and instrument"
-                )
+                raise ValueError("instrumentation entries must be objects with role and instrument")
             entry = dict(item)
             roles_present.add(str(entry.get("role", "")))
             entries.append(entry)
@@ -201,9 +197,7 @@ def normalize_instrumentation(raw: Any, mood: Any) -> list[dict[str, str]]:
         if melody is not None:
             entries, roles_present = _fill_missing_roles(entries, roles_present, mood_key, melody)
         return _sorted_entries(entries)
-    raise ValueError(
-        "instrumentation must be an instrument name or a list of role-tagged entries"
-    )
+    raise ValueError("instrumentation must be an instrument name or a list of role-tagged entries")
 
 
 def _melody_instrument(entries: list[dict[str, str]]) -> str | None:

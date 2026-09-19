@@ -289,19 +289,17 @@ class EngineOutput:
             format=plan_payload["format"],
             sample_rate=plan_payload["sample_rate"],
             notes=tuple(PerformanceNoteEvent(**n) for n in plan_payload["notes"]),
-            controllers=tuple(
-                ControllerEvent(**c) for c in plan_payload.get("controllers", ())
-            ),
-            pitch_bends=tuple(
-                PitchBendEvent(**b) for b in plan_payload.get("pitch_bends", ())
-            ),
+            controllers=tuple(ControllerEvent(**c) for c in plan_payload.get("controllers", ())),
+            pitch_bends=tuple(PitchBendEvent(**b) for b in plan_payload.get("pitch_bends", ())),
         )
         arrangement = DurationArrangement(
             form_bars=arrangement_payload["form_bars"],
             template=ChordTemplate(
                 name=arrangement_payload["template"]["name"],
                 bars=arrangement_payload["template"]["bars"],
-                chords=tuple(ChordSlot(*chord) for chord in arrangement_payload["template"]["chords"]),
+                chords=tuple(
+                    ChordSlot(*chord) for chord in arrangement_payload["template"]["chords"]
+                ),
             ),
             repetition_count=arrangement_payload["repetition_count"],
             total_bars=arrangement_payload["total_bars"],
@@ -339,9 +337,7 @@ class EngineOutput:
         )
 
 
-def compose(
-    spec: CompositionSpec, *, plan: CompositionPlan | None = None
-) -> EngineOutput:
+def compose(spec: CompositionSpec, *, plan: CompositionPlan | None = None) -> EngineOutput:
     """Run the full composition pipeline against the spec and its plan.
 
     `plan=None` resolves to this spec's default plan, which is a
@@ -580,9 +576,7 @@ def _build_score(
         bar_keys.extend(section_bar_keys)
         # Terraced dynamics: the section's whole dynamic sits at its
         # step of the arc rather than drifting continuously.
-        velocity_scale = _section_velocity_scale(
-            section_idx, arrangement.repetition_count, arc
-        )
+        velocity_scale = _section_velocity_scale(section_idx, arrangement.repetition_count, arc)
         if velocity_scale != 1.0:
             section_notes = [
                 replace(
@@ -604,9 +598,7 @@ def _build_score(
             # on the bar line.
             ticks = bar_ticks(time_signature)
             last_bar = max(n.tick for n in bass_notes) // ticks
-            prev_bass = min(
-                n.pitch_midi for n in bass_notes if n.tick // ticks == last_bar
-            )
+            prev_bass = min(n.pitch_midi for n in bass_notes if n.tick // ticks == last_bar)
         melody_notes = [n for n in section_notes if n.voice_id == VOICE_MELODY]
         if melody_notes:
             prev_melody = melody_notes[-1].pitch_midi
@@ -684,9 +676,7 @@ def _build_score(
     # band is not known until the tune is — which is the same reason it
     # is a post-pass at all rather than a bound inside
     # `_generate_harmony_section`.
-    melody_pitches = [
-        note.pitch_midi for note in notes if note.voice_id == VOICE_MELODY
-    ]
+    melody_pitches = [note.pitch_midi for note in notes if note.voice_id == VOICE_MELODY]
     if melody_pitches:
         notes = _settle_harmony_register(
             notes,
@@ -770,13 +760,13 @@ def _build_score(
     tempo_changes: tuple[TempoPoint, ...] = ()
     if arrangement.ritardando_factor < 1.0:
         if arrangement.coda_bars > 0:
-            change_tick = arrangement.repetition_count * arrangement.form_bars * bar_ticks(
-                time_signature
+            change_tick = (
+                arrangement.repetition_count * arrangement.form_bars * bar_ticks(time_signature)
             )
         else:
-            change_tick = (
-                arrangement.total_bars - knobs.ritardando_bars
-            ) * bar_ticks(time_signature)
+            change_tick = (arrangement.total_bars - knobs.ritardando_bars) * bar_ticks(
+                time_signature
+            )
         tempo_changes = (
             TempoPoint(
                 tick=change_tick,
@@ -872,9 +862,7 @@ def _bass_register(instrument: str | None) -> BassRegister:
     )
 
 
-def _bass_ladder(
-    anchor: int, *, chord_root: int, chord_tones: tuple[int, ...]
-) -> tuple[int, ...]:
+def _bass_ladder(anchor: int, *, chord_root: int, chord_tones: tuple[int, ...]) -> tuple[int, ...]:
     """The chord's own tones rising from the bar's landing tone.
 
     Rung 0 is the landing tone itself and every later rung is the next
@@ -1061,8 +1049,7 @@ def _generate_section(
         # key, so the two travel together.
         bar_key = transposed_key(key, slot_offset)
         bar_pcs.extend(
-            tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones}))
-            for _ in range(dur)
+            tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones})) for _ in range(dur)
         )
         bar_keys.extend([bar_key] * dur)
 
@@ -1126,9 +1113,7 @@ def _generate_section(
                     if bass.window.low_midi <= p <= bass.window.high_midi
                 ]
                 last_bass = prev_bass
-                bass_pitch = min(
-                    in_register or [pinned], key=lambda p: (abs(p - last_bass), p)
-                )
+                bass_pitch = min(in_register or [pinned], key=lambda p: (abs(p - last_bass), p))
         else:
             # Which of the chord's tones the landing may choose from. The
             # plan's root motion narrows it to the root, so a chord change
@@ -1146,9 +1131,7 @@ def _generate_section(
                 for octaves in (1, 2)
             ]
             candidates = [
-                c
-                for c in candidates
-                if bass.window.low_midi <= c <= bass.window.high_midi
+                c for c in candidates if bass.window.low_midi <= c <= bass.window.high_midi
             ]
             if not candidates:
                 bass_pitch = _octave_down(chord_root, octaves=2)
@@ -1269,9 +1252,7 @@ def _generate_section(
             # look-ahead above, which is the mechanism the paragraph is
             # about, not by a clause repeated here.
             run = bar_index - last_gap_bar
-            due = run >= PHRASE_BARS or (
-                bar_index + 1 == apex_bar and run + 1 >= PHRASE_BARS
-            )
+            due = run >= PHRASE_BARS or (bar_index + 1 == apex_bar and run + 1 >= PHRASE_BARS)
             if not is_final_bar and not is_half_cadence and due:
                 breathe = True
             if is_half_cadence or breathe:
@@ -1293,9 +1274,7 @@ def _generate_section(
                 if _bar < dur - 1:
                     pickup = (chord_root, chord_tones)
                 else:
-                    next_slot = next(
-                        (c for c in chords[slot_index + 1 :] if c[2] > 0), None
-                    )
+                    next_slot = next((c for c in chords[slot_index + 1 :] if c[2] > 0), None)
                     if next_slot is not None:
                         pickup = (next_slot[0], next_slot[1])
             bar_melody = _melody_bar(
@@ -1774,7 +1753,9 @@ def _settle_voice(
     """
     for window in (registers.comfortable, registers.compass):
         above = _bed_goes_above(window, below_ceiling=below_ceiling, above_floor=above_floor)
-        if _can_clear_the_tune(window, below_ceiling=below_ceiling, above_floor=above_floor, above=above):
+        if _can_clear_the_tune(
+            window, below_ceiling=below_ceiling, above_floor=above_floor, above=above
+        ):
             break
     else:
         # Neither window has a register clear of the tune — a compass
@@ -1783,9 +1764,7 @@ def _settle_voice(
         # pass wrote them, because a bed in the tune's register is worth
         # more than no bed at all; the ones that rub the tune still go,
         # since a clash is never what keeping the register is for.
-        return [
-            note for note in voice_notes if not _crowds_melody(note, melody, note.pitch_midi)
-        ]
+        return [note for note in voice_notes if not _crowds_melody(note, melody, note.pitch_midi)]
     settled: list[NoteEvent] = []
     for note in voice_notes:
         if (
@@ -2136,9 +2115,7 @@ def _answer_leaps(
             # bar after this one answers, so the seam's turn counts here.
             seam = fixed_tail == 0 and landing == last_mutable
             room = seam or (
-                index + 3 <= last_mutable
-                and not settled[index + 2]
-                and not settled[index + 3]
+                index + 3 <= last_mutable and not settled[index + 2] and not settled[index + 3]
             )
             if out[landing] % 7 not in remainders:
                 # The landing needs the licence and cannot have it where it
@@ -2326,9 +2303,7 @@ def _snap_to_chord(
     """
     remainders = chord_tone_degrees(tone_count)
     candidates = [
-        degree + offset
-        for offset in (1, -1, 2, -2)
-        if (degree + offset) % 7 in remainders
+        degree + offset for offset in (1, -1, 2, -2) if (degree + offset) % 7 in remainders
     ]
 
     def cost(candidate: int) -> tuple[int, int]:
@@ -2429,10 +2404,7 @@ def _legal_slots(
 
     def clashes(index: int) -> bool:
         """Whether a non-chord tone here would rub another voice."""
-        return any(
-            (pitch_class(index) - other) % 12 in DISSONANT_INTERVALS
-            for other in avoid_pcs
-        )
+        return any((pitch_class(index) - other) % 12 in DISSONANT_INTERVALS for other in avoid_pcs)
 
     def needs_snapping(index: int) -> bool:
         if degrees[index] % 7 in remainders:
@@ -2464,9 +2436,7 @@ def _legal_slots(
             stop = start + 1 if tied[start] else start
             prefer_up = start > 0 and degrees[start] >= degrees[start - 1]
             neighbours = tuple(
-                degrees[position]
-                for position in (start - 1, stop + 1)
-                if 0 <= position < count
+                degrees[position] for position in (start - 1, stop + 1) if 0 <= position < count
             )
             for member in range(start, stop + 1):
                 degrees[member] = _snap_to_chord(
@@ -2477,10 +2447,7 @@ def _legal_slots(
                     shape=shape,
                 )
             changed = True
-    return [
-        (slot[0], slot[1], degrees[index], slot[3])
-        for index, slot in enumerate(slots)
-    ]
+    return [(slot[0], slot[1], degrees[index], slot[3]) for index, slot in enumerate(slots)]
 
 
 def _walk_shape(
@@ -2696,9 +2663,7 @@ def _chord_lattice(anchor: int, tone_count: int) -> tuple[int, ...]:
     """The degrees congruent to a tone of the bar's chord, within reach."""
     remainders = chord_tone_degrees(tone_count)
     reach = _START_REACH_DEGREES
-    return tuple(
-        offset for offset in range(-reach, reach + 1) if offset % 7 in remainders
-    )
+    return tuple(offset for offset in range(-reach, reach + 1) if offset % 7 in remainders)
 
 
 def _entrance_cost(entrance: int | None, prev_leap: int | None) -> int:
@@ -2908,9 +2873,7 @@ def _place_bar(
     for octave in range(-3, 4):
         shift = 12 * octave
         shifted = [pitch + shift for pitch in pitches]
-        outside = sum(
-            1 for pitch in shifted if not band.contains(pitch)
-        )
+        outside = sum(1 for pitch in shifted if not band.contains(pitch))
         rubbing = sum(
             1
             for pitch in shifted
@@ -2998,9 +2961,7 @@ def _pickup_pitch(
     return steps[0] if steps else None
 
 
-def _final_closing_degree(
-    rng: random.Random, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE
-) -> int:
+def _final_closing_degree(rng: random.Random, *, shape: MelodyShape = DEFAULT_MELODY_SHAPE) -> int:
     """The degree the piece's last bar lands on: the tonic, or its third.
 
     Home twice as often as its third, because a resolution onto the third
@@ -3115,9 +3076,7 @@ def _melody_bar(
     # bar short is the dropped notes rather than where the ratio lands — a
     # note the bar never plays is a note the phrase never had.
     written_ticks = (
-        bar_ticks - BREATH_TICKS
-        if not is_final_bar and (half_cadence or breathe)
-        else bar_ticks
+        bar_ticks - BREATH_TICKS if not is_final_bar and (half_cadence or breathe) else bar_ticks
     )
     degrees, durations = _walk_shape(
         variant,
@@ -3207,9 +3166,7 @@ def _melody_bar(
     # gesture is restated where it was drawn. Read from the lattice rather
     # than recomputed, so the plan's chord tone is read in one place.
     drawn = lattice[0]
-    starts = (
-        _apex_starts(anchor, len(chord_tones), shape=shape) if apex else lattice
-    )
+    starts = _apex_starts(anchor, len(chord_tones), shape=shape) if apex else lattice
     if closing_degree is not None:
         # The closing gesture is a chord tone of the bar, and the bar it
         # closes is one of the chord's tones tall. Which *one* is not
@@ -3222,9 +3179,7 @@ def _melody_bar(
         starts = tuple(
             offset
             for offset in starts
-            if _closing_tone(
-                closing_degree, offset, half_cadence=half_cadence, shape=shape
-            )
+            if _closing_tone(closing_degree, offset, half_cadence=half_cadence, shape=shape)
             is not None
         ) or (drawn,)
     bass_pcs = frozenset(pitch % 12 for pitch in bass_pitches)
@@ -3252,14 +3207,9 @@ def _melody_bar(
         closing = (
             None
             if closing_degree is None
-            else _closing_tone(
-                closing_degree, start, half_cadence=half_cadence, shape=shape
-            )
+            else _closing_tone(closing_degree, start, half_cadence=half_cadence, shape=shape)
         )
-        degrees = [
-            degree + start
-            for _offset, _duration, degree, _tie in rhythm_slots
-        ]
+        degrees = [degree + start for _offset, _duration, degree, _tie in rhythm_slots]
         if entry is not None and len(degrees) > 2:
             if rhythm_slots[0][3]:
                 # The bar opens on a tie: its first notehead sounds
@@ -3304,9 +3254,7 @@ def _melody_bar(
             avoid_pcs=avoid_pcs,
             shape=shape,
         )
-        pitches = [
-            scale_walk(degree, chord_root, scale) for _o, _d, degree, _t in candidate
-        ]
+        pitches = [scale_walk(degree, chord_root, scale) for _o, _d, degree, _t in candidate]
         opening = _opening_step(pitches, candidate)
         rank, shift, _outside, _rubbing, _entrance = _place_bar(
             pitches,
@@ -3561,9 +3509,7 @@ def _generate_percussion(
         bar_start = bar * ticks_per_bar
         for hit in pattern:
             jitter = bar_rng.uniform(0.92, 1.06)
-            velocity = round(
-                hit.velocity * style.velocity_scale * mood_scale * terrace * jitter
-            )
+            velocity = round(hit.velocity * style.velocity_scale * mood_scale * terrace * jitter)
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_PERCUSSION,
@@ -3589,9 +3535,7 @@ def _generate_percussion(
             if offset in kick_offsets:
                 continue
             jitter = bar_rng.uniform(0.92, 1.06)
-            velocity = round(
-                follow_level * style.velocity_scale * mood_scale * terrace * jitter
-            )
+            velocity = round(follow_level * style.velocity_scale * mood_scale * terrace * jitter)
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_PERCUSSION,
@@ -3606,9 +3550,7 @@ def _generate_percussion(
             # when the groove does not open with one. The kit's entrance
             # is a downbeat in this sense even when the form does not put a
             # section boundary there.
-            crash_velocity = round(
-                kit.crash_velocity * style.velocity_scale * mood_scale * terrace
-            )
+            crash_velocity = round(kit.crash_velocity * style.velocity_scale * mood_scale * terrace)
             notes.append(
                 NoteEvent(
                     voice_id=VOICE_PERCUSSION,
@@ -3645,23 +3587,54 @@ def _generate_percussion(
 # notated durations — that attack gap IS their articulation.
 SUSTAINED_INSTRUMENTS: frozenset[str] = frozenset(
     {
-        "violin", "viola", "cello", "contrabass", "fiddle", "strings",
-        "tremolo_strings", "flute", "piccolo", "recorder", "pan_flute",
-        "ocarina", "oboe", "english_horn", "bassoon", "clarinet",
-        "soprano_sax", "alto_sax", "tenor_sax", "baritone_sax",
-        "french_horn", "brass_section", "trumpet", "muted_trumpet",
-        "trombone", "tuba", "choir", "pipe_organ", "accordion",
-        "harmonica", "sitar", "harmonium", "bansuri", "sarangi",
-        "rudra_veena", "sarasvati_veena", "qanoon", "ud", "kora",
-        "shakuhachi", "shanai", "bagpipe",
+        "violin",
+        "viola",
+        "cello",
+        "contrabass",
+        "fiddle",
+        "strings",
+        "tremolo_strings",
+        "flute",
+        "piccolo",
+        "recorder",
+        "pan_flute",
+        "ocarina",
+        "oboe",
+        "english_horn",
+        "bassoon",
+        "clarinet",
+        "soprano_sax",
+        "alto_sax",
+        "tenor_sax",
+        "baritone_sax",
+        "french_horn",
+        "brass_section",
+        "trumpet",
+        "muted_trumpet",
+        "trombone",
+        "tuba",
+        "choir",
+        "pipe_organ",
+        "accordion",
+        "harmonica",
+        "sitar",
+        "harmonium",
+        "bansuri",
+        "sarangi",
+        "rudra_veena",
+        "sarasvati_veena",
+        "qanoon",
+        "ud",
+        "kora",
+        "shakuhachi",
+        "shanai",
+        "bagpipe",
     }
 )
 
 # Keyboard instruments that read a sustain pedal; organ voices sustain
 # by themselves and gain nothing from CC64.
-PEDAL_INSTRUMENTS: frozenset[str] = frozenset(
-    {"piano", "harpsichord", "celesta", "music_box"}
-)
+PEDAL_INSTRUMENTS: frozenset[str] = frozenset({"piano", "harpsichord", "celesta", "music_box"})
 
 # How far a legato note rings past its written end (never past the next
 # note's start: a same-pitch retrigger would re-attack the line).
@@ -3834,9 +3807,10 @@ def _build_performance_plan(
         if idx in tie_skips:
             continue
         start_us = microseconds_at_tick(note.tick, score.tempo)
-        duration_us = microseconds_at_tick(
-            tie_spans.get(idx, note.duration_ticks) + note.tick, score.tempo
-        ) - start_us
+        duration_us = (
+            microseconds_at_tick(tie_spans.get(idx, note.duration_ticks) + note.tick, score.tempo)
+            - start_us
+        )
         events.append(
             PerformanceNoteEvent(
                 voice_id=note.voice_id,
@@ -3853,8 +3827,8 @@ def _build_performance_plan(
         key=lambda i: events[i].start_us,
     )
     has_melody = bool(melody_sorted_idx)
-    melody_instrument = "drum_set" if drum_set_legacy else voice_instruments.get(
-        VOICE_MELODY, "piano"
+    melody_instrument = (
+        "drum_set" if drum_set_legacy else voice_instruments.get(VOICE_MELODY, "piano")
     )
     harmony_instruments = {
         voice: instrument
@@ -3918,18 +3892,18 @@ def _build_performance_plan(
         for measure in score.measures:
             position = measure.start_tick / total_ticks
             phrase_position = (measure.start_tick % phrase_ticks) / phrase_ticks
-            section_idx = (measure.start_tick // (arrangement.form_bars * ticks_per_bar)) if (
-                arrangement.form_bars > 0
-            ) else 0
+            section_idx = (
+                (measure.start_tick // (arrangement.form_bars * ticks_per_bar))
+                if (arrangement.form_bars > 0)
+                else 0
+            )
             value = min(
                 127,
                 round(
                     EXPRESSION_BASE
                     * _velocity_arc(position)
                     * _phrase_swell(phrase_position)
-                    * _section_velocity_scale(
-                        section_idx, arrangement.repetition_count, arc
-                    )
+                    * _section_velocity_scale(section_idx, arrangement.repetition_count, arc)
                 ),
             )
             for voice in swell_voices:
@@ -3977,9 +3951,7 @@ def _build_performance_plan(
         rng = _realization_stream(seed, _MELODIC_REALIZATION_SALT)
         kit_rng = _realization_stream(seed, _KIT_REALIZATION_SALT)
         timing_us = HUMANIZE_TIMING_US.get(humanization, HUMANIZE_TIMING_US["light"])
-        velocity_span = HUMANIZE_VELOCITY_SPAN.get(
-            humanization, HUMANIZE_VELOCITY_SPAN["light"]
-        )
+        velocity_span = HUMANIZE_VELOCITY_SPAN.get(humanization, HUMANIZE_VELOCITY_SPAN["light"])
         perc_timing_us = PERCUSSION_TIMING_US.get(humanization, PERCUSSION_TIMING_US["light"])
         humanized: list[PerformanceNoteEvent] = []
         for event in events:

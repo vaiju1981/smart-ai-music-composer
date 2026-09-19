@@ -218,8 +218,7 @@ class TestTheCanonicalHashes:
         base = _base()
         changed = replace(base, **{field_name: _MUTATIONS[field_name]})
         assert changed.compute_hash() != base.compute_hash(), (
-            f"{field_name} is not reflected in the canonical hash, so a stored "
-            "plan does not pin it"
+            f"{field_name} is not reflected in the canonical hash, so a stored plan does not pin it"
         )
 
     def test_two_identical_plans_hash_alike(self) -> None:
@@ -422,12 +421,8 @@ class TestTheDefaultsDescribeTodaysEngine:
         assert plan.rhythm_weights == tuple(motif.RHYTHM_WEIGHTS[mood].items())
         assert plan.bass_figures == motif.BASS_FIGURES[mood]
         assert plan.harmony_broken_chord == (mood in voices.BROKEN_CHORD_MOODS)
-        assert plan.percussion_velocity_scale == percussion.MOOD_VELOCITY_SCALE.get(
-            mood, 1.0
-        )
-        assert plan.cadence_degree == forms.CADENCE_DEGREE.get(
-            mood, forms.DEFAULT_CADENCE_DEGREE
-        )
+        assert plan.percussion_velocity_scale == percussion.MOOD_VELOCITY_SCALE.get(mood, 1.0)
+        assert plan.cadence_degree == forms.CADENCE_DEGREE.get(mood, forms.DEFAULT_CADENCE_DEGREE)
 
     @pytest.mark.parametrize("time_signature", TIME_SIGNATURES)
     def test_the_meter_decides_the_kit(self, time_signature: str) -> None:

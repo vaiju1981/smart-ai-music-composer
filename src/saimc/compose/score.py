@@ -114,9 +114,7 @@ def ticks_at_microsecond(microseconds: int, tempo: TempoMap) -> int:
         consumed += segment_us
         segment_start = point.tick
         bpm = point.bpm
-    return segment_start + microseconds_to_ticks(
-        microseconds - consumed, bpm, ppq=tempo.ppq
-    )
+    return segment_start + microseconds_to_ticks(microseconds - consumed, bpm, ppq=tempo.ppq)
 
 
 @dataclass(frozen=True)
@@ -210,8 +208,7 @@ class TempoMap:
         for point in self.changes:
             if point.tick <= previous_tick:
                 raise ValueError(
-                    f"tempo changes must ascend strictly; "
-                    f"{point.tick} follows {previous_tick}"
+                    f"tempo changes must ascend strictly; {point.tick} follows {previous_tick}"
                 )
             previous_tick = point.tick
 
@@ -279,9 +276,7 @@ class NotationScore:
             "tempo": {
                 "bpm": self.tempo.bpm,
                 "ppq": self.tempo.ppq,
-                "changes": [
-                    {"tick": p.tick, "bpm": p.bpm} for p in self.tempo.changes
-                ],
+                "changes": [{"tick": p.tick, "bpm": p.bpm} for p in self.tempo.changes],
             },
             "measures": [
                 {

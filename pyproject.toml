@@ -46,7 +46,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.8.0",
+    # Pinned exactly, like the other three: ruff is the only dev tool that
+    # *rewrites* source, so a floating version means a tree that is formatted
+    # on one machine and not on the next. Move it deliberately, with the
+    # reformat in its own commit.
+    "ruff==0.16.5",
     "mypy==1.13.0",
     "pytest==8.3.4",
     "pytest-cov==6.0.0",

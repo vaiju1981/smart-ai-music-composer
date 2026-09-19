@@ -95,9 +95,7 @@ class TestTheTablesTheBassWalkIsWrittenAgainst:
         pinned = [
             (template.name, slot)
             for template in templates
-            for slot in apply_final_cadence(
-                template, cadence_degree=4, seventh=True
-            ).chords
+            for slot in apply_final_cadence(template, cadence_degree=4, seventh=True).chords
             if slot.bass_degree is not None
         ]
         assert pinned, "nothing pins a bass degree, so the arm this guards is dead"
@@ -347,7 +345,9 @@ class TestTheHarmonicRhythm:
         assert all(slot.bars == 1 for slot in re_cut.chords)
 
     @pytest.mark.parametrize("pattern", [(1,), (4,), (2, 1, 1), (3,), (5, 3), (16,), (2, 2, 2, 2)])
-    def test_the_bar_count_holds_and_no_chord_is_cut_to_nothing(self, pattern: tuple[int, ...]) -> None:
+    def test_the_bar_count_holds_and_no_chord_is_cut_to_nothing(
+        self, pattern: tuple[int, ...]
+    ) -> None:
         """The two invariants every caller's arithmetic rests on.
 
         `(16,)` is here because the clamp is what makes it legal: a pattern

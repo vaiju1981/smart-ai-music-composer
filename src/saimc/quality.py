@@ -1054,8 +1054,7 @@ def _bar_line_pitch_classes(score: NotationScore) -> list[int | None] | None:
         at_line.setdefault(note.tick, note.pitch_midi)
     layout = _BarLayout.of(score)
     return [
-        None if (pitch := at_line.get(start)) is None else pitch % 12
-        for start in layout.starts
+        None if (pitch := at_line.get(start)) is None else pitch % 12 for start in layout.starts
     ]
 
 
@@ -1220,10 +1219,7 @@ def _uniform_rhythm_bars(score: NotationScore) -> set[int]:
         return set()
     commonest = _commonest_run_length(runs)
     return {
-        first + offset
-        for first, length in runs
-        if length == commonest
-        for offset in range(length)
+        first + offset for first, length in runs if length == commonest for offset in range(length)
     }
 
 

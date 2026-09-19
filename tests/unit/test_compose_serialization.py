@@ -263,9 +263,7 @@ class TestTheSidecarRecordsThePlan:
         assert back.plan is not None
         assert back.plan.compute_hash() == out.plan.compute_hash()
 
-    def test_the_plan_in_the_sidecar_is_the_canonical_document(
-        self, tmp_path: Path
-    ) -> None:
+    def test_the_plan_in_the_sidecar_is_the_canonical_document(self, tmp_path: Path) -> None:
         """The block written is the document the plan's own hash covers, so
         a reader can verify it rather than take it on trust."""
         out = _composed()
@@ -308,9 +306,7 @@ class TestTheSidecarRecordsThePlan:
         assert json.loads(path.read_text(encoding="utf-8"))["format"] == SIDECAR_FORMAT
 
     @pytest.mark.parametrize("written", ["EngineOutput:2", "EngineOutput", "NotationScore:1"])
-    def test_a_sidecar_of_another_version_is_refused(
-        self, tmp_path: Path, written: str
-    ) -> None:
+    def test_a_sidecar_of_another_version_is_refused(self, tmp_path: Path, written: str) -> None:
         """Refused rather than coerced: a newer sidecar may carry state this
         build would drop on the floor while still reporting success."""
         payload = _composed().to_sidecar()

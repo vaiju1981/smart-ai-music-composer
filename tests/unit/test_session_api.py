@@ -200,9 +200,7 @@ def model() -> ScriptedModel:
 
 
 @pytest.fixture
-def client(
-    roots: tuple[Path, Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch
-):
+def client(roots: tuple[Path, Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch):
     """An app with a model, over `tmp_path`, touching no broker."""
     monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
     app = create_app(
@@ -678,7 +676,11 @@ class TestVerdict:
         assert not PreferenceLog(roots[2]).path.exists()
 
     def test_a_verdict_the_store_never_accepted_writes_no_row(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+        self,
+        client: TestClient,
+        model: ScriptedModel,
+        roots: tuple[Path, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The ordering of the save and the append, which is only visible when
         the save fails.

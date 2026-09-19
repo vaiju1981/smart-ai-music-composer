@@ -125,13 +125,10 @@ class DurationArrangement:
             raise ValueError(f"coda_bars ({self.coda_bars}) must be < form_bars ({self.form_bars})")
         if not 0 <= self.intro_bars < self.form_bars:
             raise ValueError(
-                f"intro_bars ({self.intro_bars}) must be in [0, form_bars) "
-                f"({self.form_bars})"
+                f"intro_bars ({self.intro_bars}) must be in [0, form_bars) ({self.form_bars})"
             )
         if not 0.0 < self.ritardando_factor <= 1.0:
-            raise ValueError(
-                f"ritardando_factor must be in (0, 1]; got {self.ritardando_factor}"
-            )
+            raise ValueError(f"ritardando_factor must be in (0, 1]; got {self.ritardando_factor}")
 
     @property
     def total_bars_with_coda(self) -> int:
@@ -327,9 +324,7 @@ def _arrange_at_tempo(
     if base_form_bars is None:
         base_form_bars = _pick_base_form(mood, target_duration_seconds, time_signature, knobs)
     if base_form_bars not in knobs.form_sizes:
-        raise ValueError(
-            f"base_form_bars must be one of {knobs.form_sizes}; got {base_form_bars}"
-        )
+        raise ValueError(f"base_form_bars must be one of {knobs.form_sizes}; got {base_form_bars}")
 
     template = get_template_for_form(mood, base_form_bars, variant_index=variant_index)
     ticks_per_bar = bar_ticks(time_signature)
@@ -443,9 +438,7 @@ def _arrange_at_tempo(
                         intro_bars=knobs.intro_bars
                         if repetition_count >= knobs.arc_min_reps
                         else 0,
-                        ritardando_factor=knobs.ritardando_factor
-                        if may_ritardando
-                        else 1.0,
+                        ritardando_factor=knobs.ritardando_factor if may_ritardando else 1.0,
                     )
 
     # No in-tolerance arrangement exists — with or without a coda. Per
@@ -510,9 +503,7 @@ def _realised_rit_seconds(
 ) -> float:
     """Realized seconds for a piece whose final cadence bars slow down."""
     rit_ticks = min(knobs.ritardando_bars * ticks_per_bar, total_ticks)
-    return _realised_coda_seconds(
-        total_ticks - rit_ticks, rit_ticks, bpm, ritardando_factor
-    )
+    return _realised_coda_seconds(total_ticks - rit_ticks, rit_ticks, bpm, ritardando_factor)
 
 
 def _realised_coda_seconds(

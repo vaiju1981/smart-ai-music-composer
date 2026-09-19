@@ -319,9 +319,7 @@ def _comparable_labels(
     return labels
 
 
-def _by_id(
-    records: Iterable[BenchmarkRecord], label: str
-) -> dict[str, BenchmarkRecord]:
+def _by_id(records: Iterable[BenchmarkRecord], label: str) -> dict[str, BenchmarkRecord]:
     """Index by id, refusing a duplicate and naming which file repeats it.
 
     A resumed labeling pass appends, so an append that ran twice is the

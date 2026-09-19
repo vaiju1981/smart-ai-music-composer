@@ -258,6 +258,4 @@ def test_ritardando_engraves_as_metronome_marks() -> None:
     parsed = converter.parse(xml, format="musicxml")
     marks = list(parsed.recurse().getElementsByClass(tempo.MetronomeMark))
     assert len(marks) == 1 + len(out.notation_score.tempo.changes)
-    assert marks[-1].number == pytest.approx(
-        round(out.notation_score.tempo.bpm * 0.85, 1)
-    )
+    assert marks[-1].number == pytest.approx(round(out.notation_score.tempo.bpm * 0.85, 1))

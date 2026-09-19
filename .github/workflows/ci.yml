@@ -32,8 +32,14 @@ jobs:
         run: python -m pip install -e ".[dev,render,benchmark]"
       - name: Console scripts (a wrong entry point passes everything else)
         run: python scripts/check_console_scripts.py
-      - name: Ruff
+      - name: Ruff (lint)
         run: ruff check .
+      # The formatter is checked too, not just the linter. README tells a
+      # contributor to run `ruff format --check`; until this step existed that
+      # instruction was enforced by nothing, and the tree had drifted out of
+      # format in 47 files without a single red build.
+      - name: Ruff (format)
+        run: ruff format --check .
       - name: Mypy
         run: mypy src
       - name: Tests (coverage gate enforced via pyproject fail_under)

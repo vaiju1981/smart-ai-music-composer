@@ -167,9 +167,7 @@ class QueueUnavailable(Exception):
         self.job_id = job_id
 
 
-def enqueue_or_fail(
-    job: Job, storage: JobStorage, *, valkey_url: str | None = None
-) -> str:
+def enqueue_or_fail(job: Job, storage: JobStorage, *, valkey_url: str | None = None) -> str:
     """Put `job` on the queue, or mark it failed and refuse with a reason.
 
     The job is persisted by the caller before this runs. If the broker write

@@ -799,8 +799,7 @@ def scale_intervals(degree: int, mode: str) -> tuple[int, ...]:
     table = _SCALE_TABLES[mode]
     root = table[degree % 7]
     return tuple(
-        table[(degree + step) % 7] - root + (12 if degree + step >= 7 else 0)
-        for step in range(7)
+        table[(degree + step) % 7] - root + (12 if degree + step >= 7 else 0) for step in range(7)
     )
 
 

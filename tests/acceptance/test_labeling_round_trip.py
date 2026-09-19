@@ -183,9 +183,7 @@ class TestTheWizardLabelsTheWholeCorpus:
         """
         assert [r.id for r in reviewed] == [r.id for r in primary]
 
-    def test_the_outcomes_are_split_as_the_corpus_is(
-        self, reviewed: list[BenchmarkRecord]
-    ) -> None:
+    def test_the_outcomes_are_split_as_the_corpus_is(self, reviewed: list[BenchmarkRecord]) -> None:
         """The generated answers really are read off the labels, not emitted flat."""
         outcomes = [r.expected_outcome for r in reviewed]
         counts = {"accepted": outcomes.count("accepted"), "rejected": outcomes.count("rejected")}
@@ -225,8 +223,9 @@ class TestTheComparisonCanDisagree:
         clean = compare_labelings(primary, reviewed)
         target = next(r for r in reviewed if r.expected_outcome == "accepted")
         duration = target.expected_spec["duration_seconds"]  # type: ignore[index]
-        mutated = [_retouch(r, duration_seconds=duration + 1) if r.id == target.id else r
-                   for r in reviewed]
+        mutated = [
+            _retouch(r, duration_seconds=duration + 1) if r.id == target.id else r for r in reviewed
+        ]
 
         report = compare_labelings(primary, mutated)
         assert report.field_count == clean.field_count, "a mutation changed the field count"
@@ -241,8 +240,9 @@ class TestTheComparisonCanDisagree:
         """`expected_error` is one compared field, and it is the whole of a rejection."""
         target = next(r for r in reviewed if r.expected_outcome == "rejected")
         code = target.expected_error or ""
-        mutated = [_relabel_error(r, _other_error_code(code)) if r.id == target.id else r
-                   for r in reviewed]
+        mutated = [
+            _relabel_error(r, _other_error_code(code)) if r.id == target.id else r for r in reviewed
+        ]
 
         report = compare_labelings(primary, mutated)
         assert report.disagreeing_records == 1

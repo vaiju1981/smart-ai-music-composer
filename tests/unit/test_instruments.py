@@ -121,10 +121,7 @@ class TestTheWindows:
         """
         for name in INSTRUMENT_RANGES:
             window = bed_window(name)
-            octaves = {
-                pitch % 12
-                for pitch in range(window.low_midi, window.high_midi + 1)
-            }
+            octaves = {pitch % 12 for pitch in range(window.low_midi, window.high_midi + 1)}
             assert len(octaves) == 12, (name, window, sorted(octaves))
 
     def test_both_windows_are_contained_in_the_compass_the_linter_enforces(self) -> None:
@@ -227,11 +224,7 @@ class TestTheInstrumentIsACompositionalChoice:
                     seed=5,
                 )
             )
-            melody = [
-                n.pitch_midi
-                for n in out.notation_score.notes
-                if n.voice_id == 1
-            ]
+            melody = [n.pitch_midi for n in out.notation_score.notes if n.voice_id == 1]
             assert melody, instrument
             assert all(span.contains(pitch) for pitch in melody), instrument
             assert all(band.contains(pitch) for pitch in melody), (instrument, band)

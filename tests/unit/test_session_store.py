@@ -565,17 +565,20 @@ class TestTheTwoRootsKnowNothingOfEachOther:
         sessions = SessionStorage(root)
         log = PreferenceLog(root)
         session = sessions.create("p")
-        assert log.append(
-            [
-                Preference(
-                    draft_id="draft-one",
-                    at=_NOW,
-                    plan_hash="0" * 64,
-                    delta=SetBassMotion(motion=BassMotion.SPARSE),
-                    verdict="like",
-                )
-            ]
-        ) == 1
+        assert (
+            log.append(
+                [
+                    Preference(
+                        draft_id="draft-one",
+                        at=_NOW,
+                        plan_hash="0" * 64,
+                        delta=SetBassMotion(motion=BassMotion.SPARSE),
+                        verdict="like",
+                    )
+                ]
+            )
+            == 1
+        )
 
         assert [s.session_id for s in sessions.list_all()] == [session.session_id]
         before = log.path.read_bytes()

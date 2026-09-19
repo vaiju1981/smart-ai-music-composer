@@ -142,9 +142,7 @@ class TestTheSchemaMenus:
         assert _range_text(None, None) == "any integer"
 
     def test_a_reference_chain_is_followed_and_a_cycle_does_not_spin(self) -> None:
-        assert _deref({"$ref": "#/$defs/Mood"}, {"Mood": {"type": "string"}}) == {
-            "type": "string"
-        }
+        assert _deref({"$ref": "#/$defs/Mood"}, {"Mood": {"type": "string"}}) == {"type": "string"}
         looping = {"$ref": "#/$defs/A"}
         assert _deref(looping, {"A": looping}) is looping
 
@@ -349,12 +347,11 @@ class TestTheWizard:
         value the menu never offered.
         """
         corpus = _one_record_corpus(tmp_path, _accepted_record())
-        answers = _ACCEPTED_ANSWERS.replace(
-            "1\n1\n1\n2\n300\n", "1\n9\n1\n1\n2\nforty\n300\n"
-        )
+        answers = _ACCEPTED_ANSWERS.replace("1\n1\n1\n2\n300\n", "1\n9\n1\n1\n2\nforty\n300\n")
 
         result = runner.invoke(
-            app, ["--corpus", str(corpus), "--review", str(tmp_path / "review.jsonl")],
+            app,
+            ["--corpus", str(corpus), "--review", str(tmp_path / "review.jsonl")],
             input=answers,
         )
 
@@ -435,7 +432,8 @@ class TestTheReport:
         assert not review.exists()
 
     def test_a_pass_with_nothing_left_to_label_does_not_claim_to_write(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """The other half of the condition: a full file writes nothing either."""
         review = tmp_path / "review.jsonl"

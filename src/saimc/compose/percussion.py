@@ -185,10 +185,7 @@ ROCK = DrumStyle(
             # F2: a 16th-note snare roll building into the next section.
             _hits(
                 (0, DRUM_KICK, 88),
-                *[
-                    (BEAT + i * SIXTEENTH, DRUM_SNARE, 58 + i * 3)
-                    for i in range(12)
-                ],
+                *[(BEAT + i * SIXTEENTH, DRUM_SNARE, 58 + i * 3) for i in range(12)],
                 (3 * BEAT, DRUM_HIGH_TOM, 80),
             ),
         )

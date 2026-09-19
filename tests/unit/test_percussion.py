@@ -135,9 +135,7 @@ class TestEnginePercussionVoice:
         # The pattern's own family is what is asserted, so the bass's
         # onsets — every one of which draws a follow kick now — are added
         # to the allowed set rather than filtered out of the kicks.
-        bass_onsets = {
-            n.tick % ticks for n in out.notation_score.notes if n.voice_id == VOICE_BASS
-        }
+        bass_onsets = {n.tick % ticks for n in out.notation_score.notes if n.voice_id == VOICE_BASS}
         kicks = sorted({n.tick % ticks for n in drum_notes if n.pitch_midi == DRUM_KICK})
         assert set(kicks) <= {0, 240} | bass_onsets
         sounding_bars = {n.tick // ticks for n in drum_notes}
@@ -214,8 +212,9 @@ class TestEnginePercussionVoice:
             assert drums, "the swing kit wrote nothing"
             kicks = [n for n in drums if n.pitch_midi == DRUM_KICK]
             assert kicks, "the follow kicks did not reach the notation"
-            assert [h.offset_ticks for h in styles["swing"].variants["4/4"][0]
-                    if h.key == DRUM_KICK] == [], "this style now writes its own kick"
+            assert [
+                h.offset_ticks for h in styles["swing"].variants["4/4"][0] if h.key == DRUM_KICK
+            ] == [], "this style now writes its own kick"
 
     def test_a_swung_plan_moves_the_kits_offbeats_and_only_those(self) -> None:
         """The ratio reaches the notation end to end, and the bass does not.
@@ -319,9 +318,7 @@ class TestFillsAndDownbeats:
         arr = out.arrangement
         assert arr.repetition_count >= ARRANGEMENT_ARC_MIN_REPS
         ticks_per_bar = bar_ticks(out.time_signature)
-        hit_bars = {
-            n.tick // ticks_per_bar for n in self._drum_notes(out)
-        }
+        hit_bars = {n.tick // ticks_per_bar for n in self._drum_notes(out)}
         # The intro bars and the rest section are silent...
         rested = set(range(arr.intro_bars)) | set(
             range(
@@ -436,7 +433,11 @@ class TestSwing:
         assert variant is not None
         from saimc.compose.percussion import swing_offset
 
-        moved = [h for h in variant if swing_offset(h.offset_ticks, SWING_RATIO_TRIPLET) != h.offset_ticks]
+        moved = [
+            h
+            for h in variant
+            if swing_offset(h.offset_ticks, SWING_RATIO_TRIPLET) != h.offset_ticks
+        ]
         assert moved, "the swing kit writes no offbeat eighth for a ratio to move"
 
 

@@ -76,9 +76,7 @@ _CALM = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=0, key="C")
 """Clean before anything runs — found by scanning a corpus rather than by luck."""
 _ELECTRIC_30_0 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=30, seed=0, key="C")
 """The bed's two candidates tie here, both reaching a clean piece."""
-_ELECTRIC_120_22 = CompositionSpec(
-    mood=Mood.ELECTRIFYING, duration_seconds=120, seed=22, key="C"
-)
+_ELECTRIC_120_22 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=120, seed=22, key="C")
 """Three bars in report order, and clearing the tune's exposes the bed's.
 
 Re-found by sweeping the wider grid again once Phase F4 gave the melody's leap
@@ -104,9 +102,7 @@ variation is kept for the smaller leap it leaves while the bar itself stays
 missed — which is the shape Phase F4's floor made common by asking the line for
 a leap in the first place.
 """
-_ELECTRIC_90_32 = CompositionSpec(
-    mood=Mood.ELECTRIFYING, duration_seconds=90, seed=32, key="C"
-)
+_ELECTRIC_90_32 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=32, key="C")
 """The engine refuses the leap bar's first request here.
 
 Re-found by sweeping the wider grid again once Phase F4 gave the melody its
@@ -166,9 +162,7 @@ that helps, and `revise_draft`'s ratchet would then refuse the repair as a
 regression — the wrong answer arriving as a refused turn rather than as bad
 music.
 """
-_ELECTRIC_90_15 = CompositionSpec(
-    mood=Mood.ELECTRIFYING, duration_seconds=90, seed=15, key="C"
-)
+_ELECTRIC_90_15 = CompositionSpec(mood=Mood.ELECTRIFYING, duration_seconds=90, seed=15, key="C")
 """The deepest chain the music needs, and therefore the reason the bound is four.
 
 A corpus of 90 pieces cannot bound a search over 90 pieces, so the depth was
@@ -758,8 +752,6 @@ class TestTheTwoNewBars:
         assert outcome.remaining == ("step_ratio", "leap_recovery_ratio")
         assert outcome.stopped_by is not None
         assert outcome.stopped_by.metric == "step_ratio"
-
-
 
         """`stopped_by` is `None` at the bound on purpose: stopping because the
         caller allowed one move is not stopping because nothing works, and the

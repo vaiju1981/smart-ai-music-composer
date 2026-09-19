@@ -159,9 +159,7 @@ def _chord_offsets(slot, mode: str) -> tuple[int, ...]:
     return sevenths[slot.degree % 7] if slot.seventh else triads[slot.degree % 7]
 
 
-def _bar_degrees_and_offsets(
-    out, mood: str
-) -> list[tuple[int, tuple[int, ...], int, bool]]:
+def _bar_degrees_and_offsets(out, mood: str) -> list[tuple[int, tuple[int, ...], int, bool]]:
     """Mirror the engine's per-bar chord walk.
 
     Returns (degree, tonic-relative tones, key offset, pinned) per bar —
@@ -205,9 +203,7 @@ def _bar_degrees_and_offsets(
             else get_template_for_form(mood, arrangement.form_bars, variant_index=section)
         )
         section_offset = (
-            plan.modulation_offset
-            if section == arrangement.repetition_count - 1 and lifted
-            else 0
+            plan.modulation_offset if section == arrangement.repetition_count - 1 and lifted else 0
         )
         if section == arrangement.repetition_count - 1:
             template = apply_final_cadence(
@@ -445,9 +441,7 @@ class TestMusicalShape:
         bar_ticks_count = out.notation_score.ppq * 4
         bass = [n for n in out.notation_score.notes if n.voice_id == 0]
         first_bar = sorted(
-            (n.tick, n.duration_ticks, n.pitch_midi)
-            for n in bass
-            if n.tick < bar_ticks_count
+            (n.tick, n.duration_ticks, n.pitch_midi) for n in bass if n.tick < bar_ticks_count
         )
         assert first_bar
         onsets = tuple((tick, duration) for tick, duration, _pitch in first_bar)
@@ -553,19 +547,13 @@ class TestChordToneHarmony:
                 if note.tick % ticks_per_bar >= anticipation_zone and bar + 1 < len(bars):
                     # An anacrusis pickup anticipates the next bar's chord.
                     _next_degree, next_offsets, next_offset, _next_pinned = bars[bar + 1]
-                    sounding |= {
-                        (tonic + next_offset + offset) % 12 for offset in next_offsets
-                    }
+                    sounding |= {(tonic + next_offset + offset) % 12 for offset in next_offsets}
                 if note.pitch_midi % 12 in sounding:
                     continue
                 assert legal_non_chord_tone(
                     note,
                     prev=voice_notes[index - 1] if index else None,
-                    nxt=(
-                        voice_notes[index + 1]
-                        if index + 1 < len(voice_notes)
-                        else None
-                    ),
+                    nxt=(voice_notes[index + 1] if index + 1 < len(voice_notes) else None),
                     bar_start_tick=bar * ticks_per_bar,
                     ppq=score.ppq,
                     diatonic_pcs=bar_diatonic_pcs(
@@ -604,9 +592,7 @@ class TestChordToneHarmony:
             for degree in range(7):
                 for seventh in (False, True):
                     for borrowed in (False, True):
-                        slot = ChordSlot(
-                            degree=degree, bars=1, seventh=seventh, borrowed=borrowed
-                        )
+                        slot = ChordSlot(degree=degree, bars=1, seventh=seventh, borrowed=borrowed)
                         tones = _chord_offsets(slot, mode)
                         root = chord_root_offset(degree, key, borrowed=borrowed)
                         assert root == tones[0], (mode, degree, seventh, borrowed)
@@ -672,15 +658,20 @@ class TestChordToneHarmony:
                     f"bar {bar}: bass {pitch} not a chord tone of {sounding}"
                 )
 
-        matrix = [(*cell, None) for cell in _CELLS] + [
-            # The keyed pieces are the smallest sample that still contains
-            # both defects this bound ratchets on: a pinned slot landing
-            # above the walk's ceiling (electrifying in B, whose close lifts
-            # the final section, reaches 17) and a zero-bar truncation slot
-            # stepping the line to a note nobody heard (calming in F#,
-            # reaches 12). An unkeyed matrix sees neither.
-            (Mood.ELECTRIFYING, 60, seed, None, "B") for seed in (0, 1, 3)
-        ] + [(Mood.CALMING, 60, seed, None, "F#") for seed in (0, 1, 3)]
+        matrix = (
+            [(*cell, None) for cell in _CELLS]
+            + [
+                # The keyed pieces are the smallest sample that still contains
+                # both defects this bound ratchets on: a pinned slot landing
+                # above the walk's ceiling (electrifying in B, whose close lifts
+                # the final section, reaches 17) and a zero-bar truncation slot
+                # stepping the line to a note nobody heard (calming in F#,
+                # reaches 12). An unkeyed matrix sees neither.
+                (Mood.ELECTRIFYING, 60, seed, None, "B")
+                for seed in (0, 1, 3)
+            ]
+            + [(Mood.CALMING, 60, seed, None, "F#") for seed in (0, 1, 3)]
+        )
         held = changed = beyond_seven = 0
         for policy in (True, False):
             for mood, duration, seed, instrumentation, key in matrix:
@@ -692,9 +683,7 @@ class TestChordToneHarmony:
                         instrumentation=instrumentation,
                         key=key,
                     )
-                    plan = replace(
-                        default_plan(spec), section_close=close, bass_root_motion=policy
-                    )
+                    plan = replace(default_plan(spec), section_close=close, bass_root_motion=policy)
                     piece = compose(spec, plan=plan)
                     lowest = _lowest_bass_by_bar(piece)
                     where = f"{mood.value} {duration}s {key or 'engine-chosen'} {close}"
@@ -794,9 +783,7 @@ class TestChordToneHarmony:
                     assert legal_non_chord_tone(
                         note,
                         prev=voice_notes[index - 1] if index else None,
-                        nxt=(
-                            voice_notes[index + 1] if index + 1 < len(voice_notes) else None
-                        ),
+                        nxt=(voice_notes[index + 1] if index + 1 < len(voice_notes) else None),
                         bar_start_tick=bar * ticks_per_bar,
                         ppq=score.ppq,
                         diatonic_pcs=diatonic,
@@ -847,9 +834,9 @@ class TestChordToneHarmony:
         tonic = key_root_midi(out.key)
         ticks_per_bar = out.notation_score.ppq * 4
         bass = [n for n in out.notation_score.notes if n.voice_id == 0]
-        final_bar_notes = [n for n in bass if n.tick // ticks_per_bar == (
-            out.arrangement.total_bars_with_coda - 1
-        )]
+        final_bar_notes = [
+            n for n in bass if n.tick // ticks_per_bar == (out.arrangement.total_bars_with_coda - 1)
+        ]
         assert final_bar_notes
         assert final_bar_notes[0].pitch_midi % 12 == tonic % 12
 
@@ -1129,9 +1116,7 @@ class TestPhraseStructure:
             (n for n in out.notation_score.notes if n.voice_id == 1), key=lambda n: n.tick
         )
         rests = sum(
-            1
-            for prev, curr in pairwise(melody)
-            if curr.tick > prev.tick + prev.duration_ticks
+            1 for prev, curr in pairwise(melody) if curr.tick > prev.tick + prev.duration_ticks
         )
         assert rests >= 1, "expected at least one breath in the melody"
 
@@ -1158,9 +1143,7 @@ class TestPhraseStructure:
         bars = _bar_degrees_and_offsets(out, Mood.CALMING.value)
         assert len(bars) == out.arrangement.total_bars_with_coda
         downbeats = [
-            n
-            for n in score.notes
-            if n.voice_id == VOICE_MELODY and n.tick % ticks_per_bar == 0
+            n for n in score.notes if n.voice_id == VOICE_MELODY and n.tick % ticks_per_bar == 0
         ]
         assert downbeats
         for note in downbeats:
@@ -1797,9 +1780,7 @@ class TestMelodyWalk:
 
         def bar(degrees, **kw):
             slots = [(index * 480, 480, degree, 0) for index, degree in enumerate(degrees)]
-            return _legal_slots(
-                slots, tone_count=3, chord_root=60, scale=scale, **kw
-            )
+            return _legal_slots(slots, tone_count=3, chord_root=60, scale=scale, **kw)
 
         passing = [(0, 480, 0, 0), (480, 480, 1, 0), (960, 480, 2, 0)]
         assert bar((0, 1, 2)) == passing, "entered and left by a step is legal"
@@ -1992,15 +1973,12 @@ class TestMelodyWalk:
         # notes inside the band are one unbroken run, so nothing was
         # folded while its neighbours stayed put.
         inside = [band.contains(pitch) for pitch in shifted]
-        transitions = sum(
-            1 for earlier, later in pairwise(inside) if earlier != later
-        )
+        transitions = sum(1 for earlier, later in pairwise(inside) if earlier != later)
         assert any(inside), (shifted, inside)
         assert transitions <= 2, (shifted, inside)
         assert shifted[0] < band.low_midi or shifted[-1] > band.high_midi
         assert all(
-            abs(later - earlier) <= STEP_MAX_SEMITONES
-            for earlier, later in pairwise(shifted)
+            abs(later - earlier) <= STEP_MAX_SEMITONES for earlier, later in pairwise(shifted)
         ), shifted
 
     def test_place_bar_counts_rubbing_only_off_the_bar_chord(self) -> None:
@@ -2111,9 +2089,7 @@ class TestExpressionModel:
             (e for e in out.performance_plan.notes if e.voice_id == 1), key=lambda e: e.start_us
         )
         overlaps = sum(
-            1
-            for prev, curr in pairwise(melody)
-            if prev.start_us + prev.duration_us > curr.start_us
+            1 for prev, curr in pairwise(melody) if prev.start_us + prev.duration_us > curr.start_us
         )
         assert overlaps >= 1, "sustained instruments should blur into the next note"
 
@@ -2157,18 +2133,14 @@ class TestExpressionModel:
         assert out1.performance_plan.compute_hash() == out2.performance_plan.compute_hash()
 
     def test_ghost_notes_in_percussion_plan(self) -> None:
-        out = compose(
-            _spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set")
-        )
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set"))
         perc = [e for e in out.performance_plan.notes if e.voice_id == 2]
         assert perc
         ghosts = [e for e in perc if 20 <= e.velocity <= 35]
         assert ghosts, "expected quiet ghost hits in the drum plan"
 
     def test_drums_get_timing_scatter(self) -> None:
-        out = compose(
-            _spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set")
-        )
+        out = compose(_spec(Mood.ELECTRIFYING, duration=60, instrumentation="drum_set"))
         # Realized drum hits are not all on exact 16th multiples of the
         # quarter grid — the scatter is the point.
         quarter_us = 60_000_000 / out.notation_score.tempo.bpm
@@ -2408,9 +2380,7 @@ class TestRhythmVocabulary:
                 # the next chord or a licensed stepwise tone. Both are
                 # entered by step, and the harmony it belongs to is the
                 # bar it abuts.
-                into_next = (
-                    set(out.chord_bars[bar + 1]) if bar + 1 < len(out.chord_bars) else set()
-                )
+                into_next = set(out.chord_bars[bar + 1]) if bar + 1 < len(out.chord_bars) else set()
                 previous = melody[index - 1] if index else None
                 stepped = (
                     previous is not None
@@ -2740,9 +2710,7 @@ class TestS9Consolidation:
             for duration in (45, 120):
                 out = compose(_spec(mood, duration=duration, seed=1))
                 report = lint(out.notation_score, chord_bars=out.chord_bars)
-                assert not [
-                    i for i in report.issues if i.code == LintCode.DISSONANT_COLLISION
-                ]
+                assert not [i for i in report.issues if i.code == LintCode.DISSONANT_COLLISION]
 
     def test_coda_piece_ends_at_home(self) -> None:
         # The coda is the piece's true ending: its last melody note
@@ -2767,8 +2735,7 @@ def _melody_span_bars(out) -> list[float]:
             for n in score.notes
             if n.voice_id == VOICE_MELODY
             and not (
-                n.tick % ticks_per_bar == ticks_per_bar - eighth
-                and n.duration_ticks <= eighth
+                n.tick % ticks_per_bar == ticks_per_bar - eighth and n.duration_ticks <= eighth
             )
         ),
         key=lambda n: (n.tick, n.pitch_midi),
@@ -3093,9 +3060,7 @@ class TestHarmonyRegisterPass:
                     melody=instruments[VOICE_MELODY],
                     bed=instruments.get(VOICE_HARMONY),
                 )
-                melody = [
-                    n for n in out.notation_score.notes if n.voice_id == VOICE_MELODY
-                ]
+                melody = [n for n in out.notation_score.notes if n.voice_id == VOICE_MELODY]
                 melody_pitches = [n.pitch_midi for n in melody]
                 below_ceiling = min(melody_pitches) - HARMONY_MELODY_CLEARANCE
                 above_floor = max(melody_pitches) + HARMONY_MELODY_CLEARANCE
@@ -3129,16 +3094,18 @@ class TestHarmonyRegisterPass:
                                 pitches,
                             )
                     if voice_id == VOICE_MELODY:
-                        assert all(
-                            melody_band_here.contains(n.pitch_midi) for n in notes
-                        ), (mood, name, melody_band_here, pitches)
+                        assert all(melody_band_here.contains(n.pitch_midi) for n in notes), (
+                            mood,
+                            name,
+                            melody_band_here,
+                            pitches,
+                        )
                         assert max(pitches) - min(pitches) <= LINE_BAND_SEMITONES, (
                             mood,
                             name,
                             min(pitches),
                             max(pitches),
                         )
-
 
 
 class TestHarmonyVoice:
@@ -3184,9 +3151,7 @@ class TestHarmonyVoice:
         }
 
     def test_drum_set_piece_has_no_harmony_voice(self) -> None:
-        out = compose(
-            _spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set")
-        )
+        out = compose(_spec(Mood.ELECTRIFYING, duration=30, instrumentation="drum_set"))
         voices = {n.voice_id for n in out.notation_score.notes}
         assert 3 not in voices
         assert voices == {0, 1, 2}
@@ -3229,8 +3194,9 @@ class TestHarmonyVoice:
                 window,
                 sorted({n.pitch_midi for n in harmony}),
             )
-            assert all(range_for(instruments[VOICE_HARMONY]).contains(n.pitch_midi)
-                       for n in harmony)
+            assert all(
+                range_for(instruments[VOICE_HARMONY]).contains(n.pitch_midi) for n in harmony
+            )
 
     def test_harmony_never_rubs_against_the_melody(self) -> None:
         for mood in (Mood.CALMING, Mood.ELECTRIFYING, Mood.SLEEP):

@@ -172,9 +172,7 @@ def _check_range(
     """
     issues: list[LintIssue] = []
     for note in score.notes:
-        instrument = (
-            voice_instruments.get(note.voice_id) if voice_instruments is not None else None
-        )
+        instrument = voice_instruments.get(note.voice_id) if voice_instruments is not None else None
         if instrument is None:
             if FALLBACK_MIN_MIDI <= note.pitch_midi <= FALLBACK_MAX_MIDI:
                 continue
@@ -188,8 +186,7 @@ def _check_range(
             LintIssue(
                 code=LintCode.NOTE_OUT_OF_RANGE,
                 message=(
-                    f"pitch {note.pitch_midi} is outside the range "
-                    f"[{low}, {high}] of {whose}"
+                    f"pitch {note.pitch_midi} is outside the range [{low}, {high}] of {whose}"
                 ),
                 tick=note.tick,
                 voice_id=note.voice_id,
@@ -578,8 +575,7 @@ def _check_phrase_gaps(score: NotationScore) -> list[LintIssue]:
         (
             n
             for n in score.notes
-            if n.voice_id == VOICE_MELODY
-            and not _is_anacrusis_pickup(n, ticks_per_bar, score.ppq)
+            if n.voice_id == VOICE_MELODY and not _is_anacrusis_pickup(n, ticks_per_bar, score.ppq)
         ),
         key=lambda n: (n.tick, n.pitch_midi),
     )
@@ -621,10 +617,7 @@ def _flag_long_span(
 
 def _is_anacrusis_pickup(note: NoteEvent, ticks_per_bar: int, ppq: int) -> bool:
     """A pickup note: an eighth in the bar's final eighth-note slot."""
-    return (
-        note.tick % ticks_per_bar == ticks_per_bar - ppq // 2
-        and note.duration_ticks <= ppq // 2
-    )
+    return note.tick % ticks_per_bar == ticks_per_bar - ppq // 2 and note.duration_ticks <= ppq // 2
 
 
 __all__ = [

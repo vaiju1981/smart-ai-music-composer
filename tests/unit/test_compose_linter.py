@@ -323,9 +323,7 @@ class TestChordToneMembership:
         assert report.passed
 
     def test_without_chord_bars_the_check_is_skipped(self) -> None:
-        score = self._score(
-            [NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=1920)]
-        )
+        score = self._score([NoteEvent(voice_id=1, pitch_midi=65, tick=0, duration_ticks=1920)])
         report = lint(score)
         assert not any(i.code == LintCode.CHORD_TONE_VIOLATION for i in report.issues)
 
@@ -634,7 +632,9 @@ class TestPhraseGaps:
             NoteEvent(voice_id=1, pitch_midi=72, tick=11520, duration_ticks=1920),
             NoteEvent(voice_id=1, pitch_midi=72, tick=13440, duration_ticks=1920),
         ]
-        score = _build_score(measures=_bars(*[(b * 1920, (b + 1) * 1920) for b in range(8)]), notes=notes)
+        score = _build_score(
+            measures=_bars(*[(b * 1920, (b + 1) * 1920) for b in range(8)]), notes=notes
+        )
         report = lint(score)
         assert not any(i.code == LintCode.PHRASE_GAP_MISSING for i in report.issues)
 

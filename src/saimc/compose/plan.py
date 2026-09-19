@@ -507,9 +507,7 @@ class CompositionPlan:
             any(weight > 0.0 for weight in self.step_weights),
             "step_weights must carry some weight, or no step can be drawn",
         )
-        _require(
-            self.max_motif_span_degrees > 0, "max_motif_span_degrees must be positive"
-        )
+        _require(self.max_motif_span_degrees > 0, "max_motif_span_degrees must be positive")
         _require(self.leap_degrees > 0, "leap_degrees must be positive")
         _require(self.chord_tone_degrees > 0, "chord_tone_degrees must be positive")
         _weight_pairs("motif_operation_weights", self.motif_operation_weights)
@@ -536,8 +534,7 @@ class CompositionPlan:
             _require(bool(figure), "a bass figure must carry at least one note")
         _require(
             0 <= self.cadence_degree <= 6,
-            "cadence_degree is out of the scale, which runs 0..6 "
-            f"({self.cadence_degree})",
+            f"cadence_degree is out of the scale, which runs 0..6 ({self.cadence_degree})",
         )
         # A closed vocabulary, refused by name: the value reaches the notes
         # through `apply_section_close`, which raises on a name outside it —
@@ -647,8 +644,7 @@ class CompositionPlan:
 
         _require(
             self.drum_style_name is None or self.drum_style_name in DRUM_STYLES,
-            f"unknown drum style {self.drum_style_name!r}; known styles are "
-            f"{sorted(DRUM_STYLES)}",
+            f"unknown drum style {self.drum_style_name!r}; known styles are {sorted(DRUM_STYLES)}",
         )
         _require(bool(self.rotation_cycle), "rotation_cycle must not be empty")
         _require(
@@ -806,9 +802,7 @@ class CompositionPlan:
             cadence_seventh=payload["cadence_seventh"],
             section_close=payload["section_close"],
             harmonic_rhythm=(
-                None
-                if payload["harmonic_rhythm"] is None
-                else tuple(payload["harmonic_rhythm"])
+                None if payload["harmonic_rhythm"] is None else tuple(payload["harmonic_rhythm"])
             ),
             modulation_offset=payload["modulation_offset"],
             form_sizes=tuple(payload["form_sizes"]),
@@ -890,7 +884,6 @@ class CompositionPlan:
             apex_position=self.apex_position,
             line_band_semitones=self.line_band_semitones,
         )
-
 
     def harmony_voices(self) -> HarmonyVoices:
         """The voices layer, as the struct `engine.py` reads.
@@ -1013,9 +1006,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
     )
 
 
-def resolve_plan(
-    spec: CompositionSpec, plan: CompositionPlan | None = None
-) -> CompositionPlan:
+def resolve_plan(spec: CompositionSpec, plan: CompositionPlan | None = None) -> CompositionPlan:
     """The plan the engine composes under: `plan`, or this spec's default.
 
     The seam `compose` calls. Passing `None` resolves to exactly today's

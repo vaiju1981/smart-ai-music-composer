@@ -104,7 +104,9 @@ class TestTheProbeComesFirst:
     """`parse` asks the host what it can do before it decides what to send."""
 
     def test_the_first_request_is_the_probe_and_the_reply_is_schema_enforced(self) -> None:
-        recorder = _Recorder(_probe_pong(), _reply(_assistant(json.dumps(_SPEC.model_dump(mode="json")))))
+        recorder = _Recorder(
+            _probe_pong(), _reply(_assistant(json.dumps(_SPEC.model_dump(mode="json"))))
+        )
         result = asyncio.run(_parse(recorder))
 
         assert recorder.paths == ["/api/chat", "/api/chat"]

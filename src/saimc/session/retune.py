@@ -309,9 +309,7 @@ def proposal(rows: Iterable[Preference]) -> Proposal:
         # Sorted by the request's own spelling before it is ranked, because the
         # set is not an order and the ranking only settles ties by the order it
         # is given. Without this the same log prints differently in two runs.
-        unheld=_rank(
-            measured[key] for key in sorted(served_by_a_repair) if key not in tabled_keys
-        ),
+        unheld=_rank(measured[key] for key in sorted(served_by_a_repair) if key not in tabled_keys),
     )
 
 

@@ -301,7 +301,9 @@ class CompositionSpec(BaseModel):
         description="Phase 1 mood vocabulary: calming | electrifying | sleep.",
     )
     instrumentation: list[InstrumentationEntry] = Field(
-        default_factory=lambda: [InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO)],
+        default_factory=lambda: [
+            InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO)
+        ],
         min_length=1,
         max_length=ENSEMBLE_MAX_VOICES,
         description=(
@@ -369,8 +371,7 @@ class CompositionSpec(BaseModel):
         roles = [entry.role for entry in entries]
         if roles.count(VoiceRole.MELODY) != 1:
             raise ValueError(
-                "ensemble must have exactly one melody role; got "
-                f"{roles.count(VoiceRole.MELODY)}"
+                f"ensemble must have exactly one melody role; got {roles.count(VoiceRole.MELODY)}"
             )
         if roles.count(VoiceRole.BASS) > 1:
             raise ValueError("ensemble supports at most one bass entry")
@@ -393,15 +394,14 @@ class CompositionSpec(BaseModel):
             # and accompaniment are both the piano (one Salamander
             # voice under the kit), exactly as the Phase 2 drum-set
             # branch composed it.
-            drum_set_ok = (
-                duplicates == {Instrument.PIANO}
-                and roles == [VoiceRole.MELODY, VoiceRole.BASS, VoiceRole.PERCUSSION]
-            )
+            drum_set_ok = duplicates == {Instrument.PIANO} and roles == [
+                VoiceRole.MELODY,
+                VoiceRole.BASS,
+                VoiceRole.PERCUSSION,
+            ]
             if not (font_only_ok or drum_set_ok):
                 names = ", ".join(sorted(i.value for i in duplicates))
-                raise ValueError(
-                    f"each instrument may appear at most once in an ensemble: {names}"
-                )
+                raise ValueError(f"each instrument may appear at most once in an ensemble: {names}")
         return self
 
 

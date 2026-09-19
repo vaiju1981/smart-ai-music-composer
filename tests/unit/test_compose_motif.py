@@ -140,7 +140,14 @@ class TestVaryMotif:
                 seen.add("ornament")
             else:
                 seen.add("inversion")
-        assert seen == {"repetition", "transposition", "sequence", "inversion", "truncation", "ornament"}
+        assert seen == {
+            "repetition",
+            "transposition",
+            "sequence",
+            "inversion",
+            "truncation",
+            "ornament",
+        }
 
     def test_inversion_mirrors_steps(self) -> None:
         motif: Motif = (
@@ -159,9 +166,7 @@ class TestVaryMotif:
         pytest.fail("inversion never drawn in 500 rolls")
 
     def test_truncation_keeps_at_least_one_cell(self) -> None:
-        motif: Motif = tuple(
-            MotifCell(step=0 if i == 0 else 1, length_ticks=PPQ) for i in range(6)
-        )
+        motif: Motif = tuple(MotifCell(step=0 if i == 0 else 1, length_ticks=PPQ) for i in range(6))
         for seed in range(500):
             variant = vary_motif(motif, random.Random(seed))
             assert len(variant.motif) >= 1
@@ -246,9 +251,7 @@ class TestBassFigures:
         """
         for mood, figures in BASS_FIGURES.items():
             for figure in figures:
-                assert all(
-                    0 <= rung <= 3 for _start, _length, rung in figure
-                ), mood
+                assert all(0 <= rung <= 3 for _start, _length, rung in figure), mood
 
     def test_the_plain_figure_is_in_every_mood(self) -> None:
         # It is what a piece's final bar plays whatever its slot drew, so
@@ -303,10 +306,7 @@ class TestMotifMelody:
                 {"mood": mood.value, "duration_seconds": 60, "seed": 42}
             )
             mel = _melody(compose(spec))
-            intervals = {
-                abs(b.pitch_midi - a.pitch_midi)
-                for a, b in itertools.pairwise(mel)
-            }
+            intervals = {abs(b.pitch_midi - a.pitch_midi) for a, b in itertools.pairwise(mel)}
             assert len(intervals) >= 6, (mood, sorted(intervals))
 
     def test_motif_recurs_across_bars(self) -> None:
@@ -321,10 +321,7 @@ class TestMotifMelody:
         for note in mel:
             bars.setdefault(note.tick // (4 * PPQ), []).append(note.pitch_midi)
         for pitches in bars.values():
-            contour = tuple(
-                (b - a > 0) - (b - a < 0)
-                for a, b in itertools.pairwise(pitches)
-            )
+            contour = tuple((b - a > 0) - (b - a < 0) for a, b in itertools.pairwise(pitches))
             if len(contour) >= 3:
                 contours[contour] += 1
         assert contours, "no bar carried a long-enough contour"
@@ -517,9 +514,7 @@ class TestMotifMelody:
             assert instruments, instrument
             for voice_id, name in instruments.items():
                 span = range_for(name)
-                pitches = [
-                    n.pitch_midi for n in out.notation_score.notes if n.voice_id == voice_id
-                ]
+                pitches = [n.pitch_midi for n in out.notation_score.notes if n.voice_id == voice_id]
                 for pitch in pitches:
                     assert span.contains(pitch), (instrument, name, pitch)
 
@@ -559,9 +554,7 @@ class TestMotifMelody:
         for mood in Mood:
             for seed in range(33):
                 spec = CompositionSpec(mood=mood, seed=seed, duration_seconds=60)
-                report = score_piece(
-                    compose(spec).notation_score, piece=f"{mood.value}-{seed}"
-                )
+                report = score_piece(compose(spec).notation_score, piece=f"{mood.value}-{seed}")
                 reports.append(report)
                 assert report.step_ratio >= 0.45, (mood, seed, report)
                 assert 7 <= report.range_semitones <= 24, (mood, seed, report)
