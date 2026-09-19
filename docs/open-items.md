@@ -58,10 +58,16 @@ and has no release gate asserted against it.
 ### A2. The live model sweep (G4) — blocked behind A1
 
 **What is open.** `saimc-benchmark --label <model>` has never been run against a
-live host. `_run_with_client` raises `NotImplementedError` in the shipped path, so
-§8's 98/97/95 bars have never been scored against a model, and `MODELS.md` — which
-§10 #3 requires to exist before a candidate may be requested at all — holds no
-approved model. `docs/model-fine-tuning.md:112` still says so in prose.
+live host, so §8's 98/97/95 bars have never been scored against a model, and
+`MODELS.md` — which §10 #3 requires to exist before a candidate may be requested
+at all — holds no approved model. `docs/model-fine-tuning.md:112` still says so in
+prose.
+
+The runner itself is **not** what is missing: `_run_with_client`
+(`src/saimc/benchmark_cli.py:128`) sweeps the corpus, owns and closes the adapter,
+and measures latency around the whole `parse_prompt` call. This file said it raised
+`NotImplementedError`; that was true until `235d2df` and was already false when
+this file was written. What is open is the *run*, not the code that would do it.
 
 **Why it waits.** Scoring a model against single-labeler labels measures it
 against those labels' errors as much as against the product rules. A1 first.
@@ -186,14 +192,6 @@ scan the diff locally, as the project rule asks.
 `shellcheck` is not installed, so the bootstrap section in `run.sh` has only been
 through `bash -n`. It is verified by hand in three modes (stale install, missing
 render build, unknown service), but not by a linter.
-
-### D4. `ruff format` is not enforced
-
-Measured today: **47 files would be reformatted, 93 already formatted.** CI runs
-`ruff check` only. Enforcing the formatter needs a mass-reformat commit whose diff
-would bury whatever feature lands beside it, which is why it is a decision rather
-than a tidy-up. The number has grown since the same measurement was taken earlier
-in the project (25 files), so this drifts upward on its own.
 
 ---
 
