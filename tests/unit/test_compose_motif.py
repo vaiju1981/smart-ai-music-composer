@@ -9,7 +9,8 @@ from dataclasses import replace
 
 import pytest
 
-from saimc.compose.engine import _melody_band_for, compose
+from saimc.compose.engine import compose
+from saimc.compose.harmony import melody_band_for
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_BASS_FIGURES,
@@ -44,7 +45,7 @@ def _melody_band(out) -> MelodyBand:
     melody instrument's, so a test that wants to check the placement
     honours it has to ask which instrument carried the line — and ask the
     engine, not the instrument table, because a melody and an
-    accompaniment are placed together: `_melody_band_for` raises the tune
+    accompaniment are placed together: `melody_band_for` raises the tune
     when the accompaniment's own range needs an octave underneath it, so
     a piano over a strings bed is written in 63-84 and a piano alone in
     56-77. Asserting against `melody_band` alone would fail the pieces
@@ -59,7 +60,7 @@ def _melody_band(out) -> MelodyBand:
             bed = voice.instrument
     if melody is None:
         raise AssertionError("the score has no melody voice instrument")
-    return _melody_band_for(melody=melody, bed=bed)
+    return melody_band_for(melody=melody, bed=bed)
 
 
 class TestGenerateMotif:
@@ -338,9 +339,9 @@ class TestMotifMelody:
         # integration-level oracle lives in test_compose_engine; the S6
         # walking bass made "interval above the bass note" a wrong oracle
         # here, since the bass now plays inversions too.)
-        from saimc.compose.engine import _melody_bar
         from saimc.compose.forms import bar_diatonic_pcs, scale_intervals
         from saimc.compose.linter import legal_non_chord_tone
+        from saimc.compose.melody import melody_bar
         from saimc.compose.motif import MotifVariant
         from saimc.compose.score import PPQ, KeySignature
         from saimc.instruments import MelodyBand
@@ -351,7 +352,7 @@ class TestMotifMelody:
         for seed in range(20):
             rng = random.Random(seed)
             motif = generate_motif(rng, bar_ticks=4 * PPQ)
-            notes = _melody_bar(
+            notes = melody_bar(
                 band=MelodyBand(low_midi=60, high_midi=84),
                 variant=MotifVariant(motif=motif),
                 chord_root=chord_root,
@@ -365,7 +366,7 @@ class TestMotifMelody:
                 position=0.5,
                 ticks_per_bar=4 * PPQ,
                 seed_for_variation=seed,
-                # The calming figures, as a plan resolves them: `_melody_bar`
+                # The calming figures, as a plan resolves them: `melody_bar`
                 # reads a weight table rather than a mood, because the mood
                 # lookup belongs to the plan's own default.
                 shape=replace(

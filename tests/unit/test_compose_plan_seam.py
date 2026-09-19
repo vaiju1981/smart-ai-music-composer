@@ -44,23 +44,26 @@ from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
+    compose,
+)
+from saimc.compose.ensemble import resolve_ensemble
+from saimc.compose.forms import SECTION_CLOSES
+from saimc.compose.harmony import (
+    generate_harmony_section,
+    melody_band_for,
+    settle_harmony_register,
+)
+from saimc.compose.linter import LintCode
+from saimc.compose.melody import (
     _answer_leaps,
     _apex_starts,
     _bent_step,
     _closing_tone,
     _final_closing_degree,
-    _generate_harmony_section,
-    _generate_percussion,
-    _melody_band_for,
-    _settle_harmony_register,
     _snap_to_chord,
     _start_offsets,
     _walk_shape,
-    compose,
 )
-from saimc.compose.ensemble import resolve_ensemble
-from saimc.compose.forms import SECTION_CLOSES
-from saimc.compose.linter import LintCode
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_MELODY_SHAPE,
@@ -81,6 +84,7 @@ from saimc.compose.percussion import (
     EIGHTH,
     SWING_RATIO_TRIPLET,
     DrumKit,
+    generate_percussion,
     rotation_index,
 )
 from saimc.compose.plan import (
@@ -157,7 +161,7 @@ _TWO_HARMONY_VOICES_SPEC = CompositionSpec(
 )
 """Two harmony voices, which is what the texture cycle needs to say anything.
 
-`_SPEC`'s ensemble has one, and `_active_harmony_voices` returns the voices
+`_SPEC`'s ensemble has one, and `active_harmony_voices` returns the voices
 untouched when there is only one to choose between — see
 `test_a_single_harmony_voice_leaves_the_cycle_unread`.
 """
@@ -728,7 +732,7 @@ _SECTION_SPECS: dict[str, CompositionSpec] = {
 """The spec each knob needs to be observable at all — see the note above."""
 
 _ENERGY_KNOBS = tuple(sorted(name for name in _SECTION_KNOBS if name.startswith("section_energy")))
-"""The four terraces, in the order `_section_velocity_scale` reads them."""
+"""The four terraces, in the order `section_velocity_scale` reads them."""
 
 
 class TestTheSectionsLayerIsLive:
@@ -763,7 +767,7 @@ class TestTheSectionsLayerIsLive:
 
 
 class TestTheVelocityTerracesAreReadAtEveryCallSite:
-    """`_section_velocity_scale` is read four times, and one read hides another.
+    """`section_velocity_scale` is read four times, and one read hides another.
 
     B3's lesson one level down. The parametrised case above passes
     whichever call site is reading the plan — a mutation of any terrace
@@ -815,7 +819,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
     def test_the_kits_own_notes_follow_the_plan(self, knob: str) -> None:
         """The kit's terrace, read from the percussion voice alone.
 
-        It has to be read from there: `_generate_percussion` writes voice 2
+        It has to be read from there: `generate_percussion` writes voice 2
         and nothing else does, so these velocities cannot move because some
         other site read the plan.
         """
@@ -827,7 +831,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         assert before, "the premise: this spec composes with a kit at all"
         assert after != before, (
             f"{knob} does not reach the kit's velocities: the terrace in "
-            "`_generate_percussion` is not reading the plan's arc"
+            "`generate_percussion` is not reading the plan's arc"
         )
 
     @pytest.mark.parametrize("knob", _ENERGY_KNOBS)
@@ -838,13 +842,13 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         assert before, "the premise: this spec composes with an expression lane"
         assert self._expression_values(compose(_SPEC, plan=changed)) != before, (
             f"{knob} does not reach the CC11 lane: the controller site in "
-            "`_build_performance_plan` is not reading the plan's arc"
+            "`build_performance_plan` is not reading the plan's arc"
         )
 
     def test_the_coda_follows_the_plans_middle_terrace(self) -> None:
         """The fourth site, and the one whose index falls through.
 
-        `_build_score` calls `_section_velocity_scale` a fourth time for the
+        `_build_score` calls `section_velocity_scale` a fourth time for the
         coda, passing `repetition_count` as both the section index and the
         count. That index is never 0, so the opening arm is out; it is never
         `repetition_count - 1`, so the final arm is out; and it is never
@@ -855,7 +859,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         middle's mutation without an effect.
 
         The spec has to be the pinned-tempo one. With the tempo free the
-        coda always has a single repetition, and `_section_velocity_scale`
+        coda always has a single repetition, and `section_velocity_scale`
         returns 1.0 below two — so the loop is skipped and the site is inert.
         """
         plan = default_plan(_PINNED_TEMPO_CODA_SPEC)
@@ -895,7 +899,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
 class TestTheTextureCycleNeedsVoicesToChoose:
     """A texture cycle says which harmony voices play, so it needs two.
 
-    `_active_harmony_voices` returns the voices untouched with fewer than
+    `active_harmony_voices` returns the voices untouched with fewer than
     two, or on a piece too short to have an arc. That is why `_SPEC` does
     not cover this knob above, and the second test here pins it: the cycle
     is not ignored, it has nothing to decide.
@@ -907,7 +911,7 @@ class TestTheTextureCycleNeedsVoicesToChoose:
         assert (
             arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps
         ), (
-            "the piece is not long, so `_active_harmony_voices` would return the "
+            "the piece is not long, so `active_harmony_voices` would return the "
             "voices untouched whatever the cycle said"
         )
         harmony = {
@@ -923,7 +927,7 @@ class TestTheTextureCycleNeedsVoicesToChoose:
         assert _fingerprint(compose(_TWO_HARMONY_VOICES_SPEC, plan=changed)) != _fingerprint(
             compose(_TWO_HARMONY_VOICES_SPEC, plan=base)
         ), (
-            "harmony_texture_cycle does not reach the engine: `_active_harmony_voices` "
+            "harmony_texture_cycle does not reach the engine: `active_harmony_voices` "
             "is not reading the plan's cycle"
         )
 
@@ -945,7 +949,7 @@ class TestTheTextureCycleNeedsVoicesToChoose:
 class TestTheDrumRestFollowsThePlan:
     """The hole in the texture is a section of the plan's choosing.
 
-    `_generate_percussion` takes a set of silent bars, and on a long piece
+    `generate_percussion` takes a set of silent bars, and on a long piece
     that set is the intro plus section `percussion_rest_section`. The
     second test reads the silence back out of the score rather than the
     plan, so a rest window computed from a constant would be caught.
@@ -991,7 +995,7 @@ class TestTheDrumRestFollowsThePlan:
 
         moved = self._silent_bars(percussion_rest_section=rest)
         assert set(window(rest)) <= set(moved), (
-            "percussion_rest_section does not reach `_generate_percussion`: the "
+            "percussion_rest_section does not reach `generate_percussion`: the "
             "rest window is not the section the plan names"
         )
         assert not set(window(1)) & set(moved), "the default's section was rested anyway"
@@ -1150,7 +1154,7 @@ class TestTheMelodyLayerIsLive:
     Every one of these was a module constant or an inline literal before
     B5: the step table and the motif's span in `motif.py`, the tie
     probability and the apex fraction inline in `_generate_section`, the
-    rhythm figures looked up by mood inside `_melody_bar`, and the line
+    rhythm figures looked up by mood inside `melody_bar`, and the line
     band from `instruments.LINE_BAND_SEMITONES`.
     """
 
@@ -1306,7 +1310,7 @@ hand and the plan checks its own — and every case was checked to move its
 reader's answer before it was written down: a case whose two shapes agree
 would be a guard that cannot fail.
 
-`_melody_bar`'s own inline reads are absent because they are gone. The
+`melody_bar`'s own inline reads are absent because they are gone. The
 drawn start now comes from the lattice `_start_offsets` builds, and the
 final bar's closing degree from `_final_closing_degree` — both because an
 inline expression reading a field that six helpers also read cannot be
@@ -1512,7 +1516,7 @@ def _harmony_notes(
     sites reads it, so only a direct call can attribute a read to a site.
     The window is the instrument's own, as the pass is handed it.
     """
-    return _generate_harmony_section(
+    return generate_harmony_section(
         chords=[(60, (0, 4, 7), 2)],
         section_start_tick=0,
         ticks_per_bar=_BAR,
@@ -1627,7 +1631,7 @@ def _settled_pitches(*, clearance: int, window: MelodyBand, melody_pitch: int) -
         duration_ticks=_BAR,
         velocity=70,
     )
-    settled = _settle_harmony_register(
+    settled = settle_harmony_register(
         [
             NoteEvent(
                 voice_id=VOICE_HARMONY,
@@ -1667,8 +1671,8 @@ class TestTheClearanceIsReadOnBothSidesOfTheTune:
     def test_the_melody_band_is_raised_by_the_clearance_the_shape_names(self) -> None:
         """The first of the three reads: the room the bed needs under the
         tune is what raises the tune's own band."""
-        narrow = _melody_band_for(melody="piano", bed="brass_section", clearance=3)
-        wide = _melody_band_for(melody="piano", bed="brass_section", clearance=6)
+        narrow = melody_band_for(melody="piano", bed="brass_section", clearance=3)
+        wide = melody_band_for(melody="piano", bed="brass_section", clearance=6)
         assert wide.low_midi - narrow.low_midi == 3
         assert wide.high_midi - wide.low_midi == narrow.high_midi - narrow.low_midi, (
             "the raise moved the band's width, and the walk needs the twelfth it holds"
@@ -1821,7 +1825,7 @@ def _kit_notes(
     `bass_onsets` defaults to empty for the same reason: the kick only
     follows a bass that was written.
     """
-    return _generate_percussion(
+    return generate_percussion(
         kit=kit,
         time_signature="4/4",
         form_bars=form_bars,

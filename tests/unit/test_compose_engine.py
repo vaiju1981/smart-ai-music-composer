@@ -10,48 +10,21 @@ from itertools import pairwise
 
 import pytest
 
-from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS, bar_ticks
-from saimc.compose.engine import (
-    _KIT_REALIZATION_SALT,
-    _MAX_ENTRANCE_SEMITONES,
-    _MELODIC_REALIZATION_SALT,
-    _RANK_RUBBING,
-    _START_REACH_DEGREES,
-    _WALK_REACH_DEGREES,
+from saimc.compose.bass import (
     BASS_HIGH_MIDI,
     BASS_WALK_HIGH_MIDI,
     BASS_WALK_LOW_MIDI,
     BassRegister,
+    _bass_ladder,
+    bass_figure_pitches,
+    bass_register,
+)
+from saimc.compose.duration import ARRANGEMENT_ARC_MIN_REPS, bar_ticks
+from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
-    _aim_leap,
-    _answer_leaps,
-    _answered,
-    _apex_starts,
-    _bass_figure_pitches,
-    _bass_ladder,
-    _bass_register,
-    _bed_goes_above,
-    _bound_walk,
-    _can_clear_the_tune,
     _chord_intervals,
-    _close_bar,
-    _entrance_cost,
-    _entry_answer,
-    _hold_tied_pairs,
-    _into_harmony_register,
-    _legal_slots,
-    _licit_line,
-    _melody_band_for,
-    _merged_tie_runs,
-    _octaves_in_window,
-    _opening_step,
-    _place_bar,
-    _realization_stream,
-    _settle_harmony_register,
-    _snap_to_chord,
-    _start_offsets,
     _truncate_template_for_coda,
     compose,
 )
@@ -68,9 +41,44 @@ from saimc.compose.forms import (
     scale_intervals,
     transposed_key,
 )
+from saimc.compose.harmony import (
+    _bed_goes_above,
+    _can_clear_the_tune,
+    _into_harmony_register,
+    _octaves_in_window,
+    melody_band_for,
+    settle_harmony_register,
+)
 from saimc.compose.linter import LintCode, legal_non_chord_tone, lint
+from saimc.compose.melody import (
+    _MAX_ENTRANCE_SEMITONES,
+    _RANK_RUBBING,
+    _START_REACH_DEGREES,
+    _WALK_REACH_DEGREES,
+    _aim_leap,
+    _answer_leaps,
+    _answered,
+    _apex_starts,
+    _bound_walk,
+    _close_bar,
+    _entrance_cost,
+    _entry_answer,
+    _hold_tied_pairs,
+    _legal_slots,
+    _licit_line,
+    _opening_step,
+    _place_bar,
+    _snap_to_chord,
+    _start_offsets,
+)
 from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
 from saimc.compose.percussion import DRUM_KICK, DRUM_STYLES
+from saimc.compose.performance import (
+    _KIT_REALIZATION_SALT,
+    _MELODIC_REALIZATION_SALT,
+    _merged_tie_runs,
+    _realization_stream,
+)
 from saimc.compose.plan import default_plan
 from saimc.compose.score import (
     VOICE_BASS,
@@ -865,7 +873,7 @@ class TestBassRootMotion:
         """The pitch class the left hand states on each bar line.
 
         The landing tone is rung 0 of the slot's figure, which every
-        figure puts at the bar line — `_bass_figure_pitches` guarantees
+        figure puts at the bar line — `bass_figure_pitches` guarantees
         it, and the guarantee is what makes the bar's first bass note the
         tone the walk chose.
         """
@@ -975,7 +983,7 @@ class TestBassRootMotion:
         Narrowing the landing tones moves the bass in every piece — and
         also the tune, because the melody refuses a candidate that would
         rub against the bar's sounding bass, and the bed, because
-        `_settle_harmony_register` re-places it under wherever the tune
+        `settle_harmony_register` re-places it under wherever the tune
         ended up. The kit's *written* notes never move: it reads neither
         the bass nor the tune. Both counts are asserted against zero as a
         premise, so a matrix whose tunes all happened to sit still cannot
@@ -1295,14 +1303,14 @@ class TestBassFigures:
 
     A figure is written in rungs, not pitches, so one shape serves every
     chord of a progression: `_bass_ladder` is the chord's own tones
-    rising from the bar's landing tone, and `_bass_figure_pitches` turns
+    rising from the bar's landing tone, and `bass_figure_pitches` turns
     the rungs into pitches on the chord the slot actually has, in the
     register the walk actually landed in. Each rule here is one the
     accompaniment pays for if it goes wrong.
 
     The cases call the helper with `ceiling=BASS_HIGH_MIDI` — the piano's
     own, which is what these rules were written against. What a piece
-    actually passes is `_bass_register(...).ceiling`, the same number
+    actually passes is `bass_register(...).ceiling`, the same number
     narrowed to the compass of the voice holding the bass.
     """
 
@@ -1319,7 +1327,7 @@ class TestBassFigures:
         )
 
     def test_a_figure_resolves_to_chord_tones_above_its_landing_tone(self) -> None:
-        resolved = _bass_figure_pitches(
+        resolved = bass_figure_pitches(
             PLAIN_BASS_FIGURE,
             anchor=48,
             chord_root=60,
@@ -1340,7 +1348,7 @@ class TestBassFigures:
         gave it.
         """
         driving = BASS_FIGURES["electrifying"][0]
-        assert _bass_figure_pitches(
+        assert bass_figure_pitches(
             driving,
             anchor=60,
             chord_root=60,
@@ -1364,7 +1372,7 @@ class TestBassFigures:
         """
         driving = BASS_FIGURES["electrifying"][0]
         assert (
-            _bass_figure_pitches(
+            bass_figure_pitches(
                 driving,
                 anchor=BASS_HIGH_MIDI + 1,
                 chord_root=BASS_HIGH_MIDI + 1,
@@ -1375,7 +1383,7 @@ class TestBassFigures:
         )
         # One semitone lower and the same figure still states its downbeat,
         # so the case is about the ceiling rather than about a high anchor.
-        assert _bass_figure_pitches(
+        assert bass_figure_pitches(
             driving,
             anchor=BASS_HIGH_MIDI,
             chord_root=BASS_HIGH_MIDI,
@@ -1450,7 +1458,7 @@ class TestBassFigures:
         for mood, figures in BASS_FIGURES.items():
             for figure in figures:
                 for anchor, (chord_root, tones) in zip((48, 55, 60), chords, strict=True):
-                    resolved = _bass_figure_pitches(
+                    resolved = bass_figure_pitches(
                         figure,
                         anchor=anchor,
                         chord_root=chord_root,
@@ -1485,18 +1493,18 @@ class TestTheBassRegister:
         left hand the engine was written for is unchanged by construction —
         which is why the whole corpus is byte-identical across this change.
         """
-        assert _bass_register(None) == BassRegister(
+        assert bass_register(None) == BassRegister(
             window=MelodyBand(low_midi=BASS_WALK_LOW_MIDI, high_midi=BASS_WALK_HIGH_MIDI),
             ceiling=BASS_HIGH_MIDI,
         )
-        assert _bass_register("piano") == _bass_register(None)
+        assert bass_register("piano") == bass_register(None)
         # A cello's floor is C2, above the walk's own bottom; its top leaves
         # the ceiling alone.
-        assert _bass_register("cello") == BassRegister(
+        assert bass_register("cello") == BassRegister(
             window=MelodyBand(low_midi=36, high_midi=60), ceiling=BASS_HIGH_MIDI
         )
         # A tuba stops at Bb3, under the ceiling, so both narrow together.
-        assert _bass_register("tuba") == BassRegister(
+        assert bass_register("tuba") == BassRegister(
             window=MelodyBand(low_midi=28, high_midi=58), ceiling=58
         )
 
@@ -1512,7 +1520,7 @@ class TestTheBassRegister:
         the second.
         """
         for name in INSTRUMENT_RANGES:
-            register = _bass_register(name)
+            register = bass_register(name)
             assert register.window.high_midi <= register.ceiling, name
 
     def test_no_instrument_is_written_a_bass_note_it_cannot_sound(self) -> None:
@@ -2570,15 +2578,15 @@ class TestArrangementArc:
     # --- terraced dynamics ---
 
     def test_velocity_terracing_shapes_the_sections(self) -> None:
-        from saimc.compose.engine import _section_velocity_scale
+        from saimc.compose.dynamics import section_velocity_scale
 
         # One repetition: no terracing at all.
-        assert _section_velocity_scale(0, 1) == 1.0
+        assert section_velocity_scale(0, 1) == 1.0
         # Four repetitions: thin opening, peak before the close, eased close.
-        assert _section_velocity_scale(0, 4) == pytest.approx(0.82)
-        assert _section_velocity_scale(1, 4) == 1.0
-        assert _section_velocity_scale(2, 4) == pytest.approx(1.12)
-        assert _section_velocity_scale(3, 4) == pytest.approx(0.95)
+        assert section_velocity_scale(0, 4) == pytest.approx(0.82)
+        assert section_velocity_scale(1, 4) == 1.0
+        assert section_velocity_scale(2, 4) == pytest.approx(1.12)
+        assert section_velocity_scale(3, 4) == pytest.approx(0.95)
 
         # Audibly: the penultimate section outplays the opening one.
         out = compose(_spec(Mood.CALMING, duration=120))
@@ -2798,7 +2806,7 @@ class TestHarmonyRegisterPass:
         cases that are about the fallback.
         """
         comfortable = window or self._WINDOW
-        return _settle_harmony_register(
+        return settle_harmony_register(
             notes,
             melody_floor=melody_floor,
             melody_ceiling=melody_floor if melody_ceiling is None else melody_ceiling,
@@ -3037,7 +3045,7 @@ class TestHarmonyRegisterPass:
         `bed_window` for any other reason fails here. And every melody
         note is inside the window the engine actually placed it in:
         `melody_band` for a melody on its own, or the one
-        `_melody_band_for` raises when the accompaniment needs an octave
+        `melody_band_for` raises when the accompaniment needs an octave
         under the tune — which is why this asserts against that function
         rather than the instrument's own band.
 
@@ -3056,7 +3064,7 @@ class TestHarmonyRegisterPass:
                     )
                 )
                 instruments = {v.voice_id: v.instrument for v in out.voice_instruments}
-                melody_band_here = _melody_band_for(
+                melody_band_here = melody_band_for(
                     melody=instruments[VOICE_MELODY],
                     bed=instruments.get(VOICE_HARMONY),
                 )
