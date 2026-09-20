@@ -235,6 +235,8 @@
   .working { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.82rem; }
   .working::before { content: ""; width: 13px; height: 13px; border: 2px solid rgba(155, 135, 245, 0.28); border-top-color: var(--violet); border-radius: 50%; animation: spin 720ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .working-note { display: grid; gap: 9px; margin: 0; padding: 26px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 15px; }
+  .working-detail { color: var(--faint); font-size: 0.78rem; line-height: 1.6; }
   .empty-drafts { margin: 0; padding: 26px 6px; color: var(--faint); font-size: 0.82rem; text-align: center; }
   @media (max-width: 640px) {
     .draft-head { flex-direction: column; }
@@ -328,7 +330,7 @@
         <div class="drafts" id="draft-list" aria-live="polite"></div>
         <p class="empty-drafts" id="empty-drafts" hidden>The conductor made no candidate this turn.</p>
         <p class="alert" id="session-error" role="alert"></p>
-        <div class="revise-shell">
+        <div class="revise-shell" id="revise-shell">
           <label class="revise-label" for="revise">Ask for a change</label>
           <textarea id="revise" maxlength="4096" autocomplete="off" placeholder="Make the melody move more, and take the tempo down a little…"></textarea>
           <div class="revise-footer">
@@ -805,6 +807,14 @@
   // candidates *are* the product: publishing one is the user's act, and a pass
   // that published on its own would have chosen for them before they heard it.
   function openSession(brief) {
+    // The workspace opens *before* the request, not after it. `POST /sessions`
+    // runs the conductor's whole first turn inside the request — a model call,
+    // then whatever it asked for, and sketching a long candidate is minutes of
+    // FluidSynth — so the response is the one moment there is nothing to show.
+    // Revealing the panel on the answer left the wait blank and, worse, left
+    // `#session-error` hidden too: a failure wrote its sentence into an element
+    // nobody could see, and the page looked identical to one still working.
+    openWorking(brief);
     return sessionRequest("/sessions", jsonPost({ brief: brief, auto_finalize: false }), "Reading the brief")
       .then(function (payload) {
         stopPolling();
@@ -813,17 +823,96 @@
         statusPanel.hidden = true;
         setSession(payload.session_id);
         renderSession(payload);
+      })
+      .catch(function (error) {
+        // The panel stays up holding the error `sessionRequest` wrote there.
+        stopWorking("The conductor did not answer.");
+        throw error;
       });
+  }
+  var workingTimer = null;
+  function reveal(element) {
+    try {
+      var motion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      element.scrollIntoView({ behavior: motion ? "auto" : "smooth", block: "start" });
+    } catch (e) {
+      element.scrollIntoView();
+    }
+  }
+  function openWorking(brief) {
+    sessionPanel.hidden = false;
+    conductorPanel.hidden = true;
+    sessionErrEl.textContent = "";
+    el("session-brief").textContent = brief;
+    el("spec-chips").textContent = "";
+    el("empty-drafts").hidden = true;
+    el("edit-report").textContent = "";
+    // Nothing to revise until there is a draft, and a disabled control still
+    // reads as an offer. The box comes back with the candidates.
+    el("revise-shell").hidden = true;
+    draftListEl.textContent = "";
+
+    var note = document.createElement("p");
+    var spinner = document.createElement("span");
+    var detail = document.createElement("span");
+    note.className = "working-note";
+    spinner.className = "working";
+    spinner.textContent = "Reading the brief…";
+    detail.className = "working-detail";
+    detail.textContent =
+      "The conductor drafts and sketches inside this one request, and a long " +
+      "piece spends most of it rendering audio. Nothing appears until the turn " +
+      "finishes.";
+    note.appendChild(spinner);
+    note.appendChild(detail);
+    draftListEl.appendChild(note);
+
+    // ...and the page goes to it. The brief form is a full viewport tall, so
+    // the workspace opens below the fold: a user who submits and stays put
+    // watches an unchanged screen while the conductor works. Revealing the
+    // panel is only half of showing it.
+    reveal(sessionPanel);
+
+    var started = Date.now();
+    stopWorkingTimer();
+    workingTimer = window.setInterval(function () {
+      var seconds = Math.round((Date.now() - started) / 1000);
+      spinner.textContent = "Reading the brief… " + elapsed(seconds);
+    }, 1000);
+  }
+  function elapsed(seconds) {
+    if (seconds < 60) { return seconds + "s"; }
+    return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+  }
+  function stopWorkingTimer() {
+    if (workingTimer !== null) { window.clearInterval(workingTimer); workingTimer = null; }
+  }
+  function stopWorking(message) {
+    stopWorkingTimer();
+    draftListEl.textContent = "";
+    if (message) {
+      var note = document.createElement("p");
+      note.className = "empty-drafts";
+      note.textContent = message;
+      draftListEl.appendChild(note);
+    }
   }
   function loadSession(id) {
     return sessionRequest("/sessions/" + encodeURIComponent(id), { cache: "no-store" }, "Loading")
       .then(function (payload) { setSession(payload.session_id); renderSession(payload); })
-      .catch(function () { /* the message is already on screen */ });
+      .catch(function () {
+        // `sessionRequest` wrote the reason into `#session-error`, so the panel
+        // has to be up for anyone to read it.
+        sessionPanel.hidden = false;
+        stopWorking("This session could not be loaded.");
+      });
   }
   function renderSession(payload) {
+    stopWorkingTimer();
     session = payload;
     sessionPanel.hidden = false;
     conductorPanel.hidden = false;
+    el("revise-shell").hidden = false;
     el("session-brief").textContent = payload.brief;
     renderSpecChips(payload.spec);
     renderDrafts(payload);

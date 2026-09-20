@@ -23,6 +23,7 @@ gate that cannot run says so rather than passing quietly.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import threading
@@ -209,6 +210,80 @@ def sketching(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
+class BlockingModel(ScriptedModel):
+    """A conductor that answers only when the test lets it.
+
+    `POST /sessions` runs the whole first turn inside the request, so the page's
+    *working* state is the state it is in for as long as a real model and a real
+    sketch take. A scripted model answers in microseconds, which is why the
+    first version of the workspace shipped with that state invisible and no test
+    able to see it. This one holds the request open on the server's own loop —
+    awaited, not slept through, so the page can still reach `/health` while it
+    waits.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    async def chat(self, request: ChatRequest) -> ChatResult:
+        self.entered.set()
+        while not self.release.is_set():
+            await asyncio.sleep(0.02)
+        return await ScriptedModel.chat(self, request)
+
+
+class BrokenModel(ScriptedModel):
+    """A conductor whose call raises rather than answering.
+
+    The other half of the same gap: a failure wrote its sentence into
+    `#session-error`, which lived inside a panel nothing had revealed yet, and
+    the page looked identical to one still working.
+    """
+
+    async def chat(self, request: ChatRequest) -> ChatResult:
+        raise RuntimeError("the host went away mid-turn")
+
+
+@pytest.fixture
+def blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sketching: list[dict[str, Any]]
+) -> Iterator[Studio]:
+    """A studio whose first turn hangs until `studio.model.release.set()`."""
+    model = BlockingModel()
+    app = _app(tmp_path, monkeypatch, model)
+    try:
+        with _serving(app) as url:
+            yield Studio(
+                url=url,
+                jobs=app.state.job_storage,
+                sessions=app.state.session_storage,
+                app=app,
+                model=model,
+            )
+    finally:
+        # A test that fails its assertion never reaches its own `release`, and
+        # a held-open request would then wedge the server's shutdown rather
+        # than letting the real failure be reported.
+        model.release.set()
+
+
+@pytest.fixture
+def broken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Studio]:
+    """A studio whose conductor raises, so `POST /sessions` answers 500."""
+    model = BrokenModel()
+    app = _app(tmp_path, monkeypatch, model)
+    with _serving(app) as url:
+        yield Studio(
+            url=url,
+            jobs=app.state.job_storage,
+            sessions=app.state.session_storage,
+            app=app,
+            model=model,
+        )
+
+
 @contextmanager
 def _serving(app: Any) -> Iterator[str]:
     """Run `app` on a loopback port for the length of the block."""
@@ -321,13 +396,19 @@ def page(browser: Any) -> Iterator[Any]:
     context = browser.new_context(viewport={"width": 1400, "height": 1000})
     page = context.new_page()
     failures: list[str] = []
+    expected: list[str] = []
     page.on("pageerror", lambda exc: failures.append(str(exc)))
     page.on(
         "console",
         lambda msg: failures.append(msg.text) if msg.type == "error" else None,
     )
+    # A test about a *failing* request asks for the console error it is going to
+    # cause, by a substring. Everything it does not ask for still fails the
+    # test, which is the point of collecting them at all.
+    page.expect_console_error = expected.append  # type: ignore[attr-defined]
     try:
         yield page
-        assert not failures, f"the page reported errors: {failures}"
+        unexpected = [line for line in failures if not any(want in line for want in expected)]
+        assert not unexpected, f"the page reported errors: {unexpected}"
     finally:
         context.close()
