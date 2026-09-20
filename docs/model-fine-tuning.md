@@ -9,14 +9,27 @@ writes a note — and both are checkable below.
 
 ## What the model does today
 
-The LLM's entire job is **prompt → `CompositionSpec`**. It is called from the
-job pipeline's parsing stage, its answer is validated against the local schema
-before anything downstream consumes it, and it is re-prompted with the
-schema-in-context error at most twice before the deterministic fallback parser
-takes over. Every accepted prompt is recorded in `manifest.json` with its
+The LLM has three jobs, and not one of them is a note.
+
+1. **prompt → `CompositionSpec`.** Called from the job pipeline's parsing stage,
+   validated against the local schema before anything downstream consumes it,
+   and re-prompted with the schema-in-context error at most twice before the
+   deterministic fallback parser takes over.
+2. **The conductor's turn** (`session/conductor.py`): which of eight tools to
+   call, with which arguments. The tools are `draft`, `revise`, `repair`,
+   `critique`, `compare`, `sketch`, `parse_brief` and `finalize`, and every one
+   of them is a *parameter* of the generator.
+3. **The delta translator** (`session/translator.py`): a sentence read into
+   typed requests from a closed vocabulary of 25, with a deterministic phrase
+   table standing in when there is no model.
+
+The second and third arrived with the session harness after this note was first
+written, and neither changes its argument — they choose *among things the engine
+can already do*. A model that picked tools perfectly would still be choosing
+between knobs, and the knobs are what `compose/` reads. Every accepted prompt is recorded in `manifest.json` with its
 `parser_source`, so which path produced a given piece is never a guess.
 
-The spec it produces is ten fields wide, and they are all *requests*:
+The spec the parser produces is ten fields wide, and they are all *requests*:
 `schema_version`, `request_kind`, `duration_seconds`, `tempo_bpm`, `key`,
 `time_signature`, `mood`, `instrumentation`, `seed`, `humanization`. Not one of
 them can carry a note, a phrase, a contour or a chord. The strongest musical
@@ -60,7 +73,7 @@ not which notes they are; the engraved score stays on the grid.
 ## Where quality feedback actually flows today
 
 The instrument this pass built is model-free and deliberately so. `saimc.quality`
-measures ten properties of a composed piece and, in each `QualityThreshold`'s
+measures thirteen properties of a composed piece and, in each `QualityThreshold`'s
 `hint`, records *which engine knob moves that metric*. Its `findings` therefore
 read as instructions to whoever is tuning the generator — or to an automated
 repair loop over the generator's parameters — rather than as a verdict on a
