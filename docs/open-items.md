@@ -186,16 +186,39 @@ table `_validate_ensemble` refuses against. An enforced limit nobody is told
 about reads, from outside, as the product ignoring what was asked — which is
 the deaf-product failure `create_job` names.
 
-**What closing the rest involves** is an engine decision, not a copy change.
-`compose/score.py` has four voice ids and the harmony bed is the only one that
-repeats, so a wider ensemble is new voices in the engine; the render maps each
-voice to its own MIDI channel and melodic voices must stay off channel 10, so
-sixteen is the hard ceiling there. And it is a *musical* question before it is
-either: a fifteen-piece arrangement is orchestration, which is not what the
-melody/bed/bass/kit model writes.
+**What was then closed.** The ceiling moved to fifteen — one melody, twelve
+harmony, a bass and a kit, which is exactly what MIDI carries once the kit has
+channel 10 — and `HarmonyVoices.divisi` shares the chord out across the pads so
+they voice different inversions instead of one dyad in twelve registers. The
+linter's simultaneous-note cap became per *voice*, which is where "a pianist's
+two hands" actually applies; counted across the score it was a cap on the size
+of the ensemble.
 
-**What is not open:** the parser. It is not failing to adhere — it is being
-handed a schema that cannot express the request.
+**What is open is that a large ensemble measures worse.** Over 24 cells (3
+moods x 2 durations x 4 seeds) at each size, the share of pieces breaching at
+least one quality threshold:
+
+| harmony voices | breaching | register_separation | tessitura_overlap |
+|---|---|---|---|
+| 2 | 8/24 | 3.33 | 0.00 |
+| 4 | 11/24 | 3.42 | 0.00 |
+| 8 | 11/24 | 3.42 | 0.00 |
+| 12 | **22/24** | **0.58** | **5.08** |
+
+The collapse is `settle_harmony_register`: it places each bed against the
+finished tune using the instrument's own comfortable range, and a dozen
+instruments with overlapping ranges all settle into the same band, on top of
+the melody. Divisi does not fix it — it moves `tessitura_overlap` from 5.92 to
+5.08 and nothing else — because it distributes *pitch classes*, not registers.
+
+**What closing it involves** is spreading the beds across registers rather than
+settling each one independently: the bed's placement has to become a decision
+about the whole ensemble, the way `melody_band_for` is already a decision about
+the whole piece. Until then a twelve-voice request composes, renders and sounds
+crowded, and the numbers above say by how much.
+
+**What is not open:** the parser. It was never failing to adhere — it was being
+handed a schema that could not express the request.
 
 ### C5. The judge has never been run against a live listener
 

@@ -210,6 +210,7 @@ def generate_harmony_section(
     instrument: str = "piano",
     window: MelodyBand,
     layer_index: int = 0,
+    layer_count: int = 1,
     voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
 ) -> list[NoteEvent]:
     """Generate the harmony voice for one section from the resolved chords.
@@ -268,9 +269,19 @@ def generate_harmony_section(
                             )
                         )
             elif pad:
-                low = (bar_index + rotation) % len(chord_tones)
-                pair = (chord_tones[low], chord_tones[(low + 2) % len(chord_tones)])
-                for tone in pair:
+                # Divisi: layer *i* starts from the tone *i* steps along the
+                # chord, so the pads voice different inversions rather than the
+                # same dyad in different registers. A lone pad keeps the dyad —
+                # there is nobody to share with — which is what makes this a
+                # change to ensembles and not to solo-plus-pad pieces.
+                spread = layer_index if voices.divisi else 0
+                low = (bar_index + rotation + spread) % len(chord_tones)
+                sounding: tuple[int, ...] = (
+                    (chord_tones[low],)
+                    if voices.divisi and layer_count > 1
+                    else (chord_tones[low], chord_tones[(low + 2) % len(chord_tones)])
+                )
+                for tone in sounding:
                     notes.append(
                         NoteEvent(
                             voice_id=voice_id,

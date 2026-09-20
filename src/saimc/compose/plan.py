@@ -102,6 +102,7 @@ from saimc.compose.voices import (
     BROKEN_CHORD_MOODS,
     HARMONY_ARPEGGIO_STEP_TICKS,
     HARMONY_ARPEGGIO_VELOCITY,
+    HARMONY_DIVISI,
     HARMONY_MELODY_CLEARANCE,
     HARMONY_PAD_VELOCITY,
     HARMONY_STAB_VELOCITY,
@@ -110,7 +111,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 7
+PLAN_SCHEMA_VERSION: Final[int] = 8
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -448,6 +449,14 @@ class CompositionPlan:
     """The broken-chord figure's level, a notch above the pad's."""
     harmony_stab_velocity: int
     """A stabbed chord's level: the loudest, because it is an accent."""
+    harmony_divisi: bool
+    """Whether the pad layers share the chord out instead of each playing it.
+
+    On by default and only reaches a piece with more than one pad, which is
+    what makes it a change to *ensembles*: a solo-plus-pad piece has nobody to
+    share with and is written exactly as it was. See `HarmonyVoices.divisi` for
+    what the sharing is.
+    """
     harmony_melody_clearance: int
     """How far under the melody the bed is held.
 
@@ -736,6 +745,7 @@ class CompositionPlan:
             "harmony_texture_cycle": list(self.harmony_texture_cycle),
             "percussion_rest_section": self.percussion_rest_section,
             "harmony_broken_chord": self.harmony_broken_chord,
+            "harmony_divisi": self.harmony_divisi,
             "harmony_arpeggio_step_ticks": self.harmony_arpeggio_step_ticks,
             "harmony_pad_velocity": self.harmony_pad_velocity,
             "harmony_arpeggio_velocity": self.harmony_arpeggio_velocity,
@@ -820,6 +830,7 @@ class CompositionPlan:
             harmony_texture_cycle=tuple(payload["harmony_texture_cycle"]),
             percussion_rest_section=payload["percussion_rest_section"],
             harmony_broken_chord=payload["harmony_broken_chord"],
+            harmony_divisi=payload["harmony_divisi"],
             harmony_arpeggio_step_ticks=payload["harmony_arpeggio_step_ticks"],
             harmony_pad_velocity=payload["harmony_pad_velocity"],
             harmony_arpeggio_velocity=payload["harmony_arpeggio_velocity"],
@@ -898,6 +909,7 @@ class CompositionPlan:
         """
         return HarmonyVoices(
             broken_chord=self.harmony_broken_chord,
+            divisi=self.harmony_divisi,
             arpeggio_step_ticks=self.harmony_arpeggio_step_ticks,
             pad_velocity=self.harmony_pad_velocity,
             arpeggio_velocity=self.harmony_arpeggio_velocity,
@@ -984,6 +996,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         harmony_texture_cycle=HARMONY_TEXTURE_CYCLE,
         percussion_rest_section=PERCUSSION_REST_SECTION,
         harmony_broken_chord=mood in BROKEN_CHORD_MOODS,
+        harmony_divisi=HARMONY_DIVISI,
         harmony_arpeggio_step_ticks=HARMONY_ARPEGGIO_STEP_TICKS,
         harmony_pad_velocity=HARMONY_PAD_VELOCITY,
         harmony_arpeggio_velocity=HARMONY_ARPEGGIO_VELOCITY,

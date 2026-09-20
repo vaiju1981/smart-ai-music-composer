@@ -163,6 +163,9 @@ _MUTATIONS: dict[str, Any] = {
     # The base is calming, whose harmony sustains, so a broken chord is the
     # change — as it is for the plan the electrifying mood would default to.
     "harmony_broken_chord": True,
+    # Off, because on is the default: the mutation has to differ from what
+    # `default_plan` writes or the hash it is meant to move would not move.
+    "harmony_divisi": False,
     # A quarter rather than the eighth note the broken-chord figure steps on
     # by default: half the onsets per bar, which is the density itself.
     "harmony_arpeggio_step_ticks": 480,

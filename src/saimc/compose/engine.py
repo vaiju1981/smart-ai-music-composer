@@ -1366,6 +1366,10 @@ def _generate_section(
                 instrument=instrument,
                 window=bed_window(instrument),
                 layer_index=voice_id - VOICE_HARMONY,
+                # How many pads there are decides whether there is a chord to
+                # share out at all, so the layer is told rather than guessing
+                # from its own index.
+                layer_count=len(harmony_voices),
                 voices=voices,
             )
         )

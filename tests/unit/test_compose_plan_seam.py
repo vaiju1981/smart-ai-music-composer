@@ -1409,6 +1409,26 @@ not in `HARMONY_STAB_INSTRUMENTS` — so its broken chord is an arpeggio
 and the stab's own velocity is unreachable there.
 """
 
+_TWO_PAD_SPEC = CompositionSpec(
+    mood="calming",
+    duration_seconds=180,
+    seed=11,
+    instrumentation=[
+        {"role": "melody", "instrument": "piano"},
+        {"role": "harmony", "instrument": "strings"},
+        {"role": "harmony", "instrument": "choir"},
+        {"role": "bass", "instrument": "cello"},
+    ],
+)
+"""Two sustaining pads, which is the only texture `harmony_divisi` reaches.
+
+Sharing a chord out needs someone to share it with: with one pad the knob is
+a no-op by design, so a one-pad spec would make its case unfailable. Calming
+so both layers sustain — under a broken chord the leading layer states the
+figure and only the layers beneath it are pads.
+"""
+
+
 _VOICES_KNOBS: dict[str, tuple[CompositionSpec, Any]] = {
     # The texture itself, against the mood's own sustained default. The
     # other five cases below are read *under* a texture, which is why
@@ -1424,11 +1444,16 @@ _VOICES_KNOBS: dict[str, tuple[CompositionSpec, Any]] = {
     "harmony_arpeggio_step_ticks": (_ELECTRIFYING_SPEC, 4 * PPQ),
     # How far the bed keeps off the tune, on both sides of it.
     "harmony_melody_clearance": (_SPEC, 6),
+    # Whether the pads share the chord out. Flipped *off* rather than on,
+    # because on is the default — and asserted at a two-pad spec, since one
+    # pad has nobody to share with and the knob is a no-op there by design.
+    "harmony_divisi": (_TWO_PAD_SPEC, False),
 }
 
 _VOICES_FIELDS = frozenset(
     {
         "harmony_broken_chord",
+        "harmony_divisi",
         "harmony_arpeggio_step_ticks",
         "harmony_pad_velocity",
         "harmony_arpeggio_velocity",
@@ -1436,7 +1461,7 @@ _VOICES_FIELDS = frozenset(
         "harmony_melody_clearance",
     }
 )
-"""The plan's `--- Voices ---` block, which is these six.
+"""The plan's `--- Voices ---` block, which is these seven.
 
 Enumerated against `HarmonyVoices`' own fields as well, so the struct and
 the plan cannot drift apart here — and spelled out because B9's union
