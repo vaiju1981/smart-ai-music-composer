@@ -41,6 +41,7 @@ from saimc.compose.duration import (
     DEFAULT_SECTION_ARC,
     MAX_REPEATS,
 )
+from saimc.compose.motif import MotifCell
 from saimc.compose.plan import (
     PLAN_FORMAT,
     PLAN_FORMAT_PREFIX,
@@ -162,6 +163,12 @@ _MUTATIONS: dict[str, Any] = {
     "percussion_rest_section": 2,
     # The base is calming, whose harmony sustains, so a broken chord is the
     # change — as it is for the plan the electrifying mood would default to.
+    # A proposed theme rather than the engine's own draw — the one field in
+    # this document a model may put notes in.
+    "melody_motif": (
+        MotifCell(step=0, length_ticks=240),
+        MotifCell(step=2, length_ticks=240),
+    ),
     "harmony_broken_chord": True,
     # Off, because on is the default: the mutation has to differ from what
     # `default_plan` writes or the hash it is meant to move would not move.

@@ -1093,6 +1093,15 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
 
 
 _MELODY_KNOBS: dict[str, Any] = {
+    # The one field in this plan a model may put notes in, and the only case
+    # here that is *material* rather than a parameter over material: a subject
+    # the engine then develops, legal by `_motif`'s bounds — first cell on the
+    # anchor, a rising third, a step back.
+    "melody_motif": (
+        MotifCell(step=0, length_ticks=PPQ // 2),
+        MotifCell(step=2, length_ticks=PPQ // 2),
+        MotifCell(step=-1, length_ticks=PPQ),
+    ),
     # 0 and 1 swapped, so the two most-weighted steps trade places. A
     # permutation rather than a shortened table: the plan requires one
     # weight per choice, and a table of another length would be refused
@@ -1146,10 +1155,12 @@ _MELODY_FIELDS = frozenset(
         "tie_probability",
         "apex_position",
         "line_band_semitones",
+        "melody_motif",
     }
 )
-"""The plan's melody group, which reads these ten — the vocabulary, the
-phrase shape, and the register window the line is written in."""
+"""The plan's melody group, which reads these eleven — the vocabulary, the
+phrase shape, the register window the line is written in, and the theme itself
+when something proposed one."""
 
 
 class TestTheMelodyLayerIsLive:

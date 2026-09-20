@@ -71,7 +71,7 @@ from saimc.compose.melody import (
     _snap_to_chord,
     _start_offsets,
 )
-from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE
+from saimc.compose.motif import BASS_FIGURES, LEAP_DEGREES, PLAIN_BASS_FIGURE, MotifCell
 from saimc.compose.percussion import DRUM_KICK, DRUM_STYLES
 from saimc.compose.performance import (
     _KIT_REALIZATION_SALT,
@@ -79,8 +79,9 @@ from saimc.compose.performance import (
     _merged_tie_runs,
     _realization_stream,
 )
-from saimc.compose.plan import default_plan
+from saimc.compose.plan import PlanError, default_plan
 from saimc.compose.score import (
+    PPQ,
     VOICE_BASS,
     VOICE_HARMONY,
     VOICE_MELODY,
@@ -3515,3 +3516,117 @@ class TestHarmonyVoice:
         del payload["voice_instruments"]
         restored = EngineOutput.from_sidecar(payload)
         assert restored.voice_instruments == ()
+
+
+class TestAProposedTheme:
+    """`plan.melody_motif` is the one place a model's notes enter the engine.
+
+    What makes that safe is the shape of the permission: a motif is 2-8 cells
+    of (scale-degree step, duration) inside one bar — a subject — and the
+    engine still develops it through the form, snaps it onto each bar's chord,
+    places it in the tessitura band, answers its leaps, lints the result and
+    scores it. A model proposing an unmusical cell gets a piece that measures
+    badly; a model proposing an illegal one is refused before a note is
+    written.
+    """
+
+    @staticmethod
+    def _spec() -> CompositionSpec:
+        return CompositionSpec(mood=Mood.CALMING, duration_seconds=60, seed=3)
+
+    @staticmethod
+    def _theme() -> tuple[MotifCell, ...]:
+        return (
+            MotifCell(step=0, length_ticks=PPQ // 2),
+            MotifCell(step=2, length_ticks=PPQ // 2),
+            MotifCell(step=-1, length_ticks=PPQ),
+        )
+
+    def test_the_theme_reaches_the_notes(self) -> None:
+        spec = self._spec()
+        drawn = compose(spec)
+        proposed = compose(spec, plan=replace(default_plan(spec), melody_motif=self._theme()))
+        assert proposed.notation_score.compute_hash() != drawn.notation_score.compute_hash(), (
+            "a proposed theme changed nothing, so the seam is dead"
+        )
+
+    def test_the_same_theme_composes_the_same_piece(self) -> None:
+        """The model is consulted once and the document carries the answer.
+
+        This is what keeps §8 with a model writing material: the proposal is
+        recorded in the plan, and composition from that plan is as
+        reproducible as composition from a spec has always been.
+        """
+        spec = self._spec()
+        plan = replace(default_plan(spec), melody_motif=self._theme())
+        assert compose(spec, plan=plan).notation_score.compute_hash() == (
+            compose(spec, plan=plan).notation_score.compute_hash()
+        )
+
+    def test_the_theme_is_the_piece_s_and_not_one_section_s(self) -> None:
+        """A drawn motif is the section's; a proposed one is the subject.
+
+        Every section develops the same cell, which is the difference between
+        a piece with a theme and a piece with four of them. Read as the melody
+        repeating across the form: the same proposal in two sections of one
+        piece gives the later section the same *shape*, not the same pitches —
+        the chords under it differ — so what is asserted is that the engine
+        was handed one motif, not that it wrote one bar twice.
+        """
+        spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=180, seed=3)
+        plan = replace(default_plan(spec), melody_motif=self._theme())
+        output = compose(spec, plan=plan)
+        assert output.plan is not None
+        assert output.plan.melody_motif == self._theme()
+
+    @pytest.mark.parametrize(
+        ("cells", "because"),
+        [
+            ((MotifCell(step=0, length_ticks=PPQ),), "2-8 cells"),
+            (
+                tuple(MotifCell(step=0, length_ticks=PPQ) for _ in range(9)),
+                "2-8 cells",
+            ),
+            (
+                (MotifCell(step=3, length_ticks=PPQ), MotifCell(step=0, length_ticks=PPQ)),
+                "its step is 0",
+            ),
+            (
+                (MotifCell(step=0, length_ticks=0), MotifCell(step=1, length_ticks=PPQ)),
+                "has to sound",
+            ),
+            (
+                (MotifCell(step=0, length_ticks=PPQ), MotifCell(step=40, length_ticks=PPQ)),
+                "past the",
+            ),
+        ],
+    )
+    def test_a_theme_the_engine_could_not_develop_is_refused_by_the_plan(
+        self, cells: tuple[MotifCell, ...], because: str
+    ) -> None:
+        """Refused where the request is, not from inside a composition.
+
+        A raise from the note writer would arrive too late to name what asked
+        for it, which is the reason every other bound in `plan.py` is checked
+        in `__post_init__` too.
+        """
+        with pytest.raises(PlanError, match=because):
+            replace(default_plan(self._spec()), melody_motif=cells)
+
+    def test_a_proposed_theme_still_has_to_pass_the_linter(self) -> None:
+        """The engine disposes. A legal-but-awkward subject is composed and
+        then judged by the same gates every piece is — which is what makes
+        letting a model propose material safe at all."""
+        spec = self._spec()
+        # A subject that leaps every cell: legal by the motif's own bounds.
+        leapy = (
+            MotifCell(step=0, length_ticks=PPQ // 2),
+            MotifCell(step=4, length_ticks=PPQ // 2),
+            MotifCell(step=-4, length_ticks=PPQ // 2),
+            MotifCell(step=4, length_ticks=PPQ // 2),
+        )
+        output = compose(spec, plan=replace(default_plan(spec), melody_motif=leapy))
+        assert lint(output.notation_score).passed, (
+            "compose only returns a score the linter accepted, so reaching here "
+            "means the engine developed the proposal into something legal"
+        )

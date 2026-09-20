@@ -80,6 +80,39 @@ repair loop over the generator's parameters — rather than as a verdict on a
 prompt. That is the feedback direction that can actually improve the music, and
 it points at `src/saimc/compose/`.
 
+## What has since been built toward that
+
+Two of the four conditions below were already met when this note was written,
+and the first slice of the change itself now exists.
+
+**The brief reaches the plan.** `session/translator.py:read_brief` reads the
+opening request into `CompositionPlan`'s forty-five fields rather than only the
+spec's ten, so a word naming a cadence, a swing, a slower chord change or a
+bass that holds moves the generator instead of being discarded. That is not a
+model writing notes — every one of those is a knob — but it is the difference
+between three moods deciding the music and the request deciding it.
+
+**And the model may now propose the theme.** `CompositionPlan.melody_motif`
+carries a 2-8 cell subject and `propose_motif` is the tool that sets it. This
+*is* a model writing material, and the shape of the permission is what makes it
+safe:
+
+- It proposes a **subject, not a piece.** The engine still develops it through
+  the form, snaps it onto each bar's chord, places it in the tessitura band and
+  answers its leaps.
+- The proposal is **recorded, not re-asked.** It becomes part of the plan, so
+  `(spec, plan, seed) -> notes` stays byte-identical and §8's canonical-artifact
+  gate is untouched — the model is consulted once and the document carries the
+  answer, exactly as it already did for the spec.
+- A proposal the engine could not develop is **refused by the plan**, before a
+  note is written, in the same sentence any other bad request gets.
+- The linter, the scorecard, the arbiter and both release gates still stand
+  between it and a render.
+
+What remains of the conversation below is a model proposing *whole voices*
+rather than a cell — where the rights question bites, and where reproducibility
+stops being free.
+
 ## What *would* make model work the lever
 
 A note-generating model — neural, or a hybrid in which a model proposes and the

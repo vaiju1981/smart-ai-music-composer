@@ -90,6 +90,7 @@ from saimc.compose.motif import (
     PLAIN_BASS_FIGURE,
     BassFigure,
     MelodyShape,
+    Motif,
     MotifVariant,
     draw_bass_figures,
     generate_motif,
@@ -913,6 +914,7 @@ def _build_score(
             band=band,
             bass=bass,
             shape=shape,
+            proposed_motif=plan.melody_motif,
             voices=voices,
             figures=bass_figures,
             bass_root_motion=plan.bass_root_motion,
@@ -971,6 +973,7 @@ def _build_score(
             band=band,
             bass=bass,
             shape=shape,
+            proposed_motif=plan.melody_motif,
             voices=voices,
             figures=bass_figures,
             bass_root_motion=plan.bass_root_motion,
@@ -1040,6 +1043,7 @@ def _generate_section(
     bass_root_motion: bool,
     voices: HarmonyVoices = DEFAULT_HARMONY_VOICES,
     shape: MelodyShape = DEFAULT_MELODY_SHAPE,
+    proposed_motif: Motif | None = None,
     prev_bass: int | None = None,
     prev_melody: int | None = None,
     prev_melody_leap: int | None = None,
@@ -1136,7 +1140,15 @@ def _generate_section(
     # 77.6%, and the share whose highest note is in the apex bar itself
     # from 23.7% to 45.4%.
     apex_bar = min(math.ceil(template.bars * shape.apex_position), template.bars - 2)
-    motif = generate_motif(rng, bar_ticks=ticks_per_bar, shape=shape)
+    # The plan's theme when something proposed one, and a fresh draw per
+    # section when nothing did. A proposed motif is the *piece's* subject —
+    # every section develops the same cell — where a drawn one is the
+    # section's, which is the difference between a piece with a theme and a
+    # piece with four of them. It is still only a subject: the operations, the
+    # chord it lands on, the band it sits in and the leaps it has to answer are
+    # all the engine's, and the linter and the scorecard still stand between it
+    # and a render.
+    motif = proposed_motif or generate_motif(rng, bar_ticks=ticks_per_bar, shape=shape)
 
     chords, bar_pcs, bar_keys = _resolve_chords(
         template, key=key, key_offset=key_offset, tonic_midi=tonic_midi

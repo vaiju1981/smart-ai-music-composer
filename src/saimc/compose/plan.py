@@ -85,6 +85,8 @@ from saimc.compose.motif import (
     TIE_PROBABILITY,
     BassFigure,
     MelodyShape,
+    Motif,
+    MotifCell,
 )
 from saimc.compose.percussion import (
     DRUM_STYLES,
@@ -111,7 +113,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 8
+PLAN_SCHEMA_VERSION: Final[int] = 9
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -132,6 +134,51 @@ the reader are the pair that has to agree on it: `default_plan` stamps it
 and `from_canonical_dict` refuses anything else, so building it twice
 would be two chances to disagree.
 """
+
+
+MOTIF_MIN_CELLS: Final[int] = 2
+MOTIF_MAX_CELLS: Final[int] = 8
+"""How long a proposed theme may be, matching `generate_motif`'s own draw.
+
+One cell is not a motif — there is nothing to develop — and past eight the
+bar cannot hold it at any rhythm the vocabulary writes.
+"""
+
+
+def _motif(motif: Motif | None) -> None:
+    """Refuse a proposed theme this engine could not develop.
+
+    Checked here rather than where the notes are written, for the reason every
+    other bound in this file is: a plan is the document that should refuse an
+    impossible request, and a raise from inside a composition is a refusal
+    arriving too late to name what asked for it.
+
+    Deliberately *not* checked here: whether the motif fits a bar. A plan does
+    not know the metre — that is the spec's, and the same motif is legal in
+    4/4 and too long in 3/4 — so the bar is `_walk_shape`'s to fill and a motif
+    longer than one is truncated there, exactly as a drawn one is.
+    """
+    if motif is None:
+        return
+    _require(
+        MOTIF_MIN_CELLS <= len(motif) <= MOTIF_MAX_CELLS,
+        f"a motif is {MOTIF_MIN_CELLS}-{MOTIF_MAX_CELLS} cells; got {len(motif)}",
+    )
+    _require(
+        motif[0].step == 0,
+        "a motif's first cell starts on the bar's anchor tone, so its step is 0; "
+        f"got {motif[0].step}",
+    )
+    for index, cell in enumerate(motif):
+        _require(
+            cell.length_ticks > 0,
+            f"cell {index} has length {cell.length_ticks}; a cell has to sound",
+        )
+        _require(
+            abs(cell.step) <= MAX_MOTIF_SPAN_DEGREES,
+            f"cell {index} steps {cell.step} degrees, past the "
+            f"{MAX_MOTIF_SPAN_DEGREES} a bar can hold",
+        )
 
 
 def _require(condition: bool, message: str) -> None:
@@ -497,6 +544,28 @@ class CompositionPlan:
     states the harmony with.
     """
 
+    melody_motif: Motif | None = None
+    """The theme, when something proposed one, or `None` for the engine's draw.
+
+    **This is the one field in this document a model may put notes in**, and
+    the shape of that permission is the point. A motif is 2-8 cells of
+    (scale-degree step, duration) inside one bar — a subject, not a piece. The
+    engine still develops it: every bar replays it through one of the classic
+    operations onto that bar's chord, walked in the chord's own scale, placed
+    in the tessitura band, answered for its leaps, and the linter and the
+    scorecard still stand between it and a render. A model that proposes an
+    unmusical cell gets a piece that says so; a model that proposes an illegal
+    one is refused here, before a note is written.
+
+    Recorded rather than re-asked, which is what keeps §8. The model is
+    consulted once and its answer becomes part of this document, so
+    `(spec, plan, seed) -> notes` is byte-identical afterwards — the same
+    arrangement the spec has always had, one layer deeper.
+
+    `None` is the engine drawing a motif per section from the section's own
+    seed, which is what every piece composed before this did.
+    """
+
     def __post_init__(self) -> None:
         _require(
             self.format.startswith(f"{PLAN_FORMAT_PREFIX}:"),
@@ -539,6 +608,7 @@ class CompositionPlan:
         )
 
         _key_pool(self.key_pool)
+        _motif(self.melody_motif)
         _require(bool(self.bass_figures), "bass_figures must carry at least one figure")
         for figure in self.bass_figures:
             _require(bool(figure), "a bass figure must carry at least one note")
@@ -722,6 +792,11 @@ class CompositionPlan:
             "apex_position": self.apex_position,
             "line_band_semitones": self.line_band_semitones,
             "key_pool": list(self.key_pool),
+            "melody_motif": (
+                None
+                if self.melody_motif is None
+                else [[cell.step, cell.length_ticks] for cell in self.melody_motif]
+            ),
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
             "bass_root_motion": self.bass_root_motion,
             "cadence_degree": self.cadence_degree,
@@ -805,6 +880,14 @@ class CompositionPlan:
             apex_position=payload["apex_position"],
             line_band_semitones=payload["line_band_semitones"],
             key_pool=tuple(payload["key_pool"]),
+            melody_motif=(
+                None
+                if payload["melody_motif"] is None
+                else tuple(
+                    MotifCell(step=int(step), length_ticks=int(length))
+                    for step, length in payload["melody_motif"]
+                )
+            ),
             bass_figures=tuple(
                 tuple(tuple(note) for note in figure) for figure in payload["bass_figures"]
             ),

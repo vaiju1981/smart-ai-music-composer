@@ -64,6 +64,13 @@ from typing import Any, Final
 
 from saimc.compose.engine import CompositionEngineError, EngineOutput, compose
 from saimc.compose.linter import lint
+from saimc.compose.motif import MotifCell
+from saimc.compose.plan import (
+    MOTIF_MAX_CELLS,
+    MOTIF_MIN_CELLS,
+    PlanError,
+    default_plan,
+)
 from saimc.jobs.storage import Job, JobStorage
 from saimc.jobs.worker import QueueUnavailable, enqueue_or_fail
 from saimc.llm.base import ChatClient, LLMClient, ToolCall, ToolSpec
@@ -899,6 +906,105 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     )
 
 
+_MOTIF_PARAMETERS: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "cells": {
+            "type": "array",
+            "minItems": MOTIF_MIN_CELLS,
+            "maxItems": MOTIF_MAX_CELLS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "step": {
+                        "type": "integer",
+                        "description": (
+                            "Movement in scale degrees from the previous cell. The first "
+                            "cell's step is 0 — it starts on the bar's anchor tone. 1 is a "
+                            "step up, 2 a third, -2 a third down."
+                        ),
+                    },
+                    "length_ticks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "The cell's notated length. A quarter note is 480, an eighth "
+                            "240, a half 960."
+                        ),
+                    },
+                },
+                "required": ["step", "length_ticks"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["cells"],
+    "additionalProperties": False,
+}
+
+_MOTIF_DESCRIPTION: Final[str] = (
+    "Propose the piece's theme: a short cell of 2-8 (step, length) pairs that fits "
+    "inside one bar. This is the one place you write notes. The engine develops what "
+    "you give it — every bar replays it through repetition, transposition, sequence, "
+    "inversion, truncation or ornament onto that bar's chord, in the chord's own "
+    "scale, inside the melody's register — so propose a subject, not a tune. Sing it "
+    "to yourself first: a theme a listener could hum back after one hearing is the "
+    "thing that makes a piece sound like it is about something. The next draft "
+    "develops it; drafts already made are unchanged."
+)
+
+
+async def _propose_motif(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """Set the theme the next draft develops.
+
+    **The only tool that writes notes, and the reason it can is that it does
+    not write many.** A motif is a subject; the engine is still what turns it
+    into a piece, and the linter and the scorecard still stand between the two.
+    A proposal this engine cannot develop is refused here, by the plan's own
+    `_motif` bounds, before anything is composed — which is the same contract
+    every other request in this session has.
+
+    Recorded rather than re-asked: the cell becomes part of the session's plan,
+    so every draft after it is as reproducible as one composed from a spec. The
+    model is consulted once and the document carries the answer.
+    """
+    spec = ctx.session.spec
+    if spec is None:
+        raise ToolRefusal(
+            "no_spec",
+            "this session has no spec yet, so there is nothing for a theme to be the "
+            "theme of. Call parse_brief first.",
+        )
+    raw = args.get("cells")
+    if not isinstance(raw, list) or not raw:
+        raise ToolRefusal(
+            "bad_motif", "cells must be a non-empty list of {step, length_ticks} objects"
+        )
+    try:
+        cells = tuple(
+            MotifCell(step=int(cell["step"]), length_ticks=int(cell["length_ticks"]))
+            for cell in raw
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolRefusal(
+            "bad_motif", f"every cell needs an integer step and length_ticks: {exc}"
+        ) from exc
+    base = ctx.session.plan or default_plan(spec)
+    try:
+        plan = replace(base, melody_motif=cells)
+    except PlanError as exc:
+        # The plan refuses what the engine could not develop, and its sentence
+        # is already written for a reader.
+        raise ToolRefusal("bad_motif", str(exc)) from exc
+    ctx.session.plan = plan
+    return _render(
+        {
+            "motif": [{"step": c.step, "length_ticks": c.length_ticks} for c in cells],
+            "note": "the next draft develops this; drafts already made are unchanged",
+        }
+    )
+
+
 def _no_repair(parent: Draft, outcome: Repair) -> str:
     """Why a repair kept nothing, in the words of the bar it aimed at.
 
@@ -1384,6 +1490,12 @@ TOOLS: Final[Mapping[str, Tool]] = {
         ),
         parameters=_draft_parameters,
         handler=_draft,
+    ),
+    "propose_motif": Tool(
+        name="propose_motif",
+        description=_MOTIF_DESCRIPTION,
+        parameters=_static(_MOTIF_PARAMETERS),
+        handler=_propose_motif,
     ),
     "critique": Tool(
         name="critique",

@@ -36,7 +36,7 @@ import pytest
 
 import saimc.jobs.worker
 from saimc.compose.engine import CompositionEngineError, EngineErrorCode, compose
-from saimc.compose.motif import BassMotion
+from saimc.compose.motif import BassMotion, MotifCell
 from saimc.jobs.storage import JobStorage
 from saimc.llm.base import ParseRequest, ParseResult, ToolCall
 from saimc.quality import AXES
@@ -178,6 +178,11 @@ class TestTheCatalogue:
         out because a delta is only meaningful applied to a lineage, and `revise`
         is that whole act. The module docstring carries the same reason, and the
         same one is why `repair` is not `apply_delta` either.
+
+        `propose_motif` is the newest and the only one that writes notes. It is
+        said out loud here for exactly that reason: a tool that puts a model's
+        material into a piece is not a tool that should be able to appear
+        without anyone declaring it.
         """
         assert sorted(TOOLS) == [
             "compare",
@@ -185,6 +190,7 @@ class TestTheCatalogue:
             "draft",
             "finalize",
             "parse_brief",
+            "propose_motif",
             "repair",
             "revise",
             "sketch",
@@ -1947,3 +1953,61 @@ class TestWithoutAModel:
 
     def test_the_one_tool_that_needs_a_model_says_so_by_name(self, ctx: ToolContext) -> None:
         assert _call(ctx, "parse_brief").error_code == "llm_not_configured"
+
+
+class TestProposeMotif:
+    """The one tool that writes notes, and the gate that stands behind it."""
+
+    _THEME: ClassVar[list[dict[str, int]]] = [
+        {"step": 0, "length_ticks": 240},
+        {"step": 2, "length_ticks": 240},
+    ]
+
+    def test_a_theme_becomes_the_session_s_plan(self, ctx: ToolContext) -> None:
+        ctx.session.spec = _SPEC
+        payload = _payload(_call(ctx, "propose_motif", cells=self._THEME))
+        assert payload["motif"] == self._THEME
+        assert ctx.session.plan is not None
+        assert ctx.session.plan.melody_motif == (
+            MotifCell(step=0, length_ticks=240),
+            MotifCell(step=2, length_ticks=240),
+        )
+
+    def test_the_next_draft_develops_it(self, ctx: ToolContext) -> None:
+        """The point of the tool, asserted on notes rather than on the record."""
+        ctx.session.spec = _SPEC
+        _call(ctx, "draft")
+        before = ctx.session.drafts[-1].score_hash
+
+        _call(
+            ctx,
+            "propose_motif",
+            cells=[{"step": 0, "length_ticks": 240}, {"step": 3, "length_ticks": 960}],
+        )
+        _call(ctx, "draft")
+        assert ctx.session.drafts[-1].score_hash != before
+
+    def test_a_theme_the_engine_could_not_develop_is_refused_by_name(
+        self, ctx: ToolContext
+    ) -> None:
+        """Refused before anything is composed, in the plan's own sentence."""
+        ctx.session.spec = _SPEC
+        invocation = _call(ctx, "propose_motif", cells=[{"step": 0, "length_ticks": 480}])
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "bad_motif"
+        assert "2-8 cells" in invocation.result
+        assert ctx.session.plan is None
+
+    def test_a_cell_that_is_not_a_cell_is_refused_rather_than_guessed_at(
+        self, ctx: ToolContext
+    ) -> None:
+        ctx.session.spec = _SPEC
+        invocation = _call(ctx, "propose_motif", cells=[{"step": 0}, {"step": 1}])
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "bad_motif"
+
+    def test_a_theme_needs_a_piece_to_be_the_theme_of(self, ctx: ToolContext) -> None:
+        ctx.session.spec = None
+        invocation = _call(ctx, "propose_motif", cells=self._THEME)
+        assert invocation.outcome == "refused"
+        assert invocation.error_code == "no_spec"
