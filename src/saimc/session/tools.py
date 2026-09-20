@@ -66,7 +66,7 @@ from saimc.compose.engine import CompositionEngineError, EngineOutput, compose
 from saimc.compose.linter import lint
 from saimc.jobs.storage import Job, JobStorage
 from saimc.jobs.worker import QueueUnavailable, enqueue_or_fail
-from saimc.llm.base import LLMClient, ToolCall, ToolSpec
+from saimc.llm.base import ChatClient, LLMClient, ToolCall, ToolSpec
 from saimc.parser import parse_prompt
 from saimc.quality import AXES, Axis, QualityFinding, localize, score_piece
 from saimc.render.audio import render_sketch
@@ -307,6 +307,15 @@ class ToolContext:
     budget: ToolBudget = field(default_factory=ToolBudget)
     ledger: TurnLedger = field(default_factory=TurnLedger)
     llm: LLMClient | None = None
+    chat: ChatClient | None = None
+    """The conversational half of the same model, for the tools that read words.
+
+    `llm` parses a brief into a spec; this reads a sentence into typed requests.
+    In every real build they are one object — an adapter satisfies both
+    protocols — and they are two fields because they are two protocols, the
+    same reason `_parser` exists. Optional for `llm`'s reason: the reader has a
+    phrase table to fall back on, so a tool that wants one still runs without.
+    """
 
     def begin_turn(self) -> None:
         """Start a fresh turn's spend. The conductor calls this once per turn."""
@@ -510,12 +519,43 @@ async def _parse_brief(ctx: ToolContext, args: Mapping[str, Any]) -> str:
     # rather than from `text`, so a mid-session re-parse of one phrase does not
     # move the piece the session has been working on.
     spec = spec.with_brief_seed(ctx.session.brief)
-    ctx.session.spec = spec
+    # The rest of the brief decides the plan. A spec is ten fields and a plan
+    # is forty-five, so without this every word that was not a mood, a length,
+    # a key, a tempo, an instrument, a metre or a humanization setting was
+    # discarded and three moods decided the other thirty-five parameters.
+    # `read_brief` is the same reader `/deltas` uses, pointed at the opening
+    # request, so the vocabulary, the refusals and the remainder are the ones
+    # already written and tested.
+    from saimc.session.translator import read_brief
+
+    # The reading is a second model call, so it is spent against the same
+    # budget as the first. Counted before it is made, as the parse is: a
+    # ledger that charged only for calls that came back would let a failing
+    # host be asked without limit. The reader falls back to its phrase table
+    # when there is no chat client, and that path costs nothing — which is why
+    # the charge is conditional rather than unconditional.
+    if ctx.chat is not None:
+        ctx.ledger.llm_calls += 1
+    reading = await read_brief(
+        ctx.session.brief,
+        client=ctx.chat,
+        spec=spec,
+        request_id=ctx.session.session_id,
+    )
+    ctx.session.spec = reading.spec
+    ctx.session.plan = reading.plan if reading.read_anything else None
     return _render(
         {
-            "spec": spec.model_dump(mode="json"),
+            "spec": reading.spec.model_dump(mode="json"),
             "parser_source": result.parser_source,
             "attempts": result.attempts,
+            # What the brief asked for beyond the spec, and what it did not get.
+            # A brief read for one of the two things it asked is a partial
+            # reading, and this package reports its remainder rather than
+            # letting a user infer it from the music.
+            "plan_requests": [str(delta) for delta in reading.applied],
+            "plan_refused": [refusal.message for refusal in reading.refused],
+            "unread": list(reading.translation.unread),
         }
     )
 
@@ -539,7 +579,10 @@ async def _draft(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         seed = base + offset
         candidate = spec if spec.seed == seed else _with_seed(spec, seed)
         try:
-            output = compose(candidate)
+            # Under the brief's own plan when it asked for one: every candidate
+            # is a different seed of the *same request*, not of the mood's
+            # defaults.
+            output = compose(candidate, plan=ctx.session.plan)
         except CompositionEngineError as exc:
             # One candidate the engine cannot honour does not sink the
             # fan-out: the other seeds may well compose, and the reason is

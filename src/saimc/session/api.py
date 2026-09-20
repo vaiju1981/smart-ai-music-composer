@@ -550,7 +550,9 @@ async def conduct(
        spoke, the session is left exactly as it is. The caller can read the
        failed turn and ask again.
     """
-    ctx = ToolContext(session=session, sessions=sessions, jobs=jobs, llm=_parser(client))
+    ctx = ToolContext(
+        session=session, sessions=sessions, jobs=jobs, llm=_parser(client), chat=client
+    )
     await take_turn(ctx, client, trigger=trigger, message=message)
     if not auto_finalize or session.is_finalized:
         return

@@ -658,5 +658,9 @@ class TestTheModuleExports:
             "SYSTEM_PROMPT",
             "Phrase",
             "Translation",
+            # The brief reader: the same translation, pointed at the opening
+            # request instead of at a revision.
+            "BriefReading",
+            "read_brief",
             "translate",
         }

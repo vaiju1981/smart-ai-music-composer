@@ -54,7 +54,7 @@ from saimc.spec import (
     UnsupportedSpecVersionError,
 )
 
-SESSION_SCHEMA_VERSION: Final[int] = 9
+SESSION_SCHEMA_VERSION: Final[int] = 10
 """Bump when a record in this module gains, loses or reshapes a field.
 
 Moved to 2 when `Session` gained `spec`, to 3 when `Draft` gained `deltas`,
@@ -623,6 +623,21 @@ class Session:
     updated_at: datetime
     brief: str
     spec: CompositionSpec | None = None
+    plan: CompositionPlan | None = None
+    """The plan the brief asked for, or `None` for the mood's own defaults.
+
+    The spec's forty-five-field companion. A brief that named something the
+    plan carries — a cadence, a swing, a slower chord change, a bass that holds
+    — is read into this once, when the brief is parsed, and every draft the
+    session fans out composes under it. Without it a session's first draft was
+    `default_plan(spec)`, which is three moods deciding thirty-five musical
+    parameters, and the words that asked for anything else were discarded
+    before the engine saw them.
+
+    `None` rather than a materialized default, for the reason `Job.input_plan`
+    gives: it is the caller saying nothing about the music beyond the spec,
+    which is what every session written before this field also said.
+    """
     turns: list[Turn] = field(default_factory=list)
     drafts: list[Draft] = field(default_factory=list)
     verdicts: list[Verdict] = field(default_factory=list)
@@ -743,6 +758,7 @@ class Session:
             "updated_at": self.updated_at.isoformat(),
             "brief": self.brief,
             "spec": None if self.spec is None else self.spec.model_dump(mode="json"),
+            "plan": None if self.plan is None else self.plan.to_canonical_dict(),
             "publication": None if self.publication is None else self.publication.to_document(),
             "turns": [turn.to_document() for turn in self.turns],
             "drafts": [draft.to_document() for draft in self.drafts],
@@ -760,6 +776,7 @@ class Session:
                 "faithfully. Upgrade saimc or delete the session directory."
             )
         raw_spec = payload.get("spec")
+        raw_plan = payload.get("plan")
         raw_publication = payload.get("publication")
         return cls(
             session_id=payload["session_id"],
@@ -767,6 +784,7 @@ class Session:
             updated_at=datetime.fromisoformat(payload["updated_at"]),
             brief=payload["brief"],
             spec=None if raw_spec is None else _read_spec(raw_spec, owner="this session"),
+            plan=None if raw_plan is None else _read_plan(raw_plan, owner="this session"),
             turns=[Turn.from_document(turn) for turn in payload.get("turns", ())],
             drafts=[Draft.from_document(draft) for draft in payload.get("drafts", ())],
             verdicts=[Verdict.from_document(v) for v in payload.get("verdicts", ())],
