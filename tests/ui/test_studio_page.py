@@ -123,3 +123,44 @@ class TestTheScoreCannotCarryScript:
         page.wait_for_function(
             "() => document.getElementById('sheet-holder').textContent.indexOf('could not be loaded') !== -1"
         )
+
+
+class TestTheCeilingIsStated:
+    """What the engine will not do, said before the brief is typed.
+
+    Reported from a real run: a brief asking for "10 to 15 instruments" came
+    back with three or four, and nothing anywhere said why. It is not a parse
+    failure — `ROLE_LIMITS` is one melody, two harmony, one bass and one kit,
+    so five is the most this engine writes and six entries are refused by the
+    schema. An enforced limit nobody is told about reads, from outside, as the
+    product ignoring what was asked.
+    """
+
+    def test_the_page_says_how_many_voices_it_writes(self, studio: Studio, page: Any) -> None:
+        page.goto(studio.url)
+        page.wait_for_function(
+            "() => document.getElementById('ensemble-note').textContent.length > 0"
+        )
+        note = page.locator("#ensemble-note").inner_text()
+        assert "up to 5 voices" in note
+        assert "1 melody" in note
+        assert "2 harmony" in note
+
+    def test_the_sentence_is_built_from_what_the_schema_enforces(
+        self, studio: Studio, page: Any
+    ) -> None:
+        """Read off `/meta`, so it cannot drift from the validator.
+
+        The numbers in `ROLE_LIMITS` are what `_validate_ensemble` refuses
+        against and what `/meta` publishes; the page renders them rather than
+        repeating them, so a raised ceiling changes the sentence for free.
+        """
+        served = page.request.get(studio.url + "/meta").json()["ensemble"]
+        page.goto(studio.url)
+        page.wait_for_function(
+            "() => document.getElementById('ensemble-note').textContent.length > 0"
+        )
+        note = page.locator("#ensemble-note").inner_text()
+        assert f"up to {served['max_voices']} voices" in note
+        for role, limit in served["max_by_role"].items():
+            assert f"{limit} {role}" in note

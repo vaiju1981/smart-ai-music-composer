@@ -353,6 +353,8 @@ def get_meta() -> dict[str, Any]:
         DURATION_SECONDS_DEFAULT,
         DURATION_SECONDS_MAX,
         DURATION_SECONDS_MIN,
+        ENSEMBLE_MAX_VOICES,
+        ROLE_LIMITS,
         ROLE_ORDER,
         Mood,
         TimeSignature,
@@ -363,6 +365,14 @@ def get_meta() -> dict[str, Any]:
         "time_signatures": [t.value for t in TimeSignature],
         "instruments": sorted(SUPPORTED_INSTRUMENTS),
         "roles": [r.value for r in ROLE_ORDER],
+        # The ensemble ceiling, published because the page has to be able to
+        # state it. A user asking for fifteen instruments and receiving four
+        # with no explanation is what an enforced-but-undisclosed limit reads
+        # as from the outside.
+        "ensemble": {
+            "max_voices": ENSEMBLE_MAX_VOICES,
+            "max_by_role": {role.value: limit for role, limit in ROLE_LIMITS.items()},
+        },
         "default_ensembles": {
             mood: {"harmony": SCALAR_HARMONY[mood], "bass": SCALAR_BASS[mood]}
             for mood in SCALAR_HARMONY

@@ -77,8 +77,8 @@ about itself, not about the music, and its agreement rate is noise.
 rule is that no guard is written before it can fail, and nothing has run this
 against a live model. A threshold chosen now would be a number invented to
 match an unmeasured quantity. The floor lands with the first recorded sweep, in
-the commit that records it — and `docs/open-items.md` carries the gap until
-then.
+the commit that records it — and `docs/open-items.md` C5 carries the gap
+until then.
 
 One failure *is* enforced: a run where the judge never survived a swap exits
 non-zero, because it measured its own position bias and nothing about the

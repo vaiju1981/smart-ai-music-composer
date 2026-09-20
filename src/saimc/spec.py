@@ -209,10 +209,30 @@ ROLE_ORDER: tuple[VoiceRole, ...] = (
     VoiceRole.PERCUSSION,
 )
 
-# Ensemble size ceiling: 1 melody + <=2 harmony + <=1 bass + <=1
-# percussion. Also the MIDI-channel budget: the render stage maps each
-# voice to its own channel, and melodic voices must stay off channel 10.
-ENSEMBLE_MAX_VOICES: int = 5
+ROLE_LIMITS: dict[VoiceRole, int] = {
+    VoiceRole.MELODY: 1,
+    VoiceRole.HARMONY: 2,
+    VoiceRole.BASS: 1,
+    VoiceRole.PERCUSSION: 1,
+}
+"""How many voices each role may have. **This is the whole ensemble ceiling.**
+
+One melody, a pair of harmony voices, a bass and a kit — five instruments, and
+a brief asking for a fifteen-piece band is asking for something this engine
+does not write. That is a property of the engine (`compose/score.py` has four
+voice ids and the harmony bed is the only one that repeats) and of the render
+(each voice takes its own MIDI channel, and melodic voices must stay off
+channel 10).
+
+A table rather than four comparisons inside the validator, because the numbers
+are asked for in two other places: `/meta` publishes them so the page can state
+the ceiling before a brief is typed, and `ENSEMBLE_MAX_VOICES` is their sum.
+A limit the product enforces and does not disclose is how a user ends up
+asking for fifteen instruments, receiving four, and being told nothing.
+"""
+
+ENSEMBLE_MAX_VOICES: int = sum(ROLE_LIMITS.values())
+"""The ensemble's total ceiling — the sum of `ROLE_LIMITS`, not a second number."""
 
 
 class InstrumentationEntry(BaseModel):
@@ -373,19 +393,22 @@ class CompositionSpec(BaseModel):
             raise ValueError(
                 f"ensemble must have exactly one melody role; got {roles.count(VoiceRole.MELODY)}"
             )
-        if roles.count(VoiceRole.BASS) > 1:
-            raise ValueError("ensemble supports at most one bass entry")
-        if roles.count(VoiceRole.PERCUSSION) > 1:
-            raise ValueError("ensemble supports at most one percussion entry")
+        # Read off `ROLE_LIMITS` rather than compared one by one, so the numbers
+        # the page is told and the numbers enforced here cannot come apart.
+        for role in (VoiceRole.BASS, VoiceRole.PERCUSSION, VoiceRole.HARMONY):
+            limit = ROLE_LIMITS[role]
+            count = roles.count(role)
+            if count > limit:
+                raise ValueError(
+                    f"ensemble supports at most {limit} {role.value} "
+                    f"{'entry' if limit == 1 else 'entries'}; got {count}"
+                )
         for entry in entries:
             if entry.role == VoiceRole.PERCUSSION and entry.instrument != Instrument.DRUM_SET:
                 raise ValueError(
                     "percussion role requires the drum_set instrument; "
                     f"got {entry.instrument.value}"
                 )
-        harmony = roles.count(VoiceRole.HARMONY)
-        if harmony > 2:
-            raise ValueError(f"ensemble supports at most two harmony entries; got {harmony}")
         instruments = [entry.instrument for entry in entries]
         duplicates = {i for i in instruments if instruments.count(i) > 1}
         if duplicates:
@@ -440,6 +463,7 @@ __all__ = [
     "DURATION_SECONDS_MAX",
     "DURATION_SECONDS_MIN",
     "ENSEMBLE_MAX_VOICES",
+    "ROLE_LIMITS",
     "ROLE_ORDER",
     "SPEC_SCHEMA_VERSION",
     "TEMPO_BPM_MAX",

@@ -39,7 +39,8 @@ has told you about itself, not about the music.
 gate reading one. This project's rule is that no guard is written before it can
 fail, and nothing has run this against a live model: a threshold chosen now
 would be a number invented to match an unmeasured quantity. The floor lands
-with the first recorded sweep, in the commit that records it.
+with the first recorded sweep, in the commit that records it
+(`docs/open-items.md` C5).
 
 Two things this cannot tell you, listed so the number is not over-read. It
 cannot say the arbiter is *wrong* when they disagree — the judge is a model with

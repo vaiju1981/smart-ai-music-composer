@@ -111,6 +111,8 @@
   .examples-label { color: var(--faint); font-size: 0.78rem; }
   .chip { padding: 6px 10px; color: var(--muted); background: rgba(26, 31, 45, 0.72); border: 1px solid var(--border); border-radius: 999px; font-size: 0.76rem; }
   .chip:hover { color: var(--text); border-color: var(--violet); }
+  .ensemble-note { margin: 13px 0 0; color: var(--faint); font-size: 0.76rem; line-height: 1.6; }
+  .ensemble-note:empty { display: none; }
   .alert { margin: 13px 0 0; padding: 11px 13px; color: #ffaaaa; background: rgba(240, 120, 120, 0.08); border: 1px solid rgba(240, 120, 120, 0.28); border-radius: 10px; font-size: 0.84rem; white-space: pre-wrap; }
   .alert:empty { display: none; }
   .state-badge { display: inline-flex; align-items: center; padding: 5px 9px; color: var(--violet); background: rgba(155, 135, 245, 0.09); border: 1px solid rgba(155, 135, 245, 0.25); border-radius: 999px; font-size: 0.7rem; font-weight: 760; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -315,6 +317,7 @@
             <button type="button" class="chip">2-minute professional cinematic piece at 128 BPM: trumpet melody, brass accents, string harmony, contrabass, drums, expressive performance</button>
             <button type="button" class="chip">60-second sleep lullaby with piano and cello</button>
           </div>
+          <p class="ensemble-note" id="ensemble-note"></p>
           <p class="alert" id="form-error" role="alert"></p>
         </form>
       </section>
@@ -690,6 +693,28 @@
       composeBtn.textContent = "Create piece";
       kicker.textContent = "No model is configured, so a brief is composed once, straight through.";
     }
+  }
+
+  // The ensemble ceiling, stated before a brief is typed. This engine writes
+  // at most five voices, and a brief asking for fifteen instruments gets the
+  // closest ensemble it can build — which, unannounced, reads as the product
+  // ignoring what was asked. The sentence is built from `/meta` rather than
+  // written here, so it cannot drift from what the schema enforces.
+  function refreshMeta() {
+    window.fetch("/meta", { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (meta) {
+        if (!meta || !meta.ensemble) { return; }
+        var byRole = meta.ensemble.max_by_role || {};
+        var parts = Object.keys(byRole).map(function (role) {
+          return byRole[role] + " " + role;
+        });
+        el("ensemble-note").textContent =
+          "This studio writes up to " + meta.ensemble.max_voices + " voices — " +
+          parts.join(", ") + ". A brief asking for more gets the closest " +
+          "ensemble the engine can build.";
+      })
+      .catch(function () { /* the note is an aid, not a requirement */ });
   }
 
   function refreshHealth() {
@@ -1407,7 +1432,7 @@
   }
   if (bootSession) { loadSession(bootSession); }
   if (bootId) { statusPanel.hidden = false; setJob(bootId); startPolling(); }
-  refreshHealth(); window.setInterval(refreshHealth, HEALTH_MS); refreshHistory();
+  refreshHealth(); window.setInterval(refreshHealth, HEALTH_MS); refreshHistory(); refreshMeta();
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refreshHealth(); if (jobId) { startPolling(); } } });
   window.addEventListener("focus", function () { refreshHealth(); if (jobId) { startPolling(); } });
 })();

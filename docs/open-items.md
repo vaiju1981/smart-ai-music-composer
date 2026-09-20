@@ -173,7 +173,31 @@ open item is the recording itself, before it is the fix.
 
 ---
 
-### C4. The judge has never been run against a live listener
+### C4. Five voices is the ensemble, and a brief can ask for fifteen
+
+**What is open.** `ROLE_LIMITS` is one melody, two harmony, one bass and one
+kit — five instruments, and the schema refuses a sixth. A brief asking for "10
+to 15 instruments" is therefore asking for something this engine does not
+write, and what comes back is a three- or four-piece ensemble.
+
+**What was closed.** The *silence*, not the limit. `/meta` now publishes the
+ceiling and the page states it before a brief is typed, built from the same
+table `_validate_ensemble` refuses against. An enforced limit nobody is told
+about reads, from outside, as the product ignoring what was asked — which is
+the deaf-product failure `create_job` names.
+
+**What closing the rest involves** is an engine decision, not a copy change.
+`compose/score.py` has four voice ids and the harmony bed is the only one that
+repeats, so a wider ensemble is new voices in the engine; the render maps each
+voice to its own MIDI channel and melodic voices must stay off channel 10, so
+sixteen is the hard ceiling there. And it is a *musical* question before it is
+either: a fifteen-piece arrangement is orchestration, which is not what the
+melody/bed/bass/kit model writes.
+
+**What is not open:** the parser. It is not failing to adhere — it is being
+handed a schema that cannot express the request.
+
+### C5. The judge has never been run against a live listener
 
 **What is open.** `saimc-judge` composes the grid, pairs it, renders each piece
 blind and scores the two orders against each other — and no sweep has been run
