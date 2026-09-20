@@ -57,6 +57,8 @@ once, straight through — the Phase 1 path, unchanged.
   - `llm/` — `LLMClient` interface, `OllamaAdapter`, fallback parser
   - `parser.py` — top-level prompt → spec orchestration
   - `compose/` — composition engine (NotationScore + PerformancePlan)
+  - `quality.py` — the thirteen-metric musical scorecard
+  - `judge.py` — an independent listener, and how far its order is from the scorecard's
   - `jobs/` — RQ worker + state machine + manifest emission
   - `render/` — audio / sheet / animation renderers
   - `scripts/` — FFmpeg build + other ops scripts
@@ -69,6 +71,7 @@ once, straight through — the Phase 1 path, unchanged.
 - `scripts/` — repo-level ops scripts (benchmark runner, etc.)
 - `docs/roadmap.md` — architecture and release gates
 - `docs/parser-benchmark.md` — benchmark corpus process
+- `docs/judge.md` — the listening judge and what its number does and does not say
 - `docs/model-fine-tuning.md` — what model work can and cannot change about the music
 - `MODELS.md` — model registry (release gate per §10 #3)
 

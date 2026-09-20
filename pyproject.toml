@@ -79,6 +79,7 @@ saimc-benchmark = "saimc.benchmark_cli:_entry"
 saimc-label = "saimc.labeling_cli:_entry"
 saimc-preferences = "saimc.preferences_cli:_entry"
 saimc-quality = "saimc.quality_cli:_entry"
+saimc-judge = "saimc.judge_cli:_entry"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
 saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
@@ -122,6 +123,7 @@ ignore = [
 "src/saimc/benchmark_cli.py" = ["B008"]
 "src/saimc/labeling_cli.py" = ["B008"]
 "src/saimc/quality_cli.py" = ["B008"]
+"src/saimc/judge_cli.py" = ["B008"]
 "src/saimc/preferences_cli.py" = ["B008"]
 
 [tool.ruff.format]

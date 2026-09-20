@@ -173,6 +173,32 @@ open item is the recording itself, before it is the fix.
 
 ---
 
+### C4. The judge has never been run against a live listener
+
+**What is open.** `saimc-judge` composes the grid, pairs it, renders each piece
+blind and scores the two orders against each other — and no sweep has been run
+against a model, so `agreement_rate` has never had a value. The number this
+project most needs is the one it has built the machinery for and not yet taken.
+
+**What is deliberately absent.** There is no `MIN_AGREEMENT` and no release
+gate reading one, for this repo's own rule: no guard is written before it can
+fail, and a floor chosen before the first sweep would be a number invented to
+be cleared. It lands with the measurement, in the commit that records it.
+
+**Why it matters more than its size suggests.** `release/gates.py` accepts a
+50% threshold-breach rate (C1) and nothing can currently say whether that bar
+is lax or sensible, because the only reading of "good music" in the project is
+the one the bar is made of. E1 — whether the scorecard is a proxy for taste or
+a definition of it — is not answerable without this number either.
+
+**What running it involves.** A host, `saimc-judge --model <tag> -o
+var/judged.json`, and reading the disagreements by hand: each one is a piece
+the arbiter ranked above another that a listener preferred, with the listener's
+sentence about why. `docs/judge.md` says how to read the rate and what it
+cannot tell you.
+
+---
+
 ## D. Environment and tooling gaps
 
 ### D1. The real-binary render path is not exercised in CI, and never has been
