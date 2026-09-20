@@ -18,8 +18,9 @@ value they could carry is still valid.
 
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
@@ -244,6 +245,22 @@ ENSEMBLE_MAX_VOICES: int = sum(ROLE_LIMITS.values())
 """The ensemble's total ceiling — the sum of `ROLE_LIMITS`, not a second number."""
 
 
+SEED_BITS: Final[int] = 32
+"""How wide a derived seed is. Comfortably inside `random.Random`'s domain and
+small enough that a recorded seed is a number a person can retype."""
+
+
+def seed_for_brief(brief: str) -> int:
+    """A stable seed for a brief that named none: the words, hashed.
+
+    Deterministic across processes and machines — `hash()` is not, since
+    Python salts string hashing per interpreter, and a seed that changed
+    between runs would break the reproducibility this field exists for.
+    """
+    digest = hashlib.sha256(brief.strip().encode("utf-8")).digest()
+    return int.from_bytes(digest[: SEED_BITS // 8], "big")
+
+
 class InstrumentationEntry(BaseModel):
     """One instrument in the ensemble, tagged with its role."""
 
@@ -348,12 +365,13 @@ class CompositionSpec(BaseModel):
         default=None,
         ge=0,
         description=(
-            "RNG seed for reproducibility. None does not randomise the "
-            "piece: the engine composes against a fixed default seed of 0, "
-            "and the manifest records this field's None rather than that "
-            "resolved value. So None reproduces exactly, and seed=0 and "
-            "seed=None yield identical music. Pass an explicit seed to vary "
-            "a piece."
+            "RNG seed for reproducibility. None is not randomness: the engine "
+            "composes against a fixed default seed of 0, so seed=0 and "
+            "seed=None yield identical music. The product paths do not leave "
+            "it None — `with_brief_seed` derives one from the words that were "
+            "typed, so two different briefs are two different pieces and the "
+            "same brief is always the same piece. Pass an explicit seed to "
+            "pin one, or to hear another reading of the same brief."
         ),
     )
     humanization: Literal["none", "light", "expressive"] = Field(
@@ -366,6 +384,31 @@ class CompositionSpec(BaseModel):
             "shortens repeated notes into staccato."
         ),
     )
+
+    def with_brief_seed(self, brief: str) -> CompositionSpec:
+        """This spec, seeded from `brief` when it named no seed of its own.
+
+        **The one-shot path used to compose every unseeded request against seed
+        0.** So every "calming, two minutes" was the same piece — same key, same
+        tempo, same melody — however differently it had been asked for, because
+        a spec is ten fields and two briefs that land on the same ten are the
+        same request as far as the engine can tell. What a listener heard was a
+        product that ignored their words.
+
+        Deriving the seed from the words fixes the symptom without touching the
+        guarantee: the same brief still composes the same piece, byte for byte,
+        because the same text hashes to the same number. A different brief gets
+        a different one. It does not make the piece *about* the words — that is
+        the plan's job, and the plan is 45 fields the parser does not write yet
+        — but it stops two different requests being one answer.
+
+        A spec that names a seed is left alone: an explicit seed is a request
+        for one exact piece, and overwriting it would be the deaf-product
+        failure this codebase refuses elsewhere.
+        """
+        if self.seed is not None:
+            return self
+        return self.model_copy(update={"seed": seed_for_brief(brief)})
 
     @model_validator(mode="before")
     @classmethod
@@ -474,6 +517,7 @@ __all__ = [
     "ENSEMBLE_MAX_VOICES",
     "ROLE_LIMITS",
     "ROLE_ORDER",
+    "SEED_BITS",
     "SPEC_SCHEMA_VERSION",
     "TEMPO_BPM_MAX",
     "TEMPO_BPM_MIN",
@@ -487,4 +531,5 @@ __all__ = [
     "UnsupportedSpecVersionError",
     "VoiceRole",
     "WesternKey",
+    "seed_for_brief",
 ]

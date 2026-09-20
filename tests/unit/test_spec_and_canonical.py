@@ -30,6 +30,7 @@ from saimc.spec import (
     TimeSignature,
     VoiceRole,
     WesternKey,
+    seed_for_brief,
 )
 
 
@@ -227,3 +228,59 @@ class TestTheEnsembleCeilingMeetsTheRender:
             {"mood": "calming", "duration_seconds": 60, "instrumentation": entries}
         )
         assert len(spec.instrumentation) == ENSEMBLE_MAX_VOICES
+
+
+class TestTheBriefDecidesTheSeed:
+    """Two different briefs must not be one piece.
+
+    The one-shot path composed every unseeded request against seed 0, so
+    "calming, two minutes" was the same key, tempo and melody however
+    differently it had been asked for. Deriving the seed from the words fixes
+    that without touching the guarantee the field exists for.
+    """
+
+    def test_different_briefs_get_different_seeds(self) -> None:
+        bare = CompositionSpec.model_validate({"mood": "calming", "duration_seconds": 120})
+        one = bare.with_brief_seed("a calming piano piece")
+        other = bare.with_brief_seed("something cinematic that builds")
+        assert one.seed != other.seed
+
+    def test_the_same_brief_is_always_the_same_piece(self) -> None:
+        bare = CompositionSpec.model_validate({"mood": "calming", "duration_seconds": 120})
+        assert bare.with_brief_seed("a calming piano piece").seed == (
+            bare.with_brief_seed("  a calming piano piece  ").seed
+        ), "surrounding whitespace should not be a different request"
+
+    def test_a_seed_that_was_asked_for_is_never_overwritten(self) -> None:
+        """An explicit seed is a request for one exact piece."""
+        pinned = CompositionSpec.model_validate(
+            {"mood": "calming", "duration_seconds": 120, "seed": 5}
+        )
+        assert pinned.with_brief_seed("whatever the words say").seed == 5
+
+    def test_the_seed_is_stable_across_processes(self) -> None:
+        """`hash()` is salted per interpreter; a seed that moved between runs
+        would break the reproducibility this field exists for."""
+        import subprocess
+        import sys
+
+        out = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from saimc.spec import seed_for_brief; print(seed_for_brief('x'))",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert int(out.stdout.strip()) == seed_for_brief("x")
+
+    def test_two_briefs_compose_two_different_pieces(self) -> None:
+        """The point of the change, asserted on notes rather than on numbers."""
+        from saimc.compose.engine import compose
+
+        bare = {"mood": "calming", "duration_seconds": 120}
+        a = compose(CompositionSpec.model_validate(bare).with_brief_seed("a calm piano piece"))
+        b = compose(CompositionSpec.model_validate(bare).with_brief_seed("gentle strings at dusk"))
+        assert a.notation_score.compute_hash() != b.notation_score.compute_hash()

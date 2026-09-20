@@ -506,6 +506,10 @@ async def _parse_brief(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         raise ToolRefusal(result.error.error_code, result.error.message)
     spec = result.spec
     assert spec is not None  # ParseResult carries exactly one of spec or error
+    # Seeded from the words, for `with_brief_seed`'s reason — from the *brief*
+    # rather than from `text`, so a mid-session re-parse of one phrase does not
+    # move the piece the session has been working on.
+    spec = spec.with_brief_seed(ctx.session.brief)
     ctx.session.spec = spec
     return _render(
         {
