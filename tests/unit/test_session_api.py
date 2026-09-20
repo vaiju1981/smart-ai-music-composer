@@ -1358,3 +1358,78 @@ class TestRefusalTranslation:
         assert exc.status_code == 500
         assert "nonsense" in exc.detail
         assert "s1" in exc.detail
+
+
+class TestAPassOwesSomethingToLookAt:
+    """A first turn that only parses must not end the pass with nothing.
+
+    Reported from a real session. The digest came back with a spec of thirteen
+    instruments, a brief-derived seed — and `drafts (0): none yet` after a
+    single turn whose only call was `parse_brief`. The cause was one flag doing
+    two jobs: `auto_finalize` gated the continuation loop as well as the
+    publish, so the workspace turning off automatic publishing also turned off
+    "keep going until there is something to show".
+    """
+
+    def test_a_parse_only_first_turn_is_continued(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        model.replies = [
+            _reply(_call("parse_brief"), content="Reading the brief first."),
+            _reply(_call("draft", n=2), content="Two readings of it."),
+        ]
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief", "auto"]
+        assert len(body["drafts"]) == 2, "the pass ended with nothing to look at"
+        assert body["finalized_job_id"] is None, "choosing is the user's, not the harness's"
+
+    def test_the_continuation_is_not_told_to_publish(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """The other half of the same conflation.
+
+        `trigger="auto"` used to mean "publish if you can", because the only
+        caller that produced one had asked for auto-finalize. A workspace
+        continuation is asked for a different reason, and a model told to hurry
+        would take the choice from the user it is drafting for.
+        """
+        model.replies = [
+            _reply(_call("parse_brief")),
+            _reply(_call("draft", n=2)),
+        ]
+        client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        )
+
+        continuation = _turn_prompt(model, 1)
+        assert "do not publish" in continuation
+        assert "publish it" not in continuation
+
+    def test_a_pass_that_already_drafted_is_not_continued(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """Once there are candidates the harness stops asking: the choice is the
+        user's, and a second turn would be the model choosing for them."""
+        model.replies = [_reply(_call("parse_brief"), _call("draft", n=2))]
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief"]
+        assert len(body["drafts"]) == 2
+
+    def test_a_failed_turn_ends_the_pass_rather_than_being_retried(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """There is nothing to ask when the ask cannot be delivered."""
+        model.replies = [_reply(_call("parse_brief"))]  # the script runs out next
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief", "auto"]
+        assert body["turns"][-1]["llm_error"] is not None
+        assert body["drafts"] == []

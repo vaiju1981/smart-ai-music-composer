@@ -533,13 +533,22 @@ async def conduct(
     The turn is the conductor's (`take_turn`). Everything after it is the
     harness's, and it is three decisions:
 
-    1. **Continue while there is something to decide.** A pass that published
-       nothing gets up to `MAX_AUTO_TURNS` more turns with `trigger="auto"`,
-       which carries the nudge to publish. The loop stops early in the two cases
-       where a continuation has nothing to answer: a turn whose own model call
-       failed (there is nothing to ask when the ask cannot be delivered), and a
-       session left holding exactly one draft — the harness will publish it, so
-       there is no choice to make and no reason to spend a model call saying so.
+    1. **Continue until the pass owes nothing.** What it owes depends on what
+       was asked for, and conflating the two was a bug: `auto_finalize` used to
+       gate the continuation loop *and* the publish, so a workspace that turned
+       off automatic publishing also turned off "keep going until there is
+       something to show" — and a first turn that spent itself on `parse_brief`
+       ended with a spec, no drafts, and a user looking at "none yet".
+
+       With auto-finalize the pass owes a *piece*, so it continues until one
+       candidate is there to master. Without it the pass owes something to
+       *look at*, so it continues until there are drafts and then stops, because
+       choosing between candidates is the user's. Either way it stops on a turn
+       whose own model call failed — there is nothing to ask when the ask cannot
+       be delivered — and after `MAX_AUTO_TURNS`.
+
+       The continuation carries `may_publish=auto_finalize`, so the turn that
+       must not publish is not told to.
     2. **A lone candidate is published.** One draft is not a choice, it is the
        only thing the session made, and mastering it is what keeps "one prompt,
        one finished piece" true for a brief specific enough to get a single
@@ -554,15 +563,22 @@ async def conduct(
         session=session, sessions=sessions, jobs=jobs, llm=_parser(client), chat=client
     )
     await take_turn(ctx, client, trigger=trigger, message=message)
-    if not auto_finalize or session.is_finalized:
-        return
 
     for _ in range(MAX_AUTO_TURNS):
-        if session.is_finalized or session.turns[-1].failed or _lone_draft(session) is not None:
+        if session.is_finalized or session.turns[-1].failed:
             break
-        await take_turn(ctx, client, trigger="auto")
+        if auto_finalize:
+            # The pass owes a *piece*, so it continues until there is one
+            # candidate to master.
+            if _lone_draft(session) is not None:
+                break
+        elif session.drafts:
+            # The pass owes something to *look at*. Once it has candidates the
+            # choice is the user's, so the harness stops asking.
+            break
+        await take_turn(ctx, client, trigger="auto", may_publish=auto_finalize)
 
-    if session.is_finalized:
+    if not auto_finalize or session.is_finalized:
         return
     draft = _lone_draft(session)
     if draft is not None:
