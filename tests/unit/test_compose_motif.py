@@ -9,7 +9,8 @@ from dataclasses import replace
 
 import pytest
 
-from saimc.compose.engine import _melody_band_for, compose
+from saimc.compose.engine import compose
+from saimc.compose.harmony import melody_band_for
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_BASS_FIGURES,
@@ -44,7 +45,7 @@ def _melody_band(out) -> MelodyBand:
     melody instrument's, so a test that wants to check the placement
     honours it has to ask which instrument carried the line — and ask the
     engine, not the instrument table, because a melody and an
-    accompaniment are placed together: `_melody_band_for` raises the tune
+    accompaniment are placed together: `melody_band_for` raises the tune
     when the accompaniment's own range needs an octave underneath it, so
     a piano over a strings bed is written in 63-84 and a piano alone in
     56-77. Asserting against `melody_band` alone would fail the pieces
@@ -59,7 +60,7 @@ def _melody_band(out) -> MelodyBand:
             bed = voice.instrument
     if melody is None:
         raise AssertionError("the score has no melody voice instrument")
-    return _melody_band_for(melody=melody, bed=bed)
+    return melody_band_for(melody=melody, bed=bed)
 
 
 class TestGenerateMotif:
@@ -140,7 +141,14 @@ class TestVaryMotif:
                 seen.add("ornament")
             else:
                 seen.add("inversion")
-        assert seen == {"repetition", "transposition", "sequence", "inversion", "truncation", "ornament"}
+        assert seen == {
+            "repetition",
+            "transposition",
+            "sequence",
+            "inversion",
+            "truncation",
+            "ornament",
+        }
 
     def test_inversion_mirrors_steps(self) -> None:
         motif: Motif = (
@@ -159,9 +167,7 @@ class TestVaryMotif:
         pytest.fail("inversion never drawn in 500 rolls")
 
     def test_truncation_keeps_at_least_one_cell(self) -> None:
-        motif: Motif = tuple(
-            MotifCell(step=0 if i == 0 else 1, length_ticks=PPQ) for i in range(6)
-        )
+        motif: Motif = tuple(MotifCell(step=0 if i == 0 else 1, length_ticks=PPQ) for i in range(6))
         for seed in range(500):
             variant = vary_motif(motif, random.Random(seed))
             assert len(variant.motif) >= 1
@@ -246,9 +252,7 @@ class TestBassFigures:
         """
         for mood, figures in BASS_FIGURES.items():
             for figure in figures:
-                assert all(
-                    0 <= rung <= 3 for _start, _length, rung in figure
-                ), mood
+                assert all(0 <= rung <= 3 for _start, _length, rung in figure), mood
 
     def test_the_plain_figure_is_in_every_mood(self) -> None:
         # It is what a piece's final bar plays whatever its slot drew, so
@@ -303,10 +307,7 @@ class TestMotifMelody:
                 {"mood": mood.value, "duration_seconds": 60, "seed": 42}
             )
             mel = _melody(compose(spec))
-            intervals = {
-                abs(b.pitch_midi - a.pitch_midi)
-                for a, b in itertools.pairwise(mel)
-            }
+            intervals = {abs(b.pitch_midi - a.pitch_midi) for a, b in itertools.pairwise(mel)}
             assert len(intervals) >= 6, (mood, sorted(intervals))
 
     def test_motif_recurs_across_bars(self) -> None:
@@ -321,10 +322,7 @@ class TestMotifMelody:
         for note in mel:
             bars.setdefault(note.tick // (4 * PPQ), []).append(note.pitch_midi)
         for pitches in bars.values():
-            contour = tuple(
-                (b - a > 0) - (b - a < 0)
-                for a, b in itertools.pairwise(pitches)
-            )
+            contour = tuple((b - a > 0) - (b - a < 0) for a, b in itertools.pairwise(pitches))
             if len(contour) >= 3:
                 contours[contour] += 1
         assert contours, "no bar carried a long-enough contour"
@@ -341,9 +339,9 @@ class TestMotifMelody:
         # integration-level oracle lives in test_compose_engine; the S6
         # walking bass made "interval above the bass note" a wrong oracle
         # here, since the bass now plays inversions too.)
-        from saimc.compose.engine import _melody_bar
         from saimc.compose.forms import bar_diatonic_pcs, scale_intervals
         from saimc.compose.linter import legal_non_chord_tone
+        from saimc.compose.melody import melody_bar
         from saimc.compose.motif import MotifVariant
         from saimc.compose.score import PPQ, KeySignature
         from saimc.instruments import MelodyBand
@@ -354,7 +352,7 @@ class TestMotifMelody:
         for seed in range(20):
             rng = random.Random(seed)
             motif = generate_motif(rng, bar_ticks=4 * PPQ)
-            notes = _melody_bar(
+            notes = melody_bar(
                 band=MelodyBand(low_midi=60, high_midi=84),
                 variant=MotifVariant(motif=motif),
                 chord_root=chord_root,
@@ -368,7 +366,7 @@ class TestMotifMelody:
                 position=0.5,
                 ticks_per_bar=4 * PPQ,
                 seed_for_variation=seed,
-                # The calming figures, as a plan resolves them: `_melody_bar`
+                # The calming figures, as a plan resolves them: `melody_bar`
                 # reads a weight table rather than a mood, because the mood
                 # lookup belongs to the plan's own default.
                 shape=replace(
@@ -517,9 +515,7 @@ class TestMotifMelody:
             assert instruments, instrument
             for voice_id, name in instruments.items():
                 span = range_for(name)
-                pitches = [
-                    n.pitch_midi for n in out.notation_score.notes if n.voice_id == voice_id
-                ]
+                pitches = [n.pitch_midi for n in out.notation_score.notes if n.voice_id == voice_id]
                 for pitch in pitches:
                     assert span.contains(pitch), (instrument, name, pitch)
 
@@ -559,9 +555,7 @@ class TestMotifMelody:
         for mood in Mood:
             for seed in range(33):
                 spec = CompositionSpec(mood=mood, seed=seed, duration_seconds=60)
-                report = score_piece(
-                    compose(spec).notation_score, piece=f"{mood.value}-{seed}"
-                )
+                report = score_piece(compose(spec).notation_score, piece=f"{mood.value}-{seed}")
                 reports.append(report)
                 assert report.step_ratio >= 0.45, (mood, seed, report)
                 assert 7 <= report.range_semitones <= 24, (mood, seed, report)

@@ -266,9 +266,7 @@ def resolve_job_soundfont(voice_instruments: Mapping[int, str]) -> Path:
     return GENERAL_SOUNDFONT
 
 
-def font_conflicts(
-    voice_instruments: Mapping[int, str], soundfont_path: Path
-) -> dict[int, str]:
+def font_conflicts(voice_instruments: Mapping[int, str], soundfont_path: Path) -> dict[int, str]:
     """Voices that cannot sound under the job's resolved font.
 
     A voice conflicts when its instrument is font-only (no GM voice)
@@ -286,6 +284,7 @@ def font_conflicts(
         if expected.exists() and soundfont_path != expected:
             conflicts[voice_id] = name
     return conflicts
+
 
 # Where downloaded fonts live. `scripts/download_soundfonts.py` fills
 # this directory with pinned-sha256 files (gitignored — re-downloadable

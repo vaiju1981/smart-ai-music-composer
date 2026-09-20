@@ -353,6 +353,8 @@ def get_meta() -> dict[str, Any]:
         DURATION_SECONDS_DEFAULT,
         DURATION_SECONDS_MAX,
         DURATION_SECONDS_MIN,
+        ENSEMBLE_MAX_VOICES,
+        ROLE_LIMITS,
         ROLE_ORDER,
         Mood,
         TimeSignature,
@@ -363,6 +365,14 @@ def get_meta() -> dict[str, Any]:
         "time_signatures": [t.value for t in TimeSignature],
         "instruments": sorted(SUPPORTED_INSTRUMENTS),
         "roles": [r.value for r in ROLE_ORDER],
+        # The ensemble ceiling, published because the page has to be able to
+        # state it. A user asking for fifteen instruments and receiving four
+        # with no explanation is what an enforced-but-undisclosed limit reads
+        # as from the outside.
+        "ensemble": {
+            "max_voices": ENSEMBLE_MAX_VOICES,
+            "max_by_role": {role.value: limit for role, limit in ROLE_LIMITS.items()},
+        },
         "default_ensembles": {
             mood: {"harmony": SCALAR_HARMONY[mood], "bass": SCALAR_BASS[mood]}
             for mood in SCALAR_HARMONY
@@ -377,9 +387,27 @@ def get_meta() -> dict[str, Any]:
 
 
 @router.get("/health")
-def get_health() -> dict[str, Any]:
-    """Expose broker/worker readiness to the local UI."""
-    return _service_health()
+def get_health(request: Request) -> dict[str, Any]:
+    """Expose broker/worker readiness — and whether there is a conductor.
+
+    `conductor` is here because the page has two front doors and only one of
+    them exists on every machine. With a model, a brief opens a *session*: the
+    conductor drafts, the user hears the candidates and picks one. Without one,
+    the same brief is a one-shot job, which is what `create_job` falls back to
+    for the same reason. The page cannot offer the first and discover halfway
+    through that it was the second, so it asks here and says which it is.
+
+    The identifier is read off the client rather than out of the configuration:
+    a proxy's tag namespace need not be the one that was asked for, and the
+    name worth showing is the one being served.
+    """
+    snapshot = _service_health()
+    client = _session_llm(request)
+    snapshot["conductor"] = {
+        "available": client is not None,
+        "model": None if client is None else getattr(client, "model_identifier", None),
+    }
+    return snapshot
 
 
 @router.get("/jobs/{job_id}")

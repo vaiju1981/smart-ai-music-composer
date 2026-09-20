@@ -96,7 +96,10 @@ class TestTheCountingRule:
         reports a half.
         """
         report = proposal(
-            (*_rows("draft-one", (_PAD,)), *_rows("draft-two", (_PAD, _DENSITY, _DENSITY), verdict="dislike"))
+            (
+                *_rows("draft-one", (_PAD,)),
+                *_rows("draft-two", (_PAD, _DENSITY, _DENSITY), verdict="dislike"),
+            )
         )
         assert _evidence(report, "harmony_pad_coverage", _PAD) == Candidate(_PAD, 1, 1)
 
@@ -165,7 +168,9 @@ class TestTheRanking:
                 *_rows("draft-one", (_PAD,)),
                 *_rows("draft-two", (_PAD,), verdict="dislike", at=_NOW + timedelta(minutes=1)),
                 *_rows("draft-three", (_DENSITY,)),
-                *_rows("draft-four", (_DENSITY,), verdict="dislike", at=_NOW + timedelta(minutes=2)),
+                *_rows(
+                    "draft-four", (_DENSITY,), verdict="dislike", at=_NOW + timedelta(minutes=2)
+                ),
                 *_rows("draft-five", (_DENSITY,)),
                 *_rows("draft-six", (_DENSITY,), verdict="dislike", at=_NOW + timedelta(minutes=3)),
             )
@@ -220,8 +225,18 @@ class TestTheRanking:
         """
         rows = (
             *_rows("draft-one", (SetMelodyBand(semitones=12),), source="repair"),
-            *_rows("draft-two", (SetMelodyBand(semitones=13),), source="repair", at=_NOW + timedelta(minutes=1)),
-            *_rows("draft-three", (SetMelodyBand(semitones=14),), source="repair", at=_NOW + timedelta(minutes=2)),
+            *_rows(
+                "draft-two",
+                (SetMelodyBand(semitones=13),),
+                source="repair",
+                at=_NOW + timedelta(minutes=1),
+            ),
+            *_rows(
+                "draft-three",
+                (SetMelodyBand(semitones=14),),
+                source="repair",
+                at=_NOW + timedelta(minutes=2),
+            ),
         )
         assert proposal(rows) == proposal(tuple(reversed(rows)))
 

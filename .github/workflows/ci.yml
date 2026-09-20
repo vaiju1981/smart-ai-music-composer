@@ -32,9 +32,38 @@ jobs:
         run: python -m pip install -e ".[dev,render,benchmark]"
       - name: Console scripts (a wrong entry point passes everything else)
         run: python scripts/check_console_scripts.py
-      - name: Ruff
+      - name: Ruff (lint)
         run: ruff check .
+      # The formatter is checked too, not just the linter. README tells a
+      # contributor to run `ruff format --check`; until this step existed that
+      # instruction was enforced by nothing, and the tree had drifted out of
+      # format in 47 files without a single red build.
+      - name: Ruff (format)
+        run: ruff format --check .
       - name: Mypy
         run: mypy src
       - name: Tests (coverage gate enforced via pyproject fail_under)
         run: pytest --cov
+
+  # The browser suite is its own job. It needs a ~150 MB Chromium that the
+  # unit matrix has no use for, and it runs once rather than per Python
+  # version: what it exercises is the page, which does not vary with the
+  # interpreter serving it.
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev,ui]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: UI tests
+        env:
+          # Chromium was installed in the step above, so a skipped suite here
+          # would be a green build over tests that never ran.
+          SAIMC_UI_REQUIRE_BROWSER: "1"
+        run: pytest tests/ui --no-header -ra

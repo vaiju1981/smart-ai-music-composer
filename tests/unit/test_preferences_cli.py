@@ -121,9 +121,7 @@ class TestTheReport:
         assert "harmony_pad_coverage   [reordered]" in result.stdout
         assert "texture_hierarchy   [reordered]" not in result.stdout
 
-    def test_a_request_no_user_has_seen_is_not_printed_as_a_rate(
-        self, log: PreferenceLog
-    ) -> None:
+    def test_a_request_no_user_has_seen_is_not_printed_as_a_rate(self, log: PreferenceLog) -> None:
         """`0%` would read as an opinion, and there is none."""
         log.append(_judged("draft-one", (_PAD,)))
         result = runner.invoke(app, ["--log", str(log.root)])
@@ -156,7 +154,9 @@ class TestTheReport:
         result = runner.invoke(app, ["--log", str(log.root)])
         assert "Table entries no judgement carries (6):" in result.stdout
         assert "    harmony_pad_coverage: SetAccompanimentDensity(step_ticks=1440)" in result.stdout
-        assert "    harmony_pad_coverage: SetHarmonyTexture(broken_chord=False)" not in result.stdout
+        assert (
+            "    harmony_pad_coverage: SetHarmonyTexture(broken_chord=False)" not in result.stdout
+        )
 
     def test_an_absent_log_says_so_instead_of_reporting_an_empty_one(
         self, log: PreferenceLog
@@ -181,7 +181,9 @@ class TestTheReport:
         log.append(
             (
                 *_judged("draft-one", (_PAD,), verdict="dislike"),
-                *_judged("draft-two", (_DENSITY,), verdict="dislike", at=_NOW + timedelta(minutes=1)),
+                *_judged(
+                    "draft-two", (_DENSITY,), verdict="dislike", at=_NOW + timedelta(minutes=1)
+                ),
             )
         )
         assert runner.invoke(app, ["--log", str(log.root)]).exit_code == 0
@@ -190,7 +192,12 @@ class TestTheReport:
         log.append(
             (
                 *_judged("draft-one", (_OFFERED,), source="repair"),
-                *_judged("draft-two", (SetMelodyBand(semitones=13),), source="repair", at=_NOW + timedelta(minutes=1)),
+                *_judged(
+                    "draft-two",
+                    (SetMelodyBand(semitones=13),),
+                    source="repair",
+                    at=_NOW + timedelta(minutes=1),
+                ),
             )
         )
         first = runner.invoke(app, ["--log", str(log.root)]).stdout
@@ -275,9 +282,7 @@ class TestTheMalformedLog:
         assert f"{log.path} line 2 is not a preference row" in result.output
         assert "Traceback" not in result.output
 
-    def test_a_judgement_whose_rows_disagree_is_refused_by_name(
-        self, log: PreferenceLog
-    ) -> None:
+    def test_a_judgement_whose_rows_disagree_is_refused_by_name(self, log: PreferenceLog) -> None:
         """A hand-edited log, refused where it is read rather than counted."""
         log.append(_judged("draft-one", (_PAD,)))
         lines = log.path.read_text(encoding="utf-8").splitlines()

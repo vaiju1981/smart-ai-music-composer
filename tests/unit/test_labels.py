@@ -70,9 +70,7 @@ def _rejected(
 def _mutated(record: BenchmarkRecord, **spec: object) -> BenchmarkRecord:
     """The same record with one or more spec keys changed, as a reviewer's would be."""
     assert record.expected_spec is not None
-    return record.model_copy(
-        update={"expected_spec": {**record.expected_spec, **spec}}
-    )
+    return record.model_copy(update={"expected_spec": {**record.expected_spec, **spec}})
 
 
 class TestTheComparableFields:
@@ -151,9 +149,7 @@ class TestTheComparableFields:
     def test_a_spec_compared_whole_is_one_field_and_not_ten(self) -> None:
         """The branch where one side is a rejection: one absence, not ten misses."""
         accepted = _accepted("a")
-        report = compare_labelings(
-            [accepted], [_rejected("a", prompt=accepted.prompt)]
-        )
+        report = compare_labelings([accepted], [_rejected("a", prompt=accepted.prompt)])
 
         fields = {entry.field for entry in report.by_field}
         assert "expected_spec" in fields
@@ -177,9 +173,7 @@ class TestTheRate:
         assert len(moved.disagreements) == 1
         assert moved.matched_fields == report.matched_fields - 1
         assert moved.field_count == report.field_count
-        assert moved.rate == pytest.approx(
-            (report.matched_fields - 1) / report.field_count
-        )
+        assert moved.rate == pytest.approx((report.matched_fields - 1) / report.field_count)
         assert moved.disagreeing_records == 1
 
     def test_wrongness_on_every_decision_fails_however_the_padding_is_counted(self) -> None:
@@ -197,7 +191,11 @@ class TestTheRate:
         mutated = [
             _mutated(
                 record,
-                mood=next(m for m in ("calming", "sleep", "electrifying") if m != record.expected_spec["mood"]),
+                mood=next(
+                    m
+                    for m in ("calming", "sleep", "electrifying")
+                    if m != record.expected_spec["mood"]
+                ),
                 duration_seconds=600 if record.expected_spec["duration_seconds"] != 600 else 30,
             )
             if record.expected_spec is not None

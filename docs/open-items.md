@@ -58,10 +58,16 @@ and has no release gate asserted against it.
 ### A2. The live model sweep (G4) — blocked behind A1
 
 **What is open.** `saimc-benchmark --label <model>` has never been run against a
-live host. `_run_with_client` raises `NotImplementedError` in the shipped path, so
-§8's 98/97/95 bars have never been scored against a model, and `MODELS.md` — which
-§10 #3 requires to exist before a candidate may be requested at all — holds no
-approved model. `docs/model-fine-tuning.md:112` still says so in prose.
+live host, so §8's 98/97/95 bars have never been scored against a model, and
+`MODELS.md` — which §10 #3 requires to exist before a candidate may be requested
+at all — holds no approved model. `docs/model-fine-tuning.md:112` still says so in
+prose.
+
+The runner itself is **not** what is missing: `_run_with_client`
+(`src/saimc/benchmark_cli.py:128`) sweeps the corpus, owns and closes the adapter,
+and measures latency around the whole `parse_prompt` call. This file said it raised
+`NotImplementedError`; that was true until `235d2df` and was already false when
+this file was written. What is open is the *run*, not the code that would do it.
 
 **Why it waits.** Scoring a model against single-labeler labels measures it
 against those labels' errors as much as against the product rules. A1 first.
@@ -97,19 +103,25 @@ commit** — this repo's habit for prose the code outgrew:
 
 ## B. Deliberately deferred, with a recorded reason
 
-### B1. The "show the top 3" presentation (Phase E5)
+### B1. Ranking is not shown, and the workspace does not say which draft won
 
-**What is open.** The fan-out and its ranking exist and are tested; the
-*presentation* — draft cards with playable sketches, the scorecard's verdict per
-draft, the arbiter's reasons in plain musical language — is not built.
+**What is open.** The arbiter ranks a fan-out (`session/arbiter.py`) and the
+session workspace does not show that order: the cards are in the order the
+drafts were made, and nothing on screen says which one the ratchet would keep.
+`SessionResponse` carries no ranking, so the page cannot show one without
+inventing it — which is why it shows none.
 
-**Why.** `src/saimc/jobs/static/index.html` has **no test witness in the repo at
-all**: no test reads it, it is served by `jobs/api.py` and that is the whole of its
-coverage. The workspace would be several hundred lines of markup and JS that
-nothing in the suite can see, and its behaviour (fetch, render, poll) cannot be
-witnessed, since the project has neither a browser nor jsdom. Every endpoint it
-needs is built and tested, so this is a surface waiting for a decision about how
-the UI is witnessed — not blocked work.
+**What was closed instead.** The presentation itself. `jobs/static/index.html`
+now shows the conductor's turns and tool calls, the candidates with playable
+sketches, all thirteen measurements per draft with the misses marked and read
+back in plain language, the verdict buttons, the edit box and its
+applied/refused/unread report, and publish. `tests/ui/` drives all of it in a
+browser.
+
+**What closing this involves.** Either `rank` on the session surface (the
+arbiter's order, as a list of draft ids with the element that decided each
+pair), or a `compare` call the page makes and renders. The first is the honest
+one: the order is a property of the drafts, not of a question about them.
 
 ### B2. Draft and session retention is by session age only
 
@@ -161,6 +173,79 @@ open item is the recording itself, before it is the fix.
 
 ---
 
+### C4. Five voices is the ensemble, and a brief can ask for fifteen
+
+**What is open.** `ROLE_LIMITS` is one melody, two harmony, one bass and one
+kit — five instruments, and the schema refuses a sixth. A brief asking for "10
+to 15 instruments" is therefore asking for something this engine does not
+write, and what comes back is a three- or four-piece ensemble.
+
+**What was closed.** The *silence*, not the limit. `/meta` now publishes the
+ceiling and the page states it before a brief is typed, built from the same
+table `_validate_ensemble` refuses against. An enforced limit nobody is told
+about reads, from outside, as the product ignoring what was asked — which is
+the deaf-product failure `create_job` names.
+
+**What was then closed.** The ceiling moved to fifteen — one melody, twelve
+harmony, a bass and a kit, which is exactly what MIDI carries once the kit has
+channel 10 — and `HarmonyVoices.divisi` shares the chord out across the pads so
+they voice different inversions instead of one dyad in twelve registers. The
+linter's simultaneous-note cap became per *voice*, which is where "a pianist's
+two hands" actually applies; counted across the score it was a cap on the size
+of the ensemble.
+
+**What is open is that a large ensemble measures worse.** Over 24 cells (3
+moods x 2 durations x 4 seeds) at each size, the share of pieces breaching at
+least one quality threshold:
+
+| harmony voices | breaching | register_separation | tessitura_overlap |
+|---|---|---|---|
+| 2 | 8/24 | 3.33 | 0.00 |
+| 4 | 11/24 | 3.42 | 0.00 |
+| 8 | 11/24 | 3.42 | 0.00 |
+| 12 | **22/24** | **0.58** | **5.08** |
+
+The collapse is `settle_harmony_register`: it places each bed against the
+finished tune using the instrument's own comfortable range, and a dozen
+instruments with overlapping ranges all settle into the same band, on top of
+the melody. Divisi does not fix it — it moves `tessitura_overlap` from 5.92 to
+5.08 and nothing else — because it distributes *pitch classes*, not registers.
+
+**What closing it involves** is spreading the beds across registers rather than
+settling each one independently: the bed's placement has to become a decision
+about the whole ensemble, the way `melody_band_for` is already a decision about
+the whole piece. Until then a twelve-voice request composes, renders and sounds
+crowded, and the numbers above say by how much.
+
+**What is not open:** the parser. It was never failing to adhere — it was being
+handed a schema that could not express the request.
+
+### C5. The judge has never been run against a live listener
+
+**What is open.** `saimc-judge` composes the grid, pairs it, renders each piece
+blind and scores the two orders against each other — and no sweep has been run
+against a model, so `agreement_rate` has never had a value. The number this
+project most needs is the one it has built the machinery for and not yet taken.
+
+**What is deliberately absent.** There is no `MIN_AGREEMENT` and no release
+gate reading one, for this repo's own rule: no guard is written before it can
+fail, and a floor chosen before the first sweep would be a number invented to
+be cleared. It lands with the measurement, in the commit that records it.
+
+**Why it matters more than its size suggests.** `release/gates.py` accepts a
+50% threshold-breach rate (C1) and nothing can currently say whether that bar
+is lax or sensible, because the only reading of "good music" in the project is
+the one the bar is made of. E1 — whether the scorecard is a proxy for taste or
+a definition of it — is not answerable without this number either.
+
+**What running it involves.** A host, `saimc-judge --model <tag> -o
+var/judged.json`, and reading the disagreements by hand: each one is a piece
+the arbiter ranked above another that a listener preferred, with the listener's
+sentence about why. `docs/judge.md` says how to read the rate and what it
+cannot tell you.
+
+---
+
 ## D. Environment and tooling gaps
 
 ### D1. The real-binary render path is not exercised in CI, and never has been
@@ -186,14 +271,6 @@ scan the diff locally, as the project rule asks.
 `shellcheck` is not installed, so the bootstrap section in `run.sh` has only been
 through `bash -n`. It is verified by hand in three modes (stale install, missing
 render build, unknown service), but not by a linter.
-
-### D4. `ruff format` is not enforced
-
-Measured today: **47 files would be reformatted, 93 already formatted.** CI runs
-`ruff check` only. Enforcing the formatter needs a mass-reformat commit whose diff
-would bury whatever feature lands beside it, which is why it is a decision rather
-than a tidy-up. The number has grown since the same measurement was taken earlier
-in the project (25 files), so this drifts upward on its own.
 
 ---
 

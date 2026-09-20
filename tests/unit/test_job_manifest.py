@@ -276,7 +276,9 @@ class TestTheManifestRecordsThePlan:
         block = build_manifest(completed_job, _inputs())["input_plan"]
         assert CompositionPlan.from_canonical_dict(block["plan"]) == completed_job.input_plan
 
-    def test_the_block_survives_the_manifest_write(self, completed_job: Job, tmp_path: Path) -> None:
+    def test_the_block_survives_the_manifest_write(
+        self, completed_job: Job, tmp_path: Path
+    ) -> None:
         """Through canonical JSON on disk, which is how it is read."""
         from saimc.compose.plan import default_plan
 

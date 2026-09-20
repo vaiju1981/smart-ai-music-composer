@@ -112,6 +112,27 @@ class HarmonyVoices:
     leading one always sustain, whatever this says — a piece with two
     harmony voices gets its broken chord on one of them, not both.
     """
+    divisi: bool = True
+    """Whether the pad layers share the chord out instead of each playing it.
+
+    With it off, every sustaining layer plays the *same* two chord tones — the
+    rotation's tone and the one a third above it — differing only by instrument,
+    register window and a few units of velocity. That is fine for one pad and it
+    is why an ensemble used to be capped at two harmony voices: a third
+    instrument added loudness and no music. Twelve of them would be twelve
+    instruments playing one dyad.
+
+    With it on, layer *i* starts from the tone *i* steps along the chord, so the
+    layers voice different inversions, and a layer stops doubling its neighbour
+    the moment there is a neighbour to double. A layer that is the only pad
+    still plays the dyad — sharing a chord out between one instrument is not
+    sharing it — so a solo-plus-pad piece is written the way it always was, and
+    only an ensemble that has something to distribute is distributed.
+
+    Where more layers sound than the chord has tones, the sequence wraps and the
+    repeats land in their own instruments' registers, which is the octave
+    doubling an orchestrator would write rather than a unison.
+    """
     arpeggio_step_ticks: int = HARMONY_ARPEGGIO_STEP_TICKS
     """The interval the broken-chord figure steps on."""
     pad_velocity: int = HARMONY_PAD_VELOCITY
@@ -124,6 +145,9 @@ class HarmonyVoices:
     """How far under the melody the bed is held."""
 
 
+HARMONY_DIVISI: bool = True
+"""Whether the pad layers share the chord out. See `HarmonyVoices.divisi`."""
+
 DEFAULT_HARMONY_VOICES: HarmonyVoices = HarmonyVoices()
 """The voices layer's defaults: today's texture, figure and levels."""
 
@@ -133,6 +157,7 @@ __all__ = [
     "DEFAULT_HARMONY_VOICES",
     "HARMONY_ARPEGGIO_STEP_TICKS",
     "HARMONY_ARPEGGIO_VELOCITY",
+    "HARMONY_DIVISI",
     "HARMONY_MELODY_CLEARANCE",
     "HARMONY_PAD_VELOCITY",
     "HARMONY_STAB_INSTRUMENTS",

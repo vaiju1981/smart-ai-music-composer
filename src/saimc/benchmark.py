@@ -250,9 +250,7 @@ def score_corpus(
     # names, and it is the only one of the four that the repair loop and the
     # fallback exist to hold at 100%.
     resolution_rate = (
-        sum(1 for outcome, _ in supported if outcome.matched) / len(supported)
-        if supported
-        else 0.0
+        sum(1 for outcome, _ in supported if outcome.matched) / len(supported) if supported else 0.0
     )
 
     field_exact_count = sum(1 for outcome, _ in supported if outcome.field_exact_match)

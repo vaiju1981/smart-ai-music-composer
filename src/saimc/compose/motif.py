@@ -656,8 +656,7 @@ def apply_rhythm(
         passing = [
             index
             for index in range(len(mutable) - 1)
-            if mutable[index][1] == PPQ // 2
-            and abs(mutable[index + 1][2] - mutable[index][2]) == 2
+            if mutable[index][1] == PPQ // 2 and abs(mutable[index + 1][2] - mutable[index][2]) == 2
         ]
         if not passing:
             return _reflow(mutable)

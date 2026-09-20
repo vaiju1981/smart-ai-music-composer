@@ -121,7 +121,9 @@ def parse_stage(
     """
     import asyncio
 
+    from saimc.llm.base import ChatClient
     from saimc.parser import parse_prompt
+    from saimc.session.translator import read_brief
 
     try:
         result = asyncio.run(parse_prompt(llm_client, job.input_prompt, request_id=request_id))
@@ -137,9 +139,30 @@ def parse_stage(
         )
 
     if result.spec is not None:
-        job.input_spec = result.spec
-        if result.spec.seed is not None:
-            job.seed = result.spec.seed
+        # The words decide the seed when the request did not. Without this
+        # every unseeded brief of one mood and length composed against seed 0
+        # — the same key, the same tempo, the same melody, however differently
+        # it had been asked for. `parse_prompt` itself is left alone: the
+        # benchmark scores the spec a model returned, and a seed this layer
+        # added would fail every field-exact comparison in the corpus.
+        job.input_spec = result.spec.with_brief_seed(job.input_prompt)
+        job.seed = job.input_spec.seed
+        # ...and the rest of the brief decides the *plan*. A spec is ten fields
+        # and a plan is forty-five, so without this every word that was not a
+        # mood, a length, a key, a tempo, an instrument, a metre or a
+        # humanization setting was discarded and `default_plan` derived the
+        # other thirty-five from the mood alone. `read_brief` is the same
+        # reader the feedback box uses, pointed at the opening request.
+        reading = asyncio.run(
+            read_brief(
+                job.input_prompt,
+                client=llm_client if isinstance(llm_client, ChatClient) else None,
+                spec=job.input_spec,
+                request_id=request_id,
+            )
+        )
+        job.input_spec = reading.spec
+        job.input_plan = reading.plan if reading.read_anything else None
         job.parser_source = result.parser_source
         # §9: the manifest records which model served the parse, alongside
         # the parser source. The adapter puts it in `extra`, and only the

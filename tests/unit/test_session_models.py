@@ -744,13 +744,17 @@ class TestSession:
         a table — `8` is the session's `finalized_job_id` becoming the
         `publication` pair, which is a *change of meaning* rather than an
         addition: an older document's job id names no draft, and reading it as a
-        publication would have to invent one, and `9` is the session *losing*
-        `preferences` to the log that outlives it. The guard compares with `!=`,
+        publication would have to invent one, `9` is the session *losing*
+        `preferences` to the log that outlives it, and `10` is the session
+        gaining a `plan` — the forty-five-field companion the brief is now read
+        into, which an older build would neither write nor honour, so a session
+        carrying one is a piece that build cannot reproduce. The guard compares
+        with `!=`,
         so a `Session:8` on disk is refused on load rather than read as a session
         whose log is empty — which is the difference between an older build's
         judgements being unreadable here and being thrown away.
         """
-        assert SESSION_FORMAT == "Session:9"
+        assert SESSION_FORMAT == "Session:10"
 
     def test_a_foreign_session_document_is_refused(self) -> None:
         """Derived, not spelled out: a literal here is a trap for the next

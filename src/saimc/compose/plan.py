@@ -85,6 +85,8 @@ from saimc.compose.motif import (
     TIE_PROBABILITY,
     BassFigure,
     MelodyShape,
+    Motif,
+    MotifCell,
 )
 from saimc.compose.percussion import (
     DRUM_STYLES,
@@ -102,6 +104,7 @@ from saimc.compose.voices import (
     BROKEN_CHORD_MOODS,
     HARMONY_ARPEGGIO_STEP_TICKS,
     HARMONY_ARPEGGIO_VELOCITY,
+    HARMONY_DIVISI,
     HARMONY_MELODY_CLEARANCE,
     HARMONY_PAD_VELOCITY,
     HARMONY_STAB_VELOCITY,
@@ -110,7 +113,7 @@ from saimc.compose.voices import (
 from saimc.instruments import LINE_BAND_SEMITONES
 from saimc.spec import CompositionSpec, WesternKey
 
-PLAN_SCHEMA_VERSION: Final[int] = 7
+PLAN_SCHEMA_VERSION: Final[int] = 9
 """Bump when the plan's field set changes.
 
 Deliberately not `CANONICAL_FORMAT_VERSION`, which moves only when the
@@ -131,6 +134,51 @@ the reader are the pair that has to agree on it: `default_plan` stamps it
 and `from_canonical_dict` refuses anything else, so building it twice
 would be two chances to disagree.
 """
+
+
+MOTIF_MIN_CELLS: Final[int] = 2
+MOTIF_MAX_CELLS: Final[int] = 8
+"""How long a proposed theme may be, matching `generate_motif`'s own draw.
+
+One cell is not a motif — there is nothing to develop — and past eight the
+bar cannot hold it at any rhythm the vocabulary writes.
+"""
+
+
+def _motif(motif: Motif | None) -> None:
+    """Refuse a proposed theme this engine could not develop.
+
+    Checked here rather than where the notes are written, for the reason every
+    other bound in this file is: a plan is the document that should refuse an
+    impossible request, and a raise from inside a composition is a refusal
+    arriving too late to name what asked for it.
+
+    Deliberately *not* checked here: whether the motif fits a bar. A plan does
+    not know the metre — that is the spec's, and the same motif is legal in
+    4/4 and too long in 3/4 — so the bar is `_walk_shape`'s to fill and a motif
+    longer than one is truncated there, exactly as a drawn one is.
+    """
+    if motif is None:
+        return
+    _require(
+        MOTIF_MIN_CELLS <= len(motif) <= MOTIF_MAX_CELLS,
+        f"a motif is {MOTIF_MIN_CELLS}-{MOTIF_MAX_CELLS} cells; got {len(motif)}",
+    )
+    _require(
+        motif[0].step == 0,
+        "a motif's first cell starts on the bar's anchor tone, so its step is 0; "
+        f"got {motif[0].step}",
+    )
+    for index, cell in enumerate(motif):
+        _require(
+            cell.length_ticks > 0,
+            f"cell {index} has length {cell.length_ticks}; a cell has to sound",
+        )
+        _require(
+            abs(cell.step) <= MAX_MOTIF_SPAN_DEGREES,
+            f"cell {index} steps {cell.step} degrees, past the "
+            f"{MAX_MOTIF_SPAN_DEGREES} a bar can hold",
+        )
 
 
 def _require(condition: bool, message: str) -> None:
@@ -354,18 +402,19 @@ class CompositionPlan:
     the template before the close rewrites the last two bars, so the cadence
     a section ends on survives whatever the pattern says.
 
-    **A one-bar pattern is legal here and refused by the engine on any piece
-    with a coda**, and both halves of that are deliberate. It is a pulse at
-    any rate, so it reads 0.0 on `harmonic_rhythm_variety` — measured, and
-    the reason the vocabulary's "faster" is `(2, 1, 1)`. And it is the only
-    pattern that makes `_truncate_template_for_coda`'s forced tone sound as a
-    bar of its own, where the bass walk writes a non-chord tone: composed, it
-    raises `lint_failed` rather than producing a piece. A plan is thus a
-    document that can be *read* and cannot be *honoured* for this one value,
-    which is the plan's own rule — the refusal is named, and the tool surface
-    carries it to the user per candidate — but it is a fact a writer of this
-    field has to know, so it is here rather than in the phase that found it.
-    See `test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds`.
+    **A one-bar pattern is legal and composes, and it is still not what the
+    vocabulary emits.** It is a pulse at any rate, so it reads 0.0 on
+    `harmonic_rhythm_variety` — measured, and the reason the vocabulary's
+    "faster" is `(2, 1, 1)`. What it is *not* any more is unbuildable. This
+    paragraph used to record that the engine refused it on any piece with a
+    coda, because `_truncate_template_for_coda`'s forced tone sounds as a bar
+    of its own under a one-bar pattern and the walk wrote a non-chord tone
+    there. The cause was narrower: a pinned bass degree was resolved against
+    the key offset left over from the chord pre-resolution loop rather than
+    against its own slot's, so on a modulated final section the pin was a tone
+    of the key the piece had left. `_bass_landing` takes the slot's own offset
+    and every coda landing is a tone of its own bar's chord. See
+    `test_a_pinned_bass_degree_is_lifted_with_the_chord_it_belongs_to`.
 
     **`None` is this plan's one deliberate deferral, and it is structural.**
     It means "the template's own rhythm" — the rate the hand-coded
@@ -447,6 +496,14 @@ class CompositionPlan:
     """The broken-chord figure's level, a notch above the pad's."""
     harmony_stab_velocity: int
     """A stabbed chord's level: the loudest, because it is an accent."""
+    harmony_divisi: bool
+    """Whether the pad layers share the chord out instead of each playing it.
+
+    On by default and only reaches a piece with more than one pad, which is
+    what makes it a change to *ensembles*: a solo-plus-pad piece has nobody to
+    share with and is written exactly as it was. See `HarmonyVoices.divisi` for
+    what the sharing is.
+    """
     harmony_melody_clearance: int
     """How far under the melody the bed is held.
 
@@ -487,6 +544,28 @@ class CompositionPlan:
     states the harmony with.
     """
 
+    melody_motif: Motif | None = None
+    """The theme, when something proposed one, or `None` for the engine's draw.
+
+    **This is the one field in this document a model may put notes in**, and
+    the shape of that permission is the point. A motif is 2-8 cells of
+    (scale-degree step, duration) inside one bar — a subject, not a piece. The
+    engine still develops it: every bar replays it through one of the classic
+    operations onto that bar's chord, walked in the chord's own scale, placed
+    in the tessitura band, answered for its leaps, and the linter and the
+    scorecard still stand between it and a render. A model that proposes an
+    unmusical cell gets a piece that says so; a model that proposes an illegal
+    one is refused here, before a note is written.
+
+    Recorded rather than re-asked, which is what keeps §8. The model is
+    consulted once and its answer becomes part of this document, so
+    `(spec, plan, seed) -> notes` is byte-identical afterwards — the same
+    arrangement the spec has always had, one layer deeper.
+
+    `None` is the engine drawing a motif per section from the section's own
+    seed, which is what every piece composed before this did.
+    """
+
     def __post_init__(self) -> None:
         _require(
             self.format.startswith(f"{PLAN_FORMAT_PREFIX}:"),
@@ -507,9 +586,7 @@ class CompositionPlan:
             any(weight > 0.0 for weight in self.step_weights),
             "step_weights must carry some weight, or no step can be drawn",
         )
-        _require(
-            self.max_motif_span_degrees > 0, "max_motif_span_degrees must be positive"
-        )
+        _require(self.max_motif_span_degrees > 0, "max_motif_span_degrees must be positive")
         _require(self.leap_degrees > 0, "leap_degrees must be positive")
         _require(self.chord_tone_degrees > 0, "chord_tone_degrees must be positive")
         _weight_pairs("motif_operation_weights", self.motif_operation_weights)
@@ -531,13 +608,13 @@ class CompositionPlan:
         )
 
         _key_pool(self.key_pool)
+        _motif(self.melody_motif)
         _require(bool(self.bass_figures), "bass_figures must carry at least one figure")
         for figure in self.bass_figures:
             _require(bool(figure), "a bass figure must carry at least one note")
         _require(
             0 <= self.cadence_degree <= 6,
-            "cadence_degree is out of the scale, which runs 0..6 "
-            f"({self.cadence_degree})",
+            f"cadence_degree is out of the scale, which runs 0..6 ({self.cadence_degree})",
         )
         # A closed vocabulary, refused by name: the value reaches the notes
         # through `apply_section_close`, which raises on a name outside it —
@@ -647,8 +724,7 @@ class CompositionPlan:
 
         _require(
             self.drum_style_name is None or self.drum_style_name in DRUM_STYLES,
-            f"unknown drum style {self.drum_style_name!r}; known styles are "
-            f"{sorted(DRUM_STYLES)}",
+            f"unknown drum style {self.drum_style_name!r}; known styles are {sorted(DRUM_STYLES)}",
         )
         _require(bool(self.rotation_cycle), "rotation_cycle must not be empty")
         _require(
@@ -716,6 +792,11 @@ class CompositionPlan:
             "apex_position": self.apex_position,
             "line_band_semitones": self.line_band_semitones,
             "key_pool": list(self.key_pool),
+            "melody_motif": (
+                None
+                if self.melody_motif is None
+                else [[cell.step, cell.length_ticks] for cell in self.melody_motif]
+            ),
             "bass_figures": [[list(note) for note in figure] for figure in self.bass_figures],
             "bass_root_motion": self.bass_root_motion,
             "cadence_degree": self.cadence_degree,
@@ -739,6 +820,7 @@ class CompositionPlan:
             "harmony_texture_cycle": list(self.harmony_texture_cycle),
             "percussion_rest_section": self.percussion_rest_section,
             "harmony_broken_chord": self.harmony_broken_chord,
+            "harmony_divisi": self.harmony_divisi,
             "harmony_arpeggio_step_ticks": self.harmony_arpeggio_step_ticks,
             "harmony_pad_velocity": self.harmony_pad_velocity,
             "harmony_arpeggio_velocity": self.harmony_arpeggio_velocity,
@@ -798,6 +880,14 @@ class CompositionPlan:
             apex_position=payload["apex_position"],
             line_band_semitones=payload["line_band_semitones"],
             key_pool=tuple(payload["key_pool"]),
+            melody_motif=(
+                None
+                if payload["melody_motif"] is None
+                else tuple(
+                    MotifCell(step=int(step), length_ticks=int(length))
+                    for step, length in payload["melody_motif"]
+                )
+            ),
             bass_figures=tuple(
                 tuple(tuple(note) for note in figure) for figure in payload["bass_figures"]
             ),
@@ -806,9 +896,7 @@ class CompositionPlan:
             cadence_seventh=payload["cadence_seventh"],
             section_close=payload["section_close"],
             harmonic_rhythm=(
-                None
-                if payload["harmonic_rhythm"] is None
-                else tuple(payload["harmonic_rhythm"])
+                None if payload["harmonic_rhythm"] is None else tuple(payload["harmonic_rhythm"])
             ),
             modulation_offset=payload["modulation_offset"],
             form_sizes=tuple(payload["form_sizes"]),
@@ -825,6 +913,7 @@ class CompositionPlan:
             harmony_texture_cycle=tuple(payload["harmony_texture_cycle"]),
             percussion_rest_section=payload["percussion_rest_section"],
             harmony_broken_chord=payload["harmony_broken_chord"],
+            harmony_divisi=payload["harmony_divisi"],
             harmony_arpeggio_step_ticks=payload["harmony_arpeggio_step_ticks"],
             harmony_pad_velocity=payload["harmony_pad_velocity"],
             harmony_arpeggio_velocity=payload["harmony_arpeggio_velocity"],
@@ -891,7 +980,6 @@ class CompositionPlan:
             line_band_semitones=self.line_band_semitones,
         )
 
-
     def harmony_voices(self) -> HarmonyVoices:
         """The voices layer, as the struct `engine.py` reads.
 
@@ -904,6 +992,7 @@ class CompositionPlan:
         """
         return HarmonyVoices(
             broken_chord=self.harmony_broken_chord,
+            divisi=self.harmony_divisi,
             arpeggio_step_ticks=self.harmony_arpeggio_step_ticks,
             pad_velocity=self.harmony_pad_velocity,
             arpeggio_velocity=self.harmony_arpeggio_velocity,
@@ -990,6 +1079,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
         harmony_texture_cycle=HARMONY_TEXTURE_CYCLE,
         percussion_rest_section=PERCUSSION_REST_SECTION,
         harmony_broken_chord=mood in BROKEN_CHORD_MOODS,
+        harmony_divisi=HARMONY_DIVISI,
         harmony_arpeggio_step_ticks=HARMONY_ARPEGGIO_STEP_TICKS,
         harmony_pad_velocity=HARMONY_PAD_VELOCITY,
         harmony_arpeggio_velocity=HARMONY_ARPEGGIO_VELOCITY,
@@ -1013,9 +1103,7 @@ def default_plan(spec: CompositionSpec) -> CompositionPlan:
     )
 
 
-def resolve_plan(
-    spec: CompositionSpec, plan: CompositionPlan | None = None
-) -> CompositionPlan:
+def resolve_plan(spec: CompositionSpec, plan: CompositionPlan | None = None) -> CompositionPlan:
     """The plan the engine composes under: `plan`, or this spec's default.
 
     The seam `compose` calls. Passing `None` resolves to exactly today's

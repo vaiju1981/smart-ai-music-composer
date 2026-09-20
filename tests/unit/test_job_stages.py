@@ -342,6 +342,5 @@ class TestComposeStage:
             store.job_dir(default_job.job_id) / "engine_output.json"
         )
         assert (
-            recorded.notation_score.compute_hash()
-            != default_recorded.notation_score.compute_hash()
+            recorded.notation_score.compute_hash() != default_recorded.notation_score.compute_hash()
         )

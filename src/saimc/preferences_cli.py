@@ -73,7 +73,9 @@ def _plural(count: int, noun: str) -> str:
 def _lines(report: Proposal, *, path: Path, exists: bool) -> tuple[str, ...]:
     """The report, as the lines a reader is handed."""
     lines = [f"Log: {path}" + ("" if exists else " (absent: nothing has been recorded)")]
-    lines.append(f"{_plural(report.judgements, 'judgement')} over {_plural(report.requests, 'request')}.")
+    lines.append(
+        f"{_plural(report.judgements, 'judgement')} over {_plural(report.requests, 'request')}."
+    )
     lines.append("")
     lines.append("Every bar of the repair table, with the evidence the log holds for it.")
     for metric in report.metrics:

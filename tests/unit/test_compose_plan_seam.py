@@ -44,23 +44,25 @@ from saimc.compose.engine import (
     CompositionEngineError,
     EngineErrorCode,
     EngineOutput,
+    compose,
+)
+from saimc.compose.ensemble import resolve_ensemble
+from saimc.compose.forms import SECTION_CLOSES
+from saimc.compose.harmony import (
+    generate_harmony_section,
+    melody_band_for,
+    settle_harmony_register,
+)
+from saimc.compose.melody import (
     _answer_leaps,
     _apex_starts,
     _bent_step,
     _closing_tone,
     _final_closing_degree,
-    _generate_harmony_section,
-    _generate_percussion,
-    _melody_band_for,
-    _settle_harmony_register,
     _snap_to_chord,
     _start_offsets,
     _walk_shape,
-    compose,
 )
-from saimc.compose.ensemble import resolve_ensemble
-from saimc.compose.forms import SECTION_CLOSES
-from saimc.compose.linter import LintCode
 from saimc.compose.motif import (
     BASS_FIGURES,
     DEFAULT_MELODY_SHAPE,
@@ -81,6 +83,7 @@ from saimc.compose.percussion import (
     EIGHTH,
     SWING_RATIO_TRIPLET,
     DrumKit,
+    generate_percussion,
     rotation_index,
 )
 from saimc.compose.plan import (
@@ -157,7 +160,7 @@ _TWO_HARMONY_VOICES_SPEC = CompositionSpec(
 )
 """Two harmony voices, which is what the texture cycle needs to say anything.
 
-`_SPEC`'s ensemble has one, and `_active_harmony_voices` returns the voices
+`_SPEC`'s ensemble has one, and `active_harmony_voices` returns the voices
 untouched when there is only one to choose between — see
 `test_a_single_harmony_voice_leaves_the_cycle_unread`.
 """
@@ -172,9 +175,7 @@ percussion voice at all without `drum_set` — so a spec missing either
 would leave `percussion_rest_section` unobservable.
 """
 
-_PINNED_TEMPO_CODA_SPEC = CompositionSpec(
-    mood="calming", duration_seconds=59, seed=3, tempo_bpm=80
-)
+_PINNED_TEMPO_CODA_SPEC = CompositionSpec(mood="calming", duration_seconds=59, seed=3, tempo_bpm=80)
 """A coda over a repeated form, which a free tempo does not reach.
 
 With the tempo free, the search only enters its coda arm in the one gap its
@@ -524,39 +525,44 @@ class TestTheHarmonyKnobsReachTheCodaToo:
             "differ for the reason it gives"
         )
 
-    def test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds(self) -> None:
-        """`(1,)` is the one reading this engine cannot compose at a coda.
+    def test_a_pinned_bass_degree_is_lifted_with_the_chord_it_belongs_to(self) -> None:
+        """The coda's forced tonic sounds, in the key the modulation put it in.
 
-        Pinned because it is the *engine's* answer and not the vocabulary's,
-        and the two have to be told apart. The vocabulary never emits a
-        one-bar pattern — "chords change faster" is `(2, 1, 1)`, for the
-        measured reason that a one-bar pulse reads 0.0 on
-        `harmonic_rhythm_variety` — but a plan built by hand, by a UI control
-        or by a conductor can name one, and what it gets is a named refusal
-        rather than a wrong piece.
+        This replaces `test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds`,
+        which pinned the defect rather than the fix and said to be deleted the
+        day it was fixed. What it recorded was that `(1,)` is the one rhythm
+        the engine could not compose at a coda: a one-bar pattern cuts the coda
+        into one-bar slots, so `_truncate_template_for_coda`'s `bass_degree=0`
+        *sounds* instead of sitting on the zero-bar phantom a cadence leaves
+        behind — and the walk wrote a non-chord tone there.
 
-        The trigger is `_truncate_template_for_coda`'s forced tonic, the
-        `bass_degree=0` on its last kept slot. At the four bars every
-        reachable coda has, that slot is usually the zero-bar phantom
-        `apply_final_cadence` leaves behind and nothing plays it — but a
-        one-bar pattern cuts the coda into one-bar slots, so the pin *sounds*
-        as the coda's second bar and the bass walk writes a non-chord tone
-        there. No other pattern in the vocabulary's own range reaches it.
+        The cause was narrower than that account. A pinned degree was resolved
+        against the key offset left over from the chord pre-resolution loop —
+        the *last* slot's, always 0 — while its chord was resolved against its
+        own. On a modulated final section the two were a different key, so the
+        pin was a tone of the key the piece had left. Only a one-bar pattern
+        made a pin sound early enough for it to matter, which is why that was
+        the only reading that ever failed.
 
-        **A witness, not an endorsement.** The defect is the pin on a slot
-        that can sound, and it belongs to the coda rather than to this knob.
-        The day it is fixed this test fails, and the right answer is to delete
-        it rather than to widen it.
+        Measured across the offsets: before the fix, 0 and 1 composed and 2 and
+        7 raised `chord_tone_violation`. Every landing in the coda is now a
+        tone of its own bar's chord, which is what this asserts, at the offset
+        the old defect fired on.
         """
-        with pytest.raises(CompositionEngineError) as raised:
-            self._compose(harmonic_rhythm=(1,))
-        assert raised.value.code == EngineErrorCode.LINT_FAILED
-        assert [issue.code for issue in raised.value.lint_issues] == [
-            LintCode.CHORD_TONE_VIOLATION
-        ], (
-            "the refusal is no longer the chord-tone violation the forced-slot pin produces, "
-            "so this test's account of the cause is wrong"
-        )
+        output = self._compose(harmonic_rhythm=(1,))
+        ticks = bar_ticks(_CODA_SPEC.time_signature.value)
+        coda_start = self._coda_start(output)
+        landings = {}
+        for note in sorted(output.notation_score.notes, key=lambda n: n.tick):
+            bar = note.tick // ticks
+            if note.voice_id == VOICE_BASS and bar >= coda_start and bar not in landings:
+                landings[bar] = note.pitch_midi
+        assert landings, "the coda wrote no bass, so this asserts nothing"
+        for bar, pitch in landings.items():
+            assert pitch % 12 in output.chord_bars[bar], (
+                f"the coda's bar {bar} lands on {pitch % 12}, which is not in "
+                f"{output.chord_bars[bar]} — a pin resolved against the wrong key"
+            )
 
     def _coda_bass_onsets(self, output: EngineOutput) -> tuple[int, ...]:
         """Every bass onset in the coda, in ticks from the coda's first bar."""
@@ -730,7 +736,7 @@ _SECTION_SPECS: dict[str, CompositionSpec] = {
 """The spec each knob needs to be observable at all — see the note above."""
 
 _ENERGY_KNOBS = tuple(sorted(name for name in _SECTION_KNOBS if name.startswith("section_energy")))
-"""The four terraces, in the order `_section_velocity_scale` reads them."""
+"""The four terraces, in the order `section_velocity_scale` reads them."""
 
 
 class TestTheSectionsLayerIsLive:
@@ -765,7 +771,7 @@ class TestTheSectionsLayerIsLive:
 
 
 class TestTheVelocityTerracesAreReadAtEveryCallSite:
-    """`_section_velocity_scale` is read four times, and one read hides another.
+    """`section_velocity_scale` is read four times, and one read hides another.
 
     B3's lesson one level down. The parametrised case above passes
     whichever call site is reading the plan — a mutation of any terrace
@@ -817,7 +823,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
     def test_the_kits_own_notes_follow_the_plan(self, knob: str) -> None:
         """The kit's terrace, read from the percussion voice alone.
 
-        It has to be read from there: `_generate_percussion` writes voice 2
+        It has to be read from there: `generate_percussion` writes voice 2
         and nothing else does, so these velocities cannot move because some
         other site read the plan.
         """
@@ -829,7 +835,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         assert before, "the premise: this spec composes with a kit at all"
         assert after != before, (
             f"{knob} does not reach the kit's velocities: the terrace in "
-            "`_generate_percussion` is not reading the plan's arc"
+            "`generate_percussion` is not reading the plan's arc"
         )
 
     @pytest.mark.parametrize("knob", _ENERGY_KNOBS)
@@ -840,13 +846,13 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         assert before, "the premise: this spec composes with an expression lane"
         assert self._expression_values(compose(_SPEC, plan=changed)) != before, (
             f"{knob} does not reach the CC11 lane: the controller site in "
-            "`_build_performance_plan` is not reading the plan's arc"
+            "`build_performance_plan` is not reading the plan's arc"
         )
 
     def test_the_coda_follows_the_plans_middle_terrace(self) -> None:
         """The fourth site, and the one whose index falls through.
 
-        `_build_score` calls `_section_velocity_scale` a fourth time for the
+        `_build_score` calls `section_velocity_scale` a fourth time for the
         coda, passing `repetition_count` as both the section index and the
         count. That index is never 0, so the opening arm is out; it is never
         `repetition_count - 1`, so the final arm is out; and it is never
@@ -857,7 +863,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
         middle's mutation without an effect.
 
         The spec has to be the pinned-tempo one. With the tempo free the
-        coda always has a single repetition, and `_section_velocity_scale`
+        coda always has a single repetition, and `section_velocity_scale`
         returns 1.0 below two — so the loop is skipped and the site is inert.
         """
         plan = default_plan(_PINNED_TEMPO_CODA_SPEC)
@@ -897,7 +903,7 @@ class TestTheVelocityTerracesAreReadAtEveryCallSite:
 class TestTheTextureCycleNeedsVoicesToChoose:
     """A texture cycle says which harmony voices play, so it needs two.
 
-    `_active_harmony_voices` returns the voices untouched with fewer than
+    `active_harmony_voices` returns the voices untouched with fewer than
     two, or on a piece too short to have an arc. That is why `_SPEC` does
     not cover this knob above, and the second test here pins it: the cycle
     is not ignored, it has nothing to decide.
@@ -906,8 +912,10 @@ class TestTheTextureCycleNeedsVoicesToChoose:
     def test_the_two_voice_spec_is_what_the_cycle_needs(self) -> None:
         """The premise, asserted rather than assumed."""
         arrangement = compose(_TWO_HARMONY_VOICES_SPEC).arrangement
-        assert arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps, (
-            "the piece is not long, so `_active_harmony_voices` would return the "
+        assert (
+            arrangement.repetition_count >= default_plan(_TWO_HARMONY_VOICES_SPEC).arc_min_reps
+        ), (
+            "the piece is not long, so `active_harmony_voices` would return the "
             "voices untouched whatever the cycle said"
         )
         harmony = {
@@ -923,7 +931,7 @@ class TestTheTextureCycleNeedsVoicesToChoose:
         assert _fingerprint(compose(_TWO_HARMONY_VOICES_SPEC, plan=changed)) != _fingerprint(
             compose(_TWO_HARMONY_VOICES_SPEC, plan=base)
         ), (
-            "harmony_texture_cycle does not reach the engine: `_active_harmony_voices` "
+            "harmony_texture_cycle does not reach the engine: `active_harmony_voices` "
             "is not reading the plan's cycle"
         )
 
@@ -945,7 +953,7 @@ class TestTheTextureCycleNeedsVoicesToChoose:
 class TestTheDrumRestFollowsThePlan:
     """The hole in the texture is a section of the plan's choosing.
 
-    `_generate_percussion` takes a set of silent bars, and on a long piece
+    `generate_percussion` takes a set of silent bars, and on a long piece
     that set is the intro plus section `percussion_rest_section`. The
     second test reads the silence back out of the score rather than the
     plan, so a rest window computed from a constant would be caught.
@@ -991,7 +999,7 @@ class TestTheDrumRestFollowsThePlan:
 
         moved = self._silent_bars(percussion_rest_section=rest)
         assert set(window(rest)) <= set(moved), (
-            "percussion_rest_section does not reach `_generate_percussion`: the "
+            "percussion_rest_section does not reach `generate_percussion`: the "
             "rest window is not the section the plan names"
         )
         assert not set(window(1)) & set(moved), "the default's section was rested anyway"
@@ -1064,9 +1072,7 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
             for duration in (30, 60, 120, 180):
                 for seed in range(12):
                     spec = CompositionSpec(mood=mood, duration_seconds=duration, seed=seed)
-                    unlifted = compose(
-                        spec, plan=replace(default_plan(spec), modulation_offset=0)
-                    )
+                    unlifted = compose(spec, plan=replace(default_plan(spec), modulation_offset=0))
                     lifted_bar = unlifted.arrangement.total_bars - unlifted.arrangement.form_bars
                     for offset in (12, -12):
                         try:
@@ -1087,6 +1093,15 @@ class TestTheWidestLiftIsOneTheEngineCanHonour:
 
 
 _MELODY_KNOBS: dict[str, Any] = {
+    # The one field in this plan a model may put notes in, and the only case
+    # here that is *material* rather than a parameter over material: a subject
+    # the engine then develops, legal by `_motif`'s bounds — first cell on the
+    # anchor, a rising third, a step back.
+    "melody_motif": (
+        MotifCell(step=0, length_ticks=PPQ // 2),
+        MotifCell(step=2, length_ticks=PPQ // 2),
+        MotifCell(step=-1, length_ticks=PPQ),
+    ),
     # 0 and 1 swapped, so the two most-weighted steps trade places. A
     # permutation rather than a shortened table: the plan requires one
     # weight per choice, and a table of another length would be refused
@@ -1140,10 +1155,12 @@ _MELODY_FIELDS = frozenset(
         "tie_probability",
         "apex_position",
         "line_band_semitones",
+        "melody_motif",
     }
 )
-"""The plan's melody group, which reads these ten — the vocabulary, the
-phrase shape, and the register window the line is written in."""
+"""The plan's melody group, which reads these eleven — the vocabulary, the
+phrase shape, the register window the line is written in, and the theme itself
+when something proposed one."""
 
 
 class TestTheMelodyLayerIsLive:
@@ -1152,7 +1169,7 @@ class TestTheMelodyLayerIsLive:
     Every one of these was a module constant or an inline literal before
     B5: the step table and the motif's span in `motif.py`, the tie
     probability and the apex fraction inline in `_generate_section`, the
-    rhythm figures looked up by mood inside `_melody_bar`, and the line
+    rhythm figures looked up by mood inside `melody_bar`, and the line
     band from `instruments.LINE_BAND_SEMITONES`.
     """
 
@@ -1241,9 +1258,7 @@ _MELODY_SITES: dict[str, tuple[str, Any, Any]] = {
     "motif._apply_operation transposes by the plan's chord tone": (
         "chord_tone_degrees",
         4,
-        lambda shape: _apply_operation(
-            _TWO_CELL_MOTIF, "transpose", random.Random(0), shape=shape
-        ),
+        lambda shape: _apply_operation(_TWO_CELL_MOTIF, "transpose", random.Random(0), shape=shape),
     ),
     "engine._answer_leaps answers at the plan's leap size": (
         "leap_degrees",
@@ -1273,9 +1288,9 @@ _MELODY_SITES: dict[str, tuple[str, Any, Any]] = {
     "engine._walk_shape advances by the plan's chord tone": (
         "chord_tone_degrees",
         3,
-        lambda shape: _walk_shape(
-            _REPEATING_VARIANT, bar_ticks=4 * PPQ, tone_count=4, shape=shape
-        )[0],
+        lambda shape: _walk_shape(_REPEATING_VARIANT, bar_ticks=4 * PPQ, tone_count=4, shape=shape)[
+            0
+        ],
     ),
     "engine._closing_tone closes on the plan's chord tone": (
         "chord_tone_degrees",
@@ -1310,7 +1325,7 @@ hand and the plan checks its own — and every case was checked to move its
 reader's answer before it was written down: a case whose two shapes agree
 would be a guard that cannot fail.
 
-`_melody_bar`'s own inline reads are absent because they are gone. The
+`melody_bar`'s own inline reads are absent because they are gone. The
 drawn start now comes from the lattice `_start_offsets` builds, and the
 final bar's closing degree from `_final_closing_degree` — both because an
 inline expression reading a field that six helpers also read cannot be
@@ -1405,6 +1420,26 @@ not in `HARMONY_STAB_INSTRUMENTS` — so its broken chord is an arpeggio
 and the stab's own velocity is unreachable there.
 """
 
+_TWO_PAD_SPEC = CompositionSpec(
+    mood="calming",
+    duration_seconds=180,
+    seed=11,
+    instrumentation=[
+        {"role": "melody", "instrument": "piano"},
+        {"role": "harmony", "instrument": "strings"},
+        {"role": "harmony", "instrument": "choir"},
+        {"role": "bass", "instrument": "cello"},
+    ],
+)
+"""Two sustaining pads, which is the only texture `harmony_divisi` reaches.
+
+Sharing a chord out needs someone to share it with: with one pad the knob is
+a no-op by design, so a one-pad spec would make its case unfailable. Calming
+so both layers sustain — under a broken chord the leading layer states the
+figure and only the layers beneath it are pads.
+"""
+
+
 _VOICES_KNOBS: dict[str, tuple[CompositionSpec, Any]] = {
     # The texture itself, against the mood's own sustained default. The
     # other five cases below are read *under* a texture, which is why
@@ -1420,11 +1455,16 @@ _VOICES_KNOBS: dict[str, tuple[CompositionSpec, Any]] = {
     "harmony_arpeggio_step_ticks": (_ELECTRIFYING_SPEC, 4 * PPQ),
     # How far the bed keeps off the tune, on both sides of it.
     "harmony_melody_clearance": (_SPEC, 6),
+    # Whether the pads share the chord out. Flipped *off* rather than on,
+    # because on is the default — and asserted at a two-pad spec, since one
+    # pad has nobody to share with and the knob is a no-op there by design.
+    "harmony_divisi": (_TWO_PAD_SPEC, False),
 }
 
 _VOICES_FIELDS = frozenset(
     {
         "harmony_broken_chord",
+        "harmony_divisi",
         "harmony_arpeggio_step_ticks",
         "harmony_pad_velocity",
         "harmony_arpeggio_velocity",
@@ -1432,7 +1472,7 @@ _VOICES_FIELDS = frozenset(
         "harmony_melody_clearance",
     }
 )
-"""The plan's `--- Voices ---` block, which is these six.
+"""The plan's `--- Voices ---` block, which is these seven.
 
 Enumerated against `HarmonyVoices`' own fields as well, so the struct and
 the plan cannot drift apart here — and spelled out because B9's union
@@ -1516,7 +1556,7 @@ def _harmony_notes(
     sites reads it, so only a direct call can attribute a read to a site.
     The window is the instrument's own, as the pass is handed it.
     """
-    return _generate_harmony_section(
+    return generate_harmony_section(
         chords=[(60, (0, 4, 7), 2)],
         section_start_tick=0,
         ticks_per_bar=_BAR,
@@ -1616,9 +1656,7 @@ class TestTheVoicesWritersReadTheirShape:
         )
 
 
-def _settled_pitches(
-    *, clearance: int, window: MelodyBand, melody_pitch: int
-) -> tuple[int, ...]:
+def _settled_pitches(*, clearance: int, window: MelodyBand, melody_pitch: int) -> tuple[int, ...]:
     """Where the settle pass puts a bed written at pitch 40 against this tune.
 
     The bed note is a chord tone two octaves under the tune's middle, so
@@ -1633,7 +1671,7 @@ def _settled_pitches(
         duration_ticks=_BAR,
         velocity=70,
     )
-    settled = _settle_harmony_register(
+    settled = settle_harmony_register(
         [
             NoteEvent(
                 voice_id=VOICE_HARMONY,
@@ -1673,8 +1711,8 @@ class TestTheClearanceIsReadOnBothSidesOfTheTune:
     def test_the_melody_band_is_raised_by_the_clearance_the_shape_names(self) -> None:
         """The first of the three reads: the room the bed needs under the
         tune is what raises the tune's own band."""
-        narrow = _melody_band_for(melody="piano", bed="brass_section", clearance=3)
-        wide = _melody_band_for(melody="piano", bed="brass_section", clearance=6)
+        narrow = melody_band_for(melody="piano", bed="brass_section", clearance=3)
+        wide = melody_band_for(melody="piano", bed="brass_section", clearance=6)
         assert wide.low_midi - narrow.low_midi == 3
         assert wide.high_midi - wide.low_midi == narrow.high_midi - narrow.low_midi, (
             "the raise moved the band's width, and the walk needs the twelfth it holds"
@@ -1827,7 +1865,7 @@ def _kit_notes(
     `bass_onsets` defaults to empty for the same reason: the kick only
     follows a bass that was written.
     """
-    return _generate_percussion(
+    return generate_percussion(
         kit=kit,
         time_signature="4/4",
         form_bars=form_bars,
@@ -1841,9 +1879,7 @@ def _kit_notes(
 
 def _hits(notes: list[NoteEvent]) -> list[tuple[int, int]]:
     """Every hit but the crash, as where and which drum it is."""
-    return [
-        (note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH
-    ]
+    return [(note.tick, note.pitch_midi) for note in notes if note.pitch_midi != DRUM_CRASH]
 
 
 def _is_offbeat_eighth(tick: int) -> bool:
@@ -1853,9 +1889,7 @@ def _is_offbeat_eighth(tick: int) -> bool:
 
 def _crashes(notes: list[NoteEvent]) -> list[tuple[int, int]]:
     """The section downbeats, as where the crash is and how loud."""
-    return [
-        (note.tick, note.velocity) for note in notes if note.pitch_midi == DRUM_CRASH
-    ]
+    return [(note.tick, note.velocity) for note in notes if note.pitch_midi == DRUM_CRASH]
 
 
 class TestTheDrumWritersReadTheirShape:
@@ -1972,8 +2006,7 @@ class TestTheDrumWritersReadTheirShape:
         kit = DrumKit(style=DRUM_STYLES["rock"])
         assert kit.style is not None
         assert kit.style.fill("4/4", 0) != kit.style.fill("4/4", 1), (
-            "rock's two fills are the same bar, so no seed could be heard "
-            "in the handover"
+            "rock's two fills are the same bar, so no seed could be heard in the handover"
         )
         # The premise, so a cycle edit cannot silently move the attribution
         # of the difference below to the variant rather than the fill: at
@@ -1982,9 +2015,7 @@ class TestTheDrumWritersReadTheirShape:
         fill_bar = 3  # the first of two four-bar sections ends here
         filled = {
             seed: [
-                hit
-                for hit in _hits(_kit_notes(kit, seed=seed))
-                if hit[0] // (4 * PPQ) == fill_bar
+                hit for hit in _hits(_kit_notes(kit, seed=seed)) if hit[0] // (4 * PPQ) == fill_bar
             ]
             for seed in (0, 1)
         }
@@ -2018,9 +2049,7 @@ class TestTheDrumWritersReadTheirShape:
                 )
                 assert now.tick > was.tick
             else:
-                assert now.tick == was.tick, (
-                    "a swing displaces the offbeat eighth and nothing else"
-                )
+                assert now.tick == was.tick, "a swing displaces the offbeat eighth and nothing else"
 
     def test_a_bar_marked_on_its_downbeat_is_given_one_kick_not_two(self) -> None:
         """The bar's downbeat kick is one decision, not two.
@@ -2034,9 +2063,9 @@ class TestTheDrumWritersReadTheirShape:
         """
         swing = DrumKit(style=DRUM_STYLES["swing"])
         assert swing.style is not None
-        assert not [
-            h.offset_ticks for h in swing.style.variants["4/4"][0] if h.key == DRUM_KICK
-        ], "this style writes its own downbeat kick, so the collision cannot happen"
+        assert not [h.offset_ticks for h in swing.style.variants["4/4"][0] if h.key == DRUM_KICK], (
+            "this style writes its own downbeat kick, so the collision cannot happen"
+        )
         notes = _kit_notes(swing, bass_onsets=dict.fromkeys(range(8), (0, 480, 960, 1440)))
         assert [n for n in notes if n.tick == 0 and n.pitch_midi == DRUM_KICK], (
             "the downbeat was not marked at all"
@@ -2073,14 +2102,11 @@ class TestTheDrumWritersReadTheirShape:
         """
         kit = DrumKit(style=DRUM_STYLES["ballad"])
         assert kit.style is not None
-        variant = kit.style.pattern(
-            "4/4", rotation_index(0, 2, cycle=kit.rotation_cycle, seed=0)
-        )
+        variant = kit.style.pattern("4/4", rotation_index(0, 2, cycle=kit.rotation_cycle, seed=0))
         assert variant is not None
         levels = {h.velocity for h in variant if h.key == DRUM_KICK}
         assert len(levels) == 2, (
-            "this bar's pattern writes one kick level, so quietest and loudest "
-            "are the same reading"
+            "this bar's pattern writes one kick level, so quietest and loudest are the same reading"
         )
         quiet, loud = min(levels), max(levels)
         notes = _kit_notes(
@@ -2098,9 +2124,7 @@ class TestTheDrumWritersReadTheirShape:
             if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar in (480, 960, 1440)
         ]
         accented = [
-            n.velocity
-            for n in notes
-            if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar == 0
+            n.velocity for n in notes if n.pitch_midi == DRUM_KICK and n.tick % ticks_per_bar == 0
         ]
         assert len(followed) == 3, "the bass's three attacks did not all draw a kick"
         assert len(accented) == 1, "the pattern's own downbeat kick is missing"
@@ -2230,9 +2254,7 @@ class TestAPlanTheEngineCannotHonourRefuses:
         with pytest.raises(CompositionEngineError) as caught:
             compose(_SPEC, plan=plan)
         assert caught.value.code is EngineErrorCode.DURATION_UNFULFILLABLE
-        assert "no Phase 1 form can reach" in str(caught.value) or "no (form" in str(
-            caught.value
-        )
+        assert "no Phase 1 form can reach" in str(caught.value) or "no (form" in str(caught.value)
 
     def test_an_intro_no_section_could_carve_never_reaches_the_engine(self) -> None:
         """The plan refuses it at construction, where both numbers are
@@ -2344,9 +2366,7 @@ class TestEveryPlanFieldIsCoveredByASeamCase:
         while the new name went uncovered."""
         declared = {field.name for field in fields(CompositionPlan)} - {"format"}
         extra = sorted(set().union(*_LAYER_INVENTORIES.values()) - declared)
-        assert not extra, (
-            f"the layer field sets name {extra}, which CompositionPlan does not have"
-        )
+        assert not extra, f"the layer field sets name {extra}, which CompositionPlan does not have"
 
     def test_no_field_is_claimed_by_two_layers(self) -> None:
         """Disjoint, not merely covering.

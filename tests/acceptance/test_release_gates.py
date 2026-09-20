@@ -139,9 +139,7 @@ class TestReleaseGates:
         output = compose(spec)
         assert output.chord_bars, "the engine must publish per-bar chord pcs"
         tonic_pc = output.chord_bars[0][0]
-        poisoned = replace(
-            output, chord_bars=tuple((tonic_pc,) for _ in output.chord_bars)
-        )
+        poisoned = replace(output, chord_bars=tuple((tonic_pc,) for _ in output.chord_bars))
         result = gate_composition_correctness(poisoned)
         assert not result.passed, "a harmony gate without chord context would pass anything"
 
@@ -477,9 +475,9 @@ class TestThePlannedCaseIsLive:
         defaulted = compose(PLANNED_SPEC)
         assert planned.plan == RELEASE_PLAN
         assert planned.plan != default_plan(PLANNED_SPEC)
-        assert (
-            planned.notation_score.compute_hash() != defaulted.notation_score.compute_hash()
-        ), "a plan that changes nothing would make every gate above vacuous"
+        assert planned.notation_score.compute_hash() != defaulted.notation_score.compute_hash(), (
+            "a plan that changes nothing would make every gate above vacuous"
+        )
 
 
 class TestRenderTimeBudgetGate:

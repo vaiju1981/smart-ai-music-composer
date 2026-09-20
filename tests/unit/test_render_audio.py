@@ -33,10 +33,12 @@ from saimc.render.audio import (
     HARMONY_CC7,
     MASTER_LOUDNESS_LUFS,
     MASTER_TRUE_PEAK_DBTP,
+    MELODIC_CHANNELS,
     MELODY_CC7,
     MELODY_CC10_PAN,
     AudioRenderError,
     AudioRenderErrorCode,
+    _channel_for_voice,
     _hash_file,
     _loudnorm_filter,
     build_smf,
@@ -293,10 +295,38 @@ class TestSmfChannelMapping:
                 ],
             )
 
-        for voice_id, expected_channel in [(0, 0), (8, 8), (9, 10), (10, 11), (16, 0)]:
+        for voice_id, expected_channel in [(0, 0), (8, 8), (9, 10), (10, 11), (14, 15)]:
             smf = build_smf(_plan(voice_id), bpm=120.0)
             channels = {m.channel for m in smf.tracks[0] if m.type == "note_on"}
             assert channels == {expected_channel}
+
+    def test_a_voice_past_the_budget_refuses_the_build(self) -> None:
+        """This case used to assert `(16, 0)` — the wrap, pinned as if intended.
+
+        Voice 16 took channel 0, the bass's, so two instruments shared a patch
+        and a sustain pedal with nothing anywhere to say so; voice 15 asked for
+        channel 16 and mido refused it. Both were unreachable while an ensemble
+        was capped at five voices, and the test froze the first as correct.
+        """
+
+        def _plan(voice_id: int) -> PerformancePlan:
+            return PerformancePlan.make(
+                sample_rate=44100,
+                notes=[
+                    PerformanceNoteEvent(
+                        voice_id=voice_id,
+                        pitch_midi=60,
+                        start_us=0,
+                        duration_us=500_000,
+                        velocity=64,
+                    )
+                ],
+            )
+
+        for voice_id in (15, 16):
+            with pytest.raises(AudioRenderError) as raised:
+                build_smf(_plan(voice_id), bpm=120.0)
+            assert raised.value.code == AudioRenderErrorCode.MIDI_BUILD_FAILED
 
 
 class TestSmfProgramChange:
@@ -879,9 +909,7 @@ class TestRenderSketch:
         # The full render masters the mix and encodes the delivered WAV.
         # The sketch never masters anything, and its OGG comes off the mix.
         full_master = next(cmd for cmd in full if "-af" in cmd)
-        assert full_master[full_master.index("-i") + 1] == str(
-            tmp_path / "full" / "audio.mix.wav"
-        )
+        assert full_master[full_master.index("-i") + 1] == str(tmp_path / "full" / "audio.mix.wav")
         assert full_master[-1] == str(tmp_path / "full" / "audio.wav")
         assert not (tmp_path / "full" / "audio.mix.wav").exists()
         assert not any("-af" in cmd for cmd in sketch), "a sketch is not mastered"
@@ -1404,3 +1432,51 @@ class TestSmfTempoMap:
             elif msg.type == "note_on" and msg.velocity > 0:
                 onsets.append(elapsed_us)
         assert onsets == [0.0, 500_000.0, 1_500_000.0]
+
+
+class TestTheChannelBudget:
+    """Fifteen pitched voices is the render's own ceiling, and it says so.
+
+    `_channel_for_voice` was `voice_id % 16` with a bump past the kit's
+    channel. Right for the fifteen voices there are channels for, wrong either
+    side: voice 15 produced channel 16, which mido rejects outright, and voice
+    16 wrapped silently onto channel 0 — the bass's — so two instruments would
+    have shared a patch and a sustain pedal with nothing to say so.
+
+    Unreachable while the spec capped an ensemble at five voices. A crash the
+    moment that cap moved, which is why it is a test now rather than after.
+    """
+
+    @pytest.mark.parametrize(
+        ("voice_id", "channel"),
+        [(0, 0), (1, 1), (2, 2), (8, 8), (9, 10), (13, 14), (14, 15)],
+    )
+    def test_the_voices_there_are_channels_for_are_unchanged(
+        self, voice_id: int, channel: int
+    ) -> None:
+        assert _channel_for_voice(voice_id) == channel
+
+    def test_the_kit_is_pinned_wherever_its_voice_id_sits(self) -> None:
+        assert _channel_for_voice(2, percussion=True) == 9
+        assert _channel_for_voice(11, percussion=True) == 9
+
+    def test_no_pitched_voice_is_ever_given_the_kit_s_channel(self) -> None:
+        assigned = [_channel_for_voice(v) for v in range(len(MELODIC_CHANNELS))]
+        assert 9 not in assigned
+        assert len(set(assigned)) == len(assigned), "two voices share a channel"
+        assert max(assigned) <= 15
+
+    @pytest.mark.parametrize("voice_id", [15, 16, 31, -1])
+    def test_a_voice_past_the_budget_is_refused_by_name(self, voice_id: int) -> None:
+        with pytest.raises(AudioRenderError) as raised:
+            _channel_for_voice(voice_id)
+        assert raised.value.code == AudioRenderErrorCode.MIDI_BUILD_FAILED
+        assert "no MIDI channel" in raised.value.message
+
+    def test_every_channel_the_budget_offers_is_one_mido_accepts(self) -> None:
+        """The refusal exists because mido's own range is the real bound."""
+        mido = pytest.importorskip("mido")
+        for channel in MELODIC_CHANNELS:
+            mido.Message("note_on", channel=channel, note=60)
+        with pytest.raises(ValueError):
+            mido.Message("note_on", channel=16, note=60)

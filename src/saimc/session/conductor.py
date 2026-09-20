@@ -242,7 +242,9 @@ def digest(session: Session) -> str:
     return "\n".join(lines)
 
 
-def _user_message(session: Session, *, trigger: TurnTrigger, message: str) -> str:
+def _user_message(
+    session: Session, *, trigger: TurnTrigger, message: str, may_publish: bool = True
+) -> str:
     """This turn's input: the state, then what asked for the turn.
 
     Three triggers, three sentences, and each says something the state above
@@ -251,22 +253,31 @@ def _user_message(session: Session, *, trigger: TurnTrigger, message: str) -> st
     reason the user's own words are quoted back here instead of being left in
     the log as a past turn.
 
-    The `auto` branch is the only one that mentions publishing, because an
-    automatic turn is only ever asked for by a caller that asked for
-    auto-finalize: it is the harness's continuation after a pass that published
-    nothing, and the one thing worth saying about it is that the piece may be
-    finished. Every other turn is the user's, and a user's turn is not the
-    place to be told to hurry.
+    The `auto` branch is the only one that mentions publishing, and only when
+    the caller asked for auto-finalize. An automatic turn has two reasons to
+    exist: a pass that published nothing when it was supposed to, and a pass
+    that produced nothing to *look* at. The first wants to be told the piece
+    may be finished; the second must not be, because in a workspace publishing
+    is the user's act and a model told to hurry would take it from them. Every
+    other turn is the user's, and a user's turn is not the place to be told to
+    hurry either.
     """
     if trigger == "brief":
         asked = "This is the session's first turn: work the brief above into candidates."
     elif trigger == "message":
         asked = f"The user says: {message}"
-    else:
+    elif may_publish:
         asked = (
             "No one has spoken. Review where this session stands and take it "
             "forward: say what you did, and call for whatever is worth doing next. "
             "If a candidate is ready to be mastered, publish it."
+        )
+    else:
+        asked = (
+            "No one has spoken, and this session has nothing to show yet. Take it "
+            "forward: say what you did, and call for whatever is worth doing next. "
+            "Draft something the user can hear — choosing between candidates is "
+            "theirs, so do not publish."
         )
     return f"{digest(session)}\n\n{asked}"
 
@@ -277,6 +288,7 @@ async def take_turn(
     *,
     trigger: TurnTrigger,
     message: str = "",
+    may_publish: bool = True,
 ) -> Turn:
     """Run one turn: one model call, and the tools it asks for, in order.
 
@@ -297,7 +309,10 @@ async def take_turn(
         messages=(
             Message(role="system", content=SYSTEM_PROMPT),
             Message(
-                role="user", content=_user_message(ctx.session, trigger=trigger, message=message)
+                role="user",
+                content=_user_message(
+                    ctx.session, trigger=trigger, message=message, may_publish=may_publish
+                ),
             ),
         ),
         tools=tool_specs(ctx.budget),

@@ -232,9 +232,7 @@ class TestTheLiveSweep:
         assert client.closed
 
 
-def test_a_live_run_labels_itself_with_the_tag_the_host_served(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_a_live_run_labels_itself_with_the_tag_the_host_served(tmp_path: Path, monkeypatch) -> None:
     """The default label is the adapter's own resolved tag, not the requested one.
 
     A proxy's `*-cloud` namespace need not be the tag that was asked for, and

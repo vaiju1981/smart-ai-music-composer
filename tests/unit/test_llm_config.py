@@ -98,7 +98,9 @@ class TestTheModelOverride:
     def test_an_explicit_model_wins_over_the_configured_one(self, tmp_path: Path) -> None:
         from saimc.llm.config import build_ollama_adapter
 
-        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        (tmp_path / "saimc.toml").write_text(
+            '[llm]\nmodel = "configured-model"\n', encoding="utf-8"
+        )
         client = build_ollama_adapter(model="sweep-candidate")
         assert client is not None
         assert client.model_identifier == "sweep-candidate"
@@ -143,7 +145,9 @@ class TestTheModelOverride:
     def test_no_override_keeps_the_configured_model(self, tmp_path: Path) -> None:
         from saimc.llm.config import build_ollama_adapter
 
-        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        (tmp_path / "saimc.toml").write_text(
+            '[llm]\nmodel = "configured-model"\n', encoding="utf-8"
+        )
         client = build_ollama_adapter()
         assert client is not None
         assert client.model_identifier == "configured-model"
@@ -152,7 +156,9 @@ class TestTheModelOverride:
         """An empty string would otherwise become an adapter with no model."""
         from saimc.llm.config import build_ollama_adapter
 
-        (tmp_path / "saimc.toml").write_text('[llm]\nmodel = "configured-model"\n', encoding="utf-8")
+        (tmp_path / "saimc.toml").write_text(
+            '[llm]\nmodel = "configured-model"\n', encoding="utf-8"
+        )
         client = build_ollama_adapter(model="")
         assert client is not None
         assert client.model_identifier == "configured-model"

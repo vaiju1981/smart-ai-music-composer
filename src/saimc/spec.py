@@ -18,8 +18,9 @@ value they could carry is still valid.
 
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
 
@@ -209,10 +210,55 @@ ROLE_ORDER: tuple[VoiceRole, ...] = (
     VoiceRole.PERCUSSION,
 )
 
-# Ensemble size ceiling: 1 melody + <=2 harmony + <=1 bass + <=1
-# percussion. Also the MIDI-channel budget: the render stage maps each
-# voice to its own channel, and melodic voices must stay off channel 10.
-ENSEMBLE_MAX_VOICES: int = 5
+ROLE_LIMITS: dict[VoiceRole, int] = {
+    VoiceRole.MELODY: 1,
+    VoiceRole.HARMONY: 12,
+    VoiceRole.BASS: 1,
+    VoiceRole.PERCUSSION: 1,
+}
+"""How many voices each role may have. **This is the whole ensemble ceiling.**
+
+One melody, up to twelve harmony voices, a bass and a kit: fifteen instruments,
+which is exactly what MIDI can carry. The kit owns channel 10 and each pitched
+voice takes one of the fifteen that are left, so `render/audio.py`'s
+`MELODIC_CHANNELS` is the real bound and this table is written to meet it
+rather than to guess under it — `test_spec_and_canonical.py` holds the two
+together.
+
+The harmony count is where the room is, and that is a fact about the engine:
+`compose/score.py` has one melody, one bass and one kit, and the harmony bed is
+the only voice that repeats. Twelve was two until a brief asking for "10 to 15
+instruments" came back with four.
+
+**More voices is not more music on its own.** Every layer past the leading one
+writes a sustained pad, so a large ensemble is many instruments playing the same
+chords unless `HarmonyVoices.divisi` distributes them — see `compose/harmony.py`.
+
+A table rather than four comparisons inside the validator, because the numbers
+are asked for in two other places: `/meta` publishes them so the page can state
+the ceiling before a brief is typed, and `ENSEMBLE_MAX_VOICES` is their sum.
+A limit the product enforces and does not disclose is how a user ends up
+asking for fifteen instruments, receiving four, and being told nothing.
+"""
+
+ENSEMBLE_MAX_VOICES: int = sum(ROLE_LIMITS.values())
+"""The ensemble's total ceiling — the sum of `ROLE_LIMITS`, not a second number."""
+
+
+SEED_BITS: Final[int] = 32
+"""How wide a derived seed is. Comfortably inside `random.Random`'s domain and
+small enough that a recorded seed is a number a person can retype."""
+
+
+def seed_for_brief(brief: str) -> int:
+    """A stable seed for a brief that named none: the words, hashed.
+
+    Deterministic across processes and machines — `hash()` is not, since
+    Python salts string hashing per interpreter, and a seed that changed
+    between runs would break the reproducibility this field exists for.
+    """
+    digest = hashlib.sha256(brief.strip().encode("utf-8")).digest()
+    return int.from_bytes(digest[: SEED_BITS // 8], "big")
 
 
 class InstrumentationEntry(BaseModel):
@@ -301,13 +347,15 @@ class CompositionSpec(BaseModel):
         description="Phase 1 mood vocabulary: calming | electrifying | sleep.",
     )
     instrumentation: list[InstrumentationEntry] = Field(
-        default_factory=lambda: [InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO)],
+        default_factory=lambda: [
+            InstrumentationEntry(role=VoiceRole.MELODY, instrument=Instrument.PIANO)
+        ],
         min_length=1,
         max_length=ENSEMBLE_MAX_VOICES,
         description=(
             "The ensemble the piece is written for: role-tagged entries "
             "sorted melody-first. Exactly one melody; at most one bass, "
-            "one percussion (drum_set only), and two harmony voices; "
+            "one percussion (drum_set only), and twelve harmony voices; "
             "instruments must be distinct. A bare instrument string is "
             "accepted for backwards compatibility and expands to the "
             "mood's default ensemble."
@@ -317,12 +365,13 @@ class CompositionSpec(BaseModel):
         default=None,
         ge=0,
         description=(
-            "RNG seed for reproducibility. None does not randomise the "
-            "piece: the engine composes against a fixed default seed of 0, "
-            "and the manifest records this field's None rather than that "
-            "resolved value. So None reproduces exactly, and seed=0 and "
-            "seed=None yield identical music. Pass an explicit seed to vary "
-            "a piece."
+            "RNG seed for reproducibility. None is not randomness: the engine "
+            "composes against a fixed default seed of 0, so seed=0 and "
+            "seed=None yield identical music. The product paths do not leave "
+            "it None — `with_brief_seed` derives one from the words that were "
+            "typed, so two different briefs are two different pieces and the "
+            "same brief is always the same piece. Pass an explicit seed to "
+            "pin one, or to hear another reading of the same brief."
         ),
     )
     humanization: Literal["none", "light", "expressive"] = Field(
@@ -335,6 +384,31 @@ class CompositionSpec(BaseModel):
             "shortens repeated notes into staccato."
         ),
     )
+
+    def with_brief_seed(self, brief: str) -> CompositionSpec:
+        """This spec, seeded from `brief` when it named no seed of its own.
+
+        **The one-shot path used to compose every unseeded request against seed
+        0.** So every "calming, two minutes" was the same piece — same key, same
+        tempo, same melody — however differently it had been asked for, because
+        a spec is ten fields and two briefs that land on the same ten are the
+        same request as far as the engine can tell. What a listener heard was a
+        product that ignored their words.
+
+        Deriving the seed from the words fixes the symptom without touching the
+        guarantee: the same brief still composes the same piece, byte for byte,
+        because the same text hashes to the same number. A different brief gets
+        a different one. It does not make the piece *about* the words — that is
+        the plan's job, and the plan is 45 fields the parser does not write yet
+        — but it stops two different requests being one answer.
+
+        A spec that names a seed is left alone: an explicit seed is a request
+        for one exact piece, and overwriting it would be the deaf-product
+        failure this codebase refuses elsewhere.
+        """
+        if self.seed is not None:
+            return self
+        return self.model_copy(update={"seed": seed_for_brief(brief)})
 
     @model_validator(mode="before")
     @classmethod
@@ -369,22 +443,24 @@ class CompositionSpec(BaseModel):
         roles = [entry.role for entry in entries]
         if roles.count(VoiceRole.MELODY) != 1:
             raise ValueError(
-                "ensemble must have exactly one melody role; got "
-                f"{roles.count(VoiceRole.MELODY)}"
+                f"ensemble must have exactly one melody role; got {roles.count(VoiceRole.MELODY)}"
             )
-        if roles.count(VoiceRole.BASS) > 1:
-            raise ValueError("ensemble supports at most one bass entry")
-        if roles.count(VoiceRole.PERCUSSION) > 1:
-            raise ValueError("ensemble supports at most one percussion entry")
+        # Read off `ROLE_LIMITS` rather than compared one by one, so the numbers
+        # the page is told and the numbers enforced here cannot come apart.
+        for role in (VoiceRole.BASS, VoiceRole.PERCUSSION, VoiceRole.HARMONY):
+            limit = ROLE_LIMITS[role]
+            count = roles.count(role)
+            if count > limit:
+                raise ValueError(
+                    f"ensemble supports at most {limit} {role.value} "
+                    f"{'entry' if limit == 1 else 'entries'}; got {count}"
+                )
         for entry in entries:
             if entry.role == VoiceRole.PERCUSSION and entry.instrument != Instrument.DRUM_SET:
                 raise ValueError(
                     "percussion role requires the drum_set instrument; "
                     f"got {entry.instrument.value}"
                 )
-        harmony = roles.count(VoiceRole.HARMONY)
-        if harmony > 2:
-            raise ValueError(f"ensemble supports at most two harmony entries; got {harmony}")
         instruments = [entry.instrument for entry in entries]
         duplicates = {i for i in instruments if instruments.count(i) > 1}
         if duplicates:
@@ -393,15 +469,14 @@ class CompositionSpec(BaseModel):
             # and accompaniment are both the piano (one Salamander
             # voice under the kit), exactly as the Phase 2 drum-set
             # branch composed it.
-            drum_set_ok = (
-                duplicates == {Instrument.PIANO}
-                and roles == [VoiceRole.MELODY, VoiceRole.BASS, VoiceRole.PERCUSSION]
-            )
+            drum_set_ok = duplicates == {Instrument.PIANO} and roles == [
+                VoiceRole.MELODY,
+                VoiceRole.BASS,
+                VoiceRole.PERCUSSION,
+            ]
             if not (font_only_ok or drum_set_ok):
                 names = ", ".join(sorted(i.value for i in duplicates))
-                raise ValueError(
-                    f"each instrument may appear at most once in an ensemble: {names}"
-                )
+                raise ValueError(f"each instrument may appear at most once in an ensemble: {names}")
         return self
 
 
@@ -440,7 +515,9 @@ __all__ = [
     "DURATION_SECONDS_MAX",
     "DURATION_SECONDS_MIN",
     "ENSEMBLE_MAX_VOICES",
+    "ROLE_LIMITS",
     "ROLE_ORDER",
+    "SEED_BITS",
     "SPEC_SCHEMA_VERSION",
     "TEMPO_BPM_MAX",
     "TEMPO_BPM_MIN",
@@ -454,4 +531,5 @@ __all__ = [
     "UnsupportedSpecVersionError",
     "VoiceRole",
     "WesternKey",
+    "seed_for_brief",
 ]

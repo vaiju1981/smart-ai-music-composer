@@ -46,15 +46,19 @@ from saimc.instruments import range_for
 FALLBACK_MIN_MIDI: int = 22
 FALLBACK_MAX_MIDI: int = 107
 
-# Maximum simultaneous note count, justified by a pianist's two hands
-# and applied to every voice — including the single-line winds and
-# brass, which cannot sound more than one note at a time. It is a
-# backstop against pathological voicings, not a playability check. The
-# per-instrument polyphony in `saimc.instruments` is the number that
-# would make it one, and it is not enforced here yet: the engine's pad
-# writes two-note dyads for every instrument, so enforcing it today
-# would refuse every piece whose harmony voice is a wind or a brass.
-# The pad has to become monophonic-aware first.
+# Maximum simultaneous note count for ONE voice, justified by a pianist's
+# two hands — which is a fact about one player, and so is only meaningful
+# per voice. Counted across the whole score it was a limit on the size of
+# the *ensemble*: fifteen players sounding one note each is a chord, not a
+# pathological voicing, and the cap refused it at eight.
+#
+# It remains a backstop rather than a playability check. The per-instrument
+# polyphony in `saimc.instruments` is the number that would make it one — a
+# flute is 1, a cello 2, a piano 10 — and it is still not enforced here,
+# because `lint` takes a NotationScore and a score carries no instruments.
+# What has changed is that it is now *reachable*: the divisi pad writes one
+# note per layer, so a wind or brass pad no longer sounds a dyad it cannot
+# play. Threading the voice->instrument map into the linter is what is left.
 MAX_SIMULTANEOUS_NOTES: int = 8
 
 # Close-position dissonances between simultaneously sounding voices:
@@ -172,9 +176,7 @@ def _check_range(
     """
     issues: list[LintIssue] = []
     for note in score.notes:
-        instrument = (
-            voice_instruments.get(note.voice_id) if voice_instruments is not None else None
-        )
+        instrument = voice_instruments.get(note.voice_id) if voice_instruments is not None else None
         if instrument is None:
             if FALLBACK_MIN_MIDI <= note.pitch_midi <= FALLBACK_MAX_MIDI:
                 continue
@@ -188,8 +190,7 @@ def _check_range(
             LintIssue(
                 code=LintCode.NOTE_OUT_OF_RANGE,
                 message=(
-                    f"pitch {note.pitch_midi} is outside the range "
-                    f"[{low}, {high}] of {whose}"
+                    f"pitch {note.pitch_midi} is outside the range [{low}, {high}] of {whose}"
                 ),
                 tick=note.tick,
                 voice_id=note.voice_id,
@@ -219,27 +220,32 @@ def _check_measures_complete(score: NotationScore) -> list[LintIssue]:
 
 
 def _check_simultaneous_notes(score: NotationScore) -> list[LintIssue]:
-    """Flag measures where more than MAX_SIMULTANEOUS_NOTES start at the same tick.
+    """Flag any *one voice* sounding more than MAX_SIMULTANEOUS_NOTES at a tick.
 
-    The cap models a pianist's two hands: it applies to the melodic
-    voices. The percussion kit is one drum machine — a crash, kick, and
-    hat can all fire on the same downbeat without straining anything —
-    so its notes don't count toward the cap.
+    The cap models a pianist's two hands, and hands belong to a player. Counted
+    across the score it was a cap on the ensemble instead: a fifteen-piece
+    arrangement with one note each is a chord any orchestra plays, and this
+    refused it at eight. So it is counted per voice, where the reason it was
+    chosen for actually applies, and a piece is free to be as large as the spec
+    permits.
+
+    The percussion kit is exempt for its own reason, unchanged: it is one drum
+    machine, and a crash, kick and hat on the same downbeat strain nothing.
     """
     issues: list[LintIssue] = []
-    by_tick: dict[int, list[NoteEvent]] = {}
+    by_voice_tick: dict[tuple[int, int], list[NoteEvent]] = {}
     for note in score.notes:
         if note.voice_id == VOICE_PERCUSSION:
             continue
-        by_tick.setdefault(note.tick, []).append(note)
-    for tick, notes_at_tick in by_tick.items():
-        if len(notes_at_tick) > MAX_SIMULTANEOUS_NOTES:
+        by_voice_tick.setdefault((note.voice_id, note.tick), []).append(note)
+    for (voice_id, tick), sounding in sorted(by_voice_tick.items()):
+        if len(sounding) > MAX_SIMULTANEOUS_NOTES:
             issues.append(
                 LintIssue(
                     code=LintCode.TOO_MANY_SIMULTANEOUS_NOTES,
                     message=(
-                        f"{len(notes_at_tick)} notes start at tick {tick}; "
-                        f"max is {MAX_SIMULTANEOUS_NOTES}"
+                        f"voice {voice_id} sounds {len(sounding)} notes at tick "
+                        f"{tick}; max is {MAX_SIMULTANEOUS_NOTES} for one voice"
                     ),
                     tick=tick,
                 )
@@ -578,8 +584,7 @@ def _check_phrase_gaps(score: NotationScore) -> list[LintIssue]:
         (
             n
             for n in score.notes
-            if n.voice_id == VOICE_MELODY
-            and not _is_anacrusis_pickup(n, ticks_per_bar, score.ppq)
+            if n.voice_id == VOICE_MELODY and not _is_anacrusis_pickup(n, ticks_per_bar, score.ppq)
         ),
         key=lambda n: (n.tick, n.pitch_midi),
     )
@@ -621,10 +626,7 @@ def _flag_long_span(
 
 def _is_anacrusis_pickup(note: NoteEvent, ticks_per_bar: int, ppq: int) -> bool:
     """A pickup note: an eighth in the bar's final eighth-note slot."""
-    return (
-        note.tick % ticks_per_bar == ticks_per_bar - ppq // 2
-        and note.duration_ticks <= ppq // 2
-    )
+    return note.tick % ticks_per_bar == ticks_per_bar - ppq // 2 and note.duration_ticks <= ppq // 2
 
 
 __all__ = [

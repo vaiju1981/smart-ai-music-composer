@@ -46,7 +46,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.8.0",
+    # Pinned exactly, like the other three: ruff is the only dev tool that
+    # *rewrites* source, so a floating version means a tree that is formatted
+    # on one machine and not on the next. Move it deliberately, with the
+    # reformat in its own commit.
+    "ruff==0.16.5",
     "mypy==1.13.0",
     "pytest==8.3.4",
     "pytest-cov==6.0.0",
@@ -59,6 +63,12 @@ render = [
 benchmark = [
     "tenacity==9.0.0",
 ]
+ui = [
+    # The UI suite drives a real browser (`tests/ui`). Pinned to the Playwright
+    # that `render-service/package.json` already depends on, so the repo keeps
+    # one Chromium revision on disk instead of two.
+    "playwright==1.61.0",
+]
 
 [project.scripts]
 # `:_entry` and not `:main` for the four typer CLIs. `main` is the
@@ -69,6 +79,7 @@ saimc-benchmark = "saimc.benchmark_cli:_entry"
 saimc-label = "saimc.labeling_cli:_entry"
 saimc-preferences = "saimc.preferences_cli:_entry"
 saimc-quality = "saimc.quality_cli:_entry"
+saimc-judge = "saimc.judge_cli:_entry"
 saimc-jobs = "saimc.jobs.worker:main"
 saimc-build-ffmpeg = "saimc.scripts.build_ffmpeg:main"
 saimc-audit-ffmpeg = "saimc.render.ffmpeg_audit_cli:main"
@@ -112,6 +123,7 @@ ignore = [
 "src/saimc/benchmark_cli.py" = ["B008"]
 "src/saimc/labeling_cli.py" = ["B008"]
 "src/saimc/quality_cli.py" = ["B008"]
+"src/saimc/judge_cli.py" = ["B008"]
 "src/saimc/preferences_cli.py" = ["B008"]
 
 [tool.ruff.format]

@@ -31,9 +31,7 @@ from saimc.quality import (
 )
 from saimc.spec import CompositionSpec
 
-app = typer.Typer(
-    help="Score the musical quality of generated pieces and report what to fix."
-)
+app = typer.Typer(help="Score the musical quality of generated pieces and report what to fix.")
 
 # The default matrix: every mood, one scalar and one full ensemble, at a
 # fixed duration and seed so runs are comparable.

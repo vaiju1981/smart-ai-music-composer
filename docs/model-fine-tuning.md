@@ -9,14 +9,27 @@ writes a note — and both are checkable below.
 
 ## What the model does today
 
-The LLM's entire job is **prompt → `CompositionSpec`**. It is called from the
-job pipeline's parsing stage, its answer is validated against the local schema
-before anything downstream consumes it, and it is re-prompted with the
-schema-in-context error at most twice before the deterministic fallback parser
-takes over. Every accepted prompt is recorded in `manifest.json` with its
+The LLM has three jobs, and not one of them is a note.
+
+1. **prompt → `CompositionSpec`.** Called from the job pipeline's parsing stage,
+   validated against the local schema before anything downstream consumes it,
+   and re-prompted with the schema-in-context error at most twice before the
+   deterministic fallback parser takes over.
+2. **The conductor's turn** (`session/conductor.py`): which of eight tools to
+   call, with which arguments. The tools are `draft`, `revise`, `repair`,
+   `critique`, `compare`, `sketch`, `parse_brief` and `finalize`, and every one
+   of them is a *parameter* of the generator.
+3. **The delta translator** (`session/translator.py`): a sentence read into
+   typed requests from a closed vocabulary of 25, with a deterministic phrase
+   table standing in when there is no model.
+
+The second and third arrived with the session harness after this note was first
+written, and neither changes its argument — they choose *among things the engine
+can already do*. A model that picked tools perfectly would still be choosing
+between knobs, and the knobs are what `compose/` reads. Every accepted prompt is recorded in `manifest.json` with its
 `parser_source`, so which path produced a given piece is never a guess.
 
-The spec it produces is ten fields wide, and they are all *requests*:
+The spec the parser produces is ten fields wide, and they are all *requests*:
 `schema_version`, `request_kind`, `duration_seconds`, `tempo_bpm`, `key`,
 `time_signature`, `mood`, `instrumentation`, `seed`, `humanization`. Not one of
 them can carry a note, a phrase, a contour or a chord. The strongest musical
@@ -60,12 +73,45 @@ not which notes they are; the engraved score stays on the grid.
 ## Where quality feedback actually flows today
 
 The instrument this pass built is model-free and deliberately so. `saimc.quality`
-measures ten properties of a composed piece and, in each `QualityThreshold`'s
+measures thirteen properties of a composed piece and, in each `QualityThreshold`'s
 `hint`, records *which engine knob moves that metric*. Its `findings` therefore
 read as instructions to whoever is tuning the generator — or to an automated
 repair loop over the generator's parameters — rather than as a verdict on a
 prompt. That is the feedback direction that can actually improve the music, and
 it points at `src/saimc/compose/`.
+
+## What has since been built toward that
+
+Two of the four conditions below were already met when this note was written,
+and the first slice of the change itself now exists.
+
+**The brief reaches the plan.** `session/translator.py:read_brief` reads the
+opening request into `CompositionPlan`'s forty-five fields rather than only the
+spec's ten, so a word naming a cadence, a swing, a slower chord change or a
+bass that holds moves the generator instead of being discarded. That is not a
+model writing notes — every one of those is a knob — but it is the difference
+between three moods deciding the music and the request deciding it.
+
+**And the model may now propose the theme.** `CompositionPlan.melody_motif`
+carries a 2-8 cell subject and `propose_motif` is the tool that sets it. This
+*is* a model writing material, and the shape of the permission is what makes it
+safe:
+
+- It proposes a **subject, not a piece.** The engine still develops it through
+  the form, snaps it onto each bar's chord, places it in the tessitura band and
+  answers its leaps.
+- The proposal is **recorded, not re-asked.** It becomes part of the plan, so
+  `(spec, plan, seed) -> notes` stays byte-identical and §8's canonical-artifact
+  gate is untouched — the model is consulted once and the document carries the
+  answer, exactly as it already did for the spec.
+- A proposal the engine could not develop is **refused by the plan**, before a
+  note is written, in the same sentence any other bad request gets.
+- The linter, the scorecard, the arbiter and both release gates still stand
+  between it and a render.
+
+What remains of the conversation below is a model proposing *whole voices*
+rather than a cell — where the rights question bites, and where reproducibility
+stops being free.
 
 ## What *would* make model work the lever
 

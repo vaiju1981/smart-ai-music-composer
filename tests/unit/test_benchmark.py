@@ -154,7 +154,11 @@ def test_score_record_accepted_matched_and_field_exact() -> None:
             "key": None,
             "time_signature": "4/4",
             "mood": "calming",
-            "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+            "instrumentation": [
+                {"role": "melody", "instrument": "piano"},
+                {"role": "harmony", "instrument": "pizzicato_strings"},
+                {"role": "bass", "instrument": "cello"},
+            ],
             "seed": None,
             "humanization": "light",
         },
@@ -179,7 +183,11 @@ def test_score_record_accepted_wrong_duration() -> None:
             "key": None,
             "time_signature": "4/4",
             "mood": "calming",
-            "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+            "instrumentation": [
+                {"role": "melody", "instrument": "piano"},
+                {"role": "harmony", "instrument": "pizzicato_strings"},
+                {"role": "bass", "instrument": "cello"},
+            ],
             "seed": None,
             "humanization": "light",
         },
@@ -232,7 +240,11 @@ def test_score_corpus_passes_with_perfect_observations() -> None:
                 "key": None,
                 "time_signature": "4/4",
                 "mood": "calming",
-                "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+                "instrumentation": [
+                    {"role": "melody", "instrument": "piano"},
+                    {"role": "harmony", "instrument": "pizzicato_strings"},
+                    {"role": "bass", "instrument": "cello"},
+                ],
                 "seed": None,
                 "humanization": "light",
             },
@@ -274,7 +286,11 @@ def test_score_corpus_fails_when_first_pass_validity_too_low() -> None:
                 "key": None,
                 "time_signature": "4/4",
                 "mood": "calming",
-                "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+                "instrumentation": [
+                    {"role": "melody", "instrument": "piano"},
+                    {"role": "harmony", "instrument": "pizzicato_strings"},
+                    {"role": "bass", "instrument": "cello"},
+                ],
                 "seed": None,
                 "humanization": "light",
             },
@@ -303,7 +319,11 @@ def test_score_corpus_fails_when_field_level_accuracy_too_low() -> None:
                 "key": None,
                 "time_signature": "4/4",
                 "mood": "calming",
-                "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+                "instrumentation": [
+                    {"role": "melody", "instrument": "piano"},
+                    {"role": "harmony", "instrument": "pizzicato_strings"},
+                    {"role": "bass", "instrument": "cello"},
+                ],
                 "seed": None,
                 "humanization": "light",
             },
@@ -348,7 +368,11 @@ def test_score_corpus_fails_when_p95_latency_too_high() -> None:
                 "key": None,
                 "time_signature": "4/4",
                 "mood": "calming",
-                "instrumentation": [{"role": "melody", "instrument": "piano"}, {"role": "harmony", "instrument": "pizzicato_strings"}, {"role": "bass", "instrument": "cello"}],
+                "instrumentation": [
+                    {"role": "melody", "instrument": "piano"},
+                    {"role": "harmony", "instrument": "pizzicato_strings"},
+                    {"role": "bass", "instrument": "cello"},
+                ],
                 "seed": None,
                 "humanization": "light",
             },
@@ -412,7 +436,8 @@ class TestFirstPassValidityIsMeasuredOrItIsNotScored:
         """
         recs = _supported(10)
         obs = [
-            _obs(mood="calming", raw_first_response_valid=None if i < 2 else True) for i in range(10)
+            _obs(mood="calming", raw_first_response_valid=None if i < 2 else True)
+            for i in range(10)
         ]
         report = score_corpus("partly-reached", recs, obs)
         assert report.first_pass_validity == 1.0
@@ -515,7 +540,9 @@ class TestCostIsEitherMeasuredOrItIsNot:
     def test_a_genuine_zero_is_a_measured_zero(self) -> None:
         """The offline path's `0.0` and an unpriced call are different statements."""
         recs = _supported(3)
-        report = score_corpus("offline", recs, [_obs(mood="calming", cost_usd=0.0) for _ in range(3)])
+        report = score_corpus(
+            "offline", recs, [_obs(mood="calming", cost_usd=0.0) for _ in range(3)]
+        )
         assert report.cost_total_usd == 0.0
 
 

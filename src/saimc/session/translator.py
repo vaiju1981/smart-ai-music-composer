@@ -45,6 +45,7 @@ from typing import Final, TypeAlias
 
 from saimc.compose.motif import BassMotion
 from saimc.compose.percussion import SWING_RATIO_TRIPLET
+from saimc.compose.plan import CompositionPlan
 from saimc.llm.base import ChatClient, ChatRequest, Message, ToolCall, ToolSpec
 from saimc.session.conductor import spec_line
 from saimc.session.deltas import (
@@ -62,6 +63,7 @@ from saimc.session.deltas import (
     SetMood,
     SetSectionClose,
     SetSwing,
+    apply_deltas,
     delta_from_dict,
     refuse_uncarried,
 )
@@ -548,7 +550,22 @@ def _from_calls(
     return deltas, refusals, unread
 
 
-def _request(text: str, spec: CompositionSpec, *, request_id: str) -> ChatRequest:
+OPENING_LABEL: Final[str] = "brief"
+FEEDBACK_LABEL: Final[str] = "feedback"
+"""How the sentence is introduced, and it is two words because it is two questions.
+
+*Feedback* is a change to a piece the listener has heard: "the piece as it
+stands" is a real thing and "slower" means slower than it. An opening *brief*
+has no piece behind it — the spec beside it is what has been read out of the
+words so far, not something anyone has listened to — and asking a model to read
+a first request as though it were a complaint about an existing one is asking a
+different question than the one being answered.
+"""
+
+
+def _request(
+    text: str, spec: CompositionSpec, *, request_id: str, opening: bool = False
+) -> ChatRequest:
     """The one model call: the sentence, the piece, and the vocabulary.
 
     The piece is described with the conductor's own `spec_line` rather than
@@ -556,12 +573,14 @@ def _request(text: str, spec: CompositionSpec, *, request_id: str) -> ChatReques
     to choose a value for it, and a second rendering of the spec is a second
     place a field can be forgotten.
     """
+    label = OPENING_LABEL if opening else FEEDBACK_LABEL
+    standing = "what has been read from it so far" if opening else "the piece as it stands"
     return ChatRequest(
         messages=(
             Message(role="system", content=SYSTEM_PROMPT),
             Message(
                 role="user",
-                content=f"feedback: {text}\nthe piece as it stands: {spec_line(spec)}",
+                content=f"{label}: {text}\n{standing}: {spec_line(spec)}",
             ),
         ),
         tools=(
@@ -581,6 +600,7 @@ async def translate(
     client: ChatClient | None,
     spec: CompositionSpec,
     request_id: str = "",
+    opening: bool = False,
 ) -> Translation:
     """Read one piece of feedback into the requests it asks for.
 
@@ -600,7 +620,7 @@ async def translate(
     if client is None:
         return _from_keywords(text, spec, note=_NO_MODEL)
 
-    result = await client.chat(_request(text, spec, request_id=request_id))
+    result = await client.chat(_request(text, spec, request_id=request_id, opening=opening))
     if result.error is not None:
         return _from_keywords(
             text,
@@ -630,7 +650,79 @@ __all__ = [
     "REQUEST_TOOL",
     "REQUEST_TOOL_DESCRIPTION",
     "SYSTEM_PROMPT",
+    "BriefReading",
     "Phrase",
     "Translation",
+    "read_brief",
     "translate",
 ]
+
+
+@dataclass(frozen=True)
+class BriefReading:
+    """A brief read into the two documents a piece is composed from.
+
+    `plan` is the point. A `CompositionSpec` is ten fields and a
+    `CompositionPlan` is forty-five, and until this existed the parser wrote
+    the ten and `default_plan` derived the other thirty-five from the mood
+    alone. Three moods decided every musical parameter the engine reads, so
+    every word in a brief that was not a mood, a length, a key, a tempo, an
+    instrument, a metre or a humanization setting was discarded before the
+    engine saw anything — which is why a listener could ask for something
+    cinematic, or yearning, or that builds, and hear the same piece back.
+
+    `translation` carries what became of the words, and it is returned rather
+    than swallowed for the reason every other surface in this package reports
+    its remainder: a brief that asked for two things and was read for one has
+    to say so. `refused` is what the vocabulary recognised and cannot honour;
+    `translation.unread` is what it could not read at all.
+    """
+
+    spec: CompositionSpec
+    plan: CompositionPlan
+    applied: tuple[Delta, ...]
+    refused: tuple[DeltaRefusal, ...]
+    translation: Translation
+
+    @property
+    def read_anything(self) -> bool:
+        """Whether the brief moved the plan off the mood's defaults at all."""
+        return bool(self.applied)
+
+
+async def read_brief(
+    brief: str,
+    *,
+    client: ChatClient | None,
+    spec: CompositionSpec,
+    request_id: str = "",
+) -> BriefReading:
+    """Read a brief into the spec and plan its words describe.
+
+    The same reader the feedback box uses, pointed at the *opening* request
+    instead of at a revision — which is the whole trick. "Make it build to
+    something" is the same sentence whether it arrives before the first draft
+    or after the third, and the vocabulary that carries it, the refusals that
+    answer it and the remainder it reports are all already written and tested.
+
+    The spec comes back folded too, because a delta may name something the spec
+    carries — a tempo, a key, a length — and the two documents have to agree
+    about the piece. `apply_deltas` owns that order; this only points it at a
+    brief.
+
+    A brief that reads as nothing is not an error and does not refuse: the
+    reading is the mood's own defaults, which is exactly what every piece
+    composed before this got. Nothing gets worse for a brief the vocabulary
+    cannot see.
+    """
+    translation = await translate(
+        brief, client=client, spec=spec, request_id=request_id, opening=True
+    )
+    application = apply_deltas(spec, translation.deltas)
+    return BriefReading(
+        spec=application.spec,
+        plan=application.plan,
+        applied=application.applied,
+        refused=(*application.refused, *translation.refusals),
+        translation=translation,
+    )

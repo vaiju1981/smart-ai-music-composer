@@ -64,9 +64,16 @@ from typing import Any, Final
 
 from saimc.compose.engine import CompositionEngineError, EngineOutput, compose
 from saimc.compose.linter import lint
+from saimc.compose.motif import MotifCell
+from saimc.compose.plan import (
+    MOTIF_MAX_CELLS,
+    MOTIF_MIN_CELLS,
+    PlanError,
+    default_plan,
+)
 from saimc.jobs.storage import Job, JobStorage
 from saimc.jobs.worker import QueueUnavailable, enqueue_or_fail
-from saimc.llm.base import LLMClient, ToolCall, ToolSpec
+from saimc.llm.base import ChatClient, LLMClient, ToolCall, ToolSpec
 from saimc.parser import parse_prompt
 from saimc.quality import AXES, Axis, QualityFinding, localize, score_piece
 from saimc.render.audio import render_sketch
@@ -307,6 +314,15 @@ class ToolContext:
     budget: ToolBudget = field(default_factory=ToolBudget)
     ledger: TurnLedger = field(default_factory=TurnLedger)
     llm: LLMClient | None = None
+    chat: ChatClient | None = None
+    """The conversational half of the same model, for the tools that read words.
+
+    `llm` parses a brief into a spec; this reads a sentence into typed requests.
+    In every real build they are one object — an adapter satisfies both
+    protocols — and they are two fields because they are two protocols, the
+    same reason `_parser` exists. Optional for `llm`'s reason: the reader has a
+    phrase table to fall back on, so a tool that wants one still runs without.
+    """
 
     def begin_turn(self) -> None:
         """Start a fresh turn's spend. The conductor calls this once per turn."""
@@ -506,12 +522,47 @@ async def _parse_brief(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         raise ToolRefusal(result.error.error_code, result.error.message)
     spec = result.spec
     assert spec is not None  # ParseResult carries exactly one of spec or error
-    ctx.session.spec = spec
+    # Seeded from the words, for `with_brief_seed`'s reason — from the *brief*
+    # rather than from `text`, so a mid-session re-parse of one phrase does not
+    # move the piece the session has been working on.
+    spec = spec.with_brief_seed(ctx.session.brief)
+    # The rest of the brief decides the plan. A spec is ten fields and a plan
+    # is forty-five, so without this every word that was not a mood, a length,
+    # a key, a tempo, an instrument, a metre or a humanization setting was
+    # discarded and three moods decided the other thirty-five parameters.
+    # `read_brief` is the same reader `/deltas` uses, pointed at the opening
+    # request, so the vocabulary, the refusals and the remainder are the ones
+    # already written and tested.
+    from saimc.session.translator import read_brief
+
+    # The reading is a second model call, so it is spent against the same
+    # budget as the first. Counted before it is made, as the parse is: a
+    # ledger that charged only for calls that came back would let a failing
+    # host be asked without limit. The reader falls back to its phrase table
+    # when there is no chat client, and that path costs nothing — which is why
+    # the charge is conditional rather than unconditional.
+    if ctx.chat is not None:
+        ctx.ledger.llm_calls += 1
+    reading = await read_brief(
+        ctx.session.brief,
+        client=ctx.chat,
+        spec=spec,
+        request_id=ctx.session.session_id,
+    )
+    ctx.session.spec = reading.spec
+    ctx.session.plan = reading.plan if reading.read_anything else None
     return _render(
         {
-            "spec": spec.model_dump(mode="json"),
+            "spec": reading.spec.model_dump(mode="json"),
             "parser_source": result.parser_source,
             "attempts": result.attempts,
+            # What the brief asked for beyond the spec, and what it did not get.
+            # A brief read for one of the two things it asked is a partial
+            # reading, and this package reports its remainder rather than
+            # letting a user infer it from the music.
+            "plan_requests": [str(delta) for delta in reading.applied],
+            "plan_refused": [refusal.message for refusal in reading.refused],
+            "unread": list(reading.translation.unread),
         }
     )
 
@@ -535,7 +586,10 @@ async def _draft(ctx: ToolContext, args: Mapping[str, Any]) -> str:
         seed = base + offset
         candidate = spec if spec.seed == seed else _with_seed(spec, seed)
         try:
-            output = compose(candidate)
+            # Under the brief's own plan when it asked for one: every candidate
+            # is a different seed of the *same request*, not of the mood's
+            # defaults.
+            output = compose(candidate, plan=ctx.session.plan)
         except CompositionEngineError as exc:
             # One candidate the engine cannot honour does not sink the
             # fan-out: the other seeds may well compose, and the reason is
@@ -848,6 +902,105 @@ async def _revise(ctx: ToolContext, args: Mapping[str, Any]) -> str:
                 for refusal in revision.refused
             ],
             "moved_on": deciding_element(revision.draft, parent),
+        }
+    )
+
+
+_MOTIF_PARAMETERS: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {
+        "cells": {
+            "type": "array",
+            "minItems": MOTIF_MIN_CELLS,
+            "maxItems": MOTIF_MAX_CELLS,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "step": {
+                        "type": "integer",
+                        "description": (
+                            "Movement in scale degrees from the previous cell. The first "
+                            "cell's step is 0 — it starts on the bar's anchor tone. 1 is a "
+                            "step up, 2 a third, -2 a third down."
+                        ),
+                    },
+                    "length_ticks": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "The cell's notated length. A quarter note is 480, an eighth "
+                            "240, a half 960."
+                        ),
+                    },
+                },
+                "required": ["step", "length_ticks"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["cells"],
+    "additionalProperties": False,
+}
+
+_MOTIF_DESCRIPTION: Final[str] = (
+    "Propose the piece's theme: a short cell of 2-8 (step, length) pairs that fits "
+    "inside one bar. This is the one place you write notes. The engine develops what "
+    "you give it — every bar replays it through repetition, transposition, sequence, "
+    "inversion, truncation or ornament onto that bar's chord, in the chord's own "
+    "scale, inside the melody's register — so propose a subject, not a tune. Sing it "
+    "to yourself first: a theme a listener could hum back after one hearing is the "
+    "thing that makes a piece sound like it is about something. The next draft "
+    "develops it; drafts already made are unchanged."
+)
+
+
+async def _propose_motif(ctx: ToolContext, args: Mapping[str, Any]) -> str:
+    """Set the theme the next draft develops.
+
+    **The only tool that writes notes, and the reason it can is that it does
+    not write many.** A motif is a subject; the engine is still what turns it
+    into a piece, and the linter and the scorecard still stand between the two.
+    A proposal this engine cannot develop is refused here, by the plan's own
+    `_motif` bounds, before anything is composed — which is the same contract
+    every other request in this session has.
+
+    Recorded rather than re-asked: the cell becomes part of the session's plan,
+    so every draft after it is as reproducible as one composed from a spec. The
+    model is consulted once and the document carries the answer.
+    """
+    spec = ctx.session.spec
+    if spec is None:
+        raise ToolRefusal(
+            "no_spec",
+            "this session has no spec yet, so there is nothing for a theme to be the "
+            "theme of. Call parse_brief first.",
+        )
+    raw = args.get("cells")
+    if not isinstance(raw, list) or not raw:
+        raise ToolRefusal(
+            "bad_motif", "cells must be a non-empty list of {step, length_ticks} objects"
+        )
+    try:
+        cells = tuple(
+            MotifCell(step=int(cell["step"]), length_ticks=int(cell["length_ticks"]))
+            for cell in raw
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ToolRefusal(
+            "bad_motif", f"every cell needs an integer step and length_ticks: {exc}"
+        ) from exc
+    base = ctx.session.plan or default_plan(spec)
+    try:
+        plan = replace(base, melody_motif=cells)
+    except PlanError as exc:
+        # The plan refuses what the engine could not develop, and its sentence
+        # is already written for a reader.
+        raise ToolRefusal("bad_motif", str(exc)) from exc
+    ctx.session.plan = plan
+    return _render(
+        {
+            "motif": [{"step": c.step, "length_ticks": c.length_ticks} for c in cells],
+            "note": "the next draft develops this; drafts already made are unchanged",
         }
     )
 
@@ -1337,6 +1490,12 @@ TOOLS: Final[Mapping[str, Tool]] = {
         ),
         parameters=_draft_parameters,
         handler=_draft,
+    ),
+    "propose_motif": Tool(
+        name="propose_motif",
+        description=_MOTIF_DESCRIPTION,
+        parameters=_static(_MOTIF_PARAMETERS),
+        handler=_propose_motif,
     ),
     "critique": Tool(
         name="critique",

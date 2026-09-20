@@ -53,10 +53,12 @@ from saimc.llm.base import (
 from saimc.render.audio import AudioArtifact
 from saimc.session import tools
 from saimc.session.api import http_from_refusal
+from saimc.session.conductor import SYSTEM_PROMPT as CONDUCTOR_PROMPT
 from saimc.session.models import Session
 from saimc.session.preferences import PreferenceLog
 from saimc.session.store import SessionStorage
 from saimc.session.tools import ToolRefusal
+from saimc.session.translator import OPENING_LABEL
 from saimc.spec import CompositionSpec, Mood, SpecError
 
 _SPEC = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
@@ -90,6 +92,7 @@ class ScriptedModel:
     def __init__(self, *, spec: CompositionSpec | None = _SPEC) -> None:
         self.spec = spec
         self.replies: list[ChatResult] = []
+        self.reader_replies: list[ChatResult] = []
         self.requests: list[ChatRequest] = []
         self.parse_requests: list[ParseRequest] = []
 
@@ -104,6 +107,25 @@ class ScriptedModel:
 
     async def chat(self, request: ChatRequest) -> ChatResult:
         self.requests.append(request)
+        # The opening brief's reading is a different conversation and must not
+        # eat the turn script. `parse_brief` reads the brief into a plan
+        # through `translator.translate`, which shares this client — so a
+        # script written for the conductor's turns would be consumed by it and
+        # every test here would be off by one. Selected by the label the
+        # reader puts on the sentence, which is `brief:` for an opening request
+        # and `feedback:` for a revision, because they are two questions.
+        # Prose is the reader's "I read nothing", which leaves the plan at the
+        # mood's defaults: exactly the music these tests were written against.
+        # A test *about* the reading scripts it via `reader_replies`.
+        # Both conversations open their user message with `brief:` — the
+        # conductor's digest leads with the session's brief — so the system
+        # prompt is what separates them and the label is what separates an
+        # opening reading from a revision's.
+        is_reader = request.messages[0].content != CONDUCTOR_PROMPT
+        if is_reader and request.messages[1].content.startswith(f"{OPENING_LABEL}:"):
+            if self.reader_replies:
+                return self.reader_replies.pop(0)
+            return ChatResult(content="Nothing in that brief names a knob.")
         if not self.replies:
             return ChatResult(error=LLMError("llm_unreachable", "the script is empty"))
         return self.replies.pop(0)
@@ -142,9 +164,48 @@ def _call(name: str, **arguments: Any) -> ToolCall:
     return ToolCall(name=name, arguments=arguments)
 
 
+def _conductor_requests(model: ScriptedModel) -> list[ChatRequest]:
+    """Only the turns, in order — not every call the session made.
+
+    One object serves the whole session, so its `requests` now hold two kinds:
+    the conductor's turns and `parse_brief`'s reading of the brief into a plan.
+    Indexing the raw list by turn number stopped meaning what it said the day
+    the second kind appeared, so the kind is selected rather than counted
+    around — by the system prompt, which is the thing that differs.
+    """
+    return [r for r in model.requests if r.messages[0].content == CONDUCTOR_PROMPT]
+
+
+def _reader_prompt(model: ScriptedModel, index: int) -> str:
+    """The user message of the `index`-th *revision* the word reader took.
+
+    `parse_brief` reads the opening brief and `/deltas` reads a revision, and
+    both go through `translator.translate`. This selects the second kind — the
+    one a test asking "what was the model shown about the draft" means.
+    """
+    reader = [
+        r
+        for r in model.requests
+        if r.messages[0].content != CONDUCTOR_PROMPT
+        and not r.messages[1].content.startswith(f"{OPENING_LABEL}:")
+    ]
+    return reader[index].messages[1].content
+
+
 def _prompt(model: ScriptedModel, index: int) -> str:
-    """The user message of one request the conductor made."""
+    """The user message of the model's `index`-th call, of whatever kind."""
     return model.requests[index].messages[1].content
+
+
+def _turn_prompt(model: ScriptedModel, index: int) -> str:
+    """The user message of the conductor's `index`-th *turn*.
+
+    Not the same thing as `_prompt` any more: one model object serves the whole
+    session, and `parse_brief` now calls it too — so "the second request" and
+    "the second turn" stopped being the same number the day a brief started
+    being read into a plan.
+    """
+    return _conductor_requests(model)[index].messages[1].content
 
 
 @pytest.fixture
@@ -200,9 +261,7 @@ def model() -> ScriptedModel:
 
 
 @pytest.fixture
-def client(
-    roots: tuple[Path, Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch
-):
+def client(roots: tuple[Path, Path, Path], model: ScriptedModel, monkeypatch: pytest.MonkeyPatch):
     """An app with a model, over `tmp_path`, touching no broker."""
     monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
     app = create_app(
@@ -256,7 +315,12 @@ class TestCreateSession:
         job_id = body["finalized_job_id"]
         assert job_id is not None
         assert [turn["trigger"] for turn in body["turns"]] == ["brief"]
-        assert len(model.requests) == 1
+        # One *turn*, and two calls: the turn, and `parse_brief`'s reading of
+        # the brief into a plan. The second is what lets a word the spec has no
+        # field for — a cadence, a swing, a slower chord change — reach the
+        # engine at all, and it is charged against the same turn budget.
+        assert len(_conductor_requests(model)) == 1
+        assert len(model.requests) == 2
 
         job = JobStorage(roots[0]).get(job_id)
         assert job.parser_source == "from-spec"
@@ -284,7 +348,7 @@ class TestCreateSession:
             saimc.session.api.MAX_AUTO_TURNS
         )
         assert len(body["drafts"]) == 2
-        assert "publish it" in _prompt(model, 1)
+        assert "publish it" in _turn_prompt(model, 1)
 
     def test_auto_finalize_off_takes_one_turn_and_no_continuations(
         self, client: TestClient, model: ScriptedModel
@@ -297,7 +361,7 @@ class TestCreateSession:
 
         assert body["finalized_job_id"] is None
         assert [turn["trigger"] for turn in body["turns"]] == ["brief"]
-        assert len(model.requests) == 1
+        assert len(_conductor_requests(model)) == 1
 
     def test_a_failed_model_call_ends_the_pass(
         self, client: TestClient, model: ScriptedModel
@@ -468,7 +532,7 @@ class TestMessage:
 
         assert response.status_code == 200
         assert [turn["trigger"] for turn in response.json()["turns"]] == ["brief", "message"]
-        assert "The user says: make it slower" in _prompt(model, 1)
+        assert "The user says: make it slower" in _turn_prompt(model, 1)
 
     def test_a_message_that_leaves_one_draft_publishes_it(
         self, client: TestClient, model: ScriptedModel
@@ -494,7 +558,7 @@ class TestMessage:
         model.replies = [_reply(_call("parse_brief"), _call("draft", n=1))]
         created = client.post("/sessions", json={"brief": "30s of calm piano in C"}).json()
         job_id = created["finalized_job_id"]
-        calls_before = len(model.requests)
+        calls_before = len(_conductor_requests(model))
 
         response = client.post(
             f"/sessions/{created['session_id']}/message", json={"message": "again"}
@@ -502,7 +566,7 @@ class TestMessage:
 
         assert response.status_code == 409
         assert job_id in response.json()["detail"]
-        assert len(model.requests) == calls_before
+        assert len(_conductor_requests(model)) == calls_before
 
 
 class TestVerdict:
@@ -546,19 +610,20 @@ class TestVerdict:
         self, client: TestClient, model: ScriptedModel
     ) -> None:
         created = _drafts(client, model)
-        calls_before = len(model.requests)
+        # Turns, not calls: the brief's own reading is a call and is not a turn.
+        calls_before = len(_conductor_requests(model))
         client.post(
             f"/sessions/{created['session_id']}/verdict",
             json={"draft_id": _FIRST, "feedback": "less busy in the left hand"},
         )
-        assert len(model.requests) == calls_before
+        assert len(_conductor_requests(model)) == calls_before
 
         model.replies = [_reply(content="Noted.")]
         client.post(
             f"/sessions/{created['session_id']}/message",
             json={"message": "carry on", "auto_finalize": False},
         )
-        assert "less busy in the left hand" in _prompt(model, calls_before)
+        assert "less busy in the left hand" in _turn_prompt(model, calls_before)
 
     def test_an_empty_verdict_is_refused_in_the_records_own_words(
         self, client: TestClient, model: ScriptedModel
@@ -678,7 +743,11 @@ class TestVerdict:
         assert not PreferenceLog(roots[2]).path.exists()
 
     def test_a_verdict_the_store_never_accepted_writes_no_row(
-        self, client: TestClient, model: ScriptedModel, roots: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+        self,
+        client: TestClient,
+        model: ScriptedModel,
+        roots: tuple[Path, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The ordering of the save and the append, which is only visible when
         the save fails.
@@ -1042,7 +1111,7 @@ class TestDeltas:
         model.replies = [_reply(_call("SetBassMotion", motion="sparse"))]
         self._deltas(client, created, draft_id=child, feedback="denser bass", sketch=False)
 
-        assert "duration_seconds=90s" in _prompt(model, 1)
+        assert "duration_seconds=90s" in _reader_prompt(model, 0)
 
     def test_the_keyword_table_reads_them_when_there_is_not(
         self, client: TestClient, model: ScriptedModel
@@ -1065,7 +1134,9 @@ class TestDeltas:
         assert body["source"] == "keywords"
         assert body["applied"] == [_SPARSE]
         assert "no language model is configured" in body["note"]
-        assert len(model.requests) == 1
+        # One turn, and the brief's own reading beside it. The *revision* fell
+        # back to the phrase table, which is what `source == "keywords"` says.
+        assert len(_conductor_requests(model)) == 1
 
     def test_a_sentence_that_names_nothing_is_refused_with_its_own_words(
         self, client: TestClient, model: ScriptedModel
@@ -1287,3 +1358,78 @@ class TestRefusalTranslation:
         assert exc.status_code == 500
         assert "nonsense" in exc.detail
         assert "s1" in exc.detail
+
+
+class TestAPassOwesSomethingToLookAt:
+    """A first turn that only parses must not end the pass with nothing.
+
+    Reported from a real session. The digest came back with a spec of thirteen
+    instruments, a brief-derived seed — and `drafts (0): none yet` after a
+    single turn whose only call was `parse_brief`. The cause was one flag doing
+    two jobs: `auto_finalize` gated the continuation loop as well as the
+    publish, so the workspace turning off automatic publishing also turned off
+    "keep going until there is something to show".
+    """
+
+    def test_a_parse_only_first_turn_is_continued(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        model.replies = [
+            _reply(_call("parse_brief"), content="Reading the brief first."),
+            _reply(_call("draft", n=2), content="Two readings of it."),
+        ]
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief", "auto"]
+        assert len(body["drafts"]) == 2, "the pass ended with nothing to look at"
+        assert body["finalized_job_id"] is None, "choosing is the user's, not the harness's"
+
+    def test_the_continuation_is_not_told_to_publish(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """The other half of the same conflation.
+
+        `trigger="auto"` used to mean "publish if you can", because the only
+        caller that produced one had asked for auto-finalize. A workspace
+        continuation is asked for a different reason, and a model told to hurry
+        would take the choice from the user it is drafting for.
+        """
+        model.replies = [
+            _reply(_call("parse_brief")),
+            _reply(_call("draft", n=2)),
+        ]
+        client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        )
+
+        continuation = _turn_prompt(model, 1)
+        assert "do not publish" in continuation
+        assert "publish it" not in continuation
+
+    def test_a_pass_that_already_drafted_is_not_continued(
+        self, client: TestClient, model: ScriptedModel, rendered: list[dict[str, Any]]
+    ) -> None:
+        """Once there are candidates the harness stops asking: the choice is the
+        user's, and a second turn would be the model choosing for them."""
+        model.replies = [_reply(_call("parse_brief"), _call("draft", n=2))]
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief"]
+        assert len(body["drafts"]) == 2
+
+    def test_a_failed_turn_ends_the_pass_rather_than_being_retried(
+        self, client: TestClient, model: ScriptedModel
+    ) -> None:
+        """There is nothing to ask when the ask cannot be delivered."""
+        model.replies = [_reply(_call("parse_brief"))]  # the script runs out next
+        body = client.post(
+            "/sessions", json={"brief": "something for a rainy day", "auto_finalize": False}
+        ).json()
+
+        assert [turn["trigger"] for turn in body["turns"]] == ["brief", "auto"]
+        assert body["turns"][-1]["llm_error"] is not None
+        assert body["drafts"] == []

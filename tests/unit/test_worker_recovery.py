@@ -72,9 +72,7 @@ class TestStageCrashCatchAll:
 
 
 class TestMissingJob:
-    def test_pruned_broker_entry_returns_instead_of_crashing(
-        self, storage: JobStorage
-    ) -> None:
+    def test_pruned_broker_entry_returns_instead_of_crashing(self, storage: JobStorage) -> None:
         """A broker entry can outlive its job directory: `run_job` must
         report it and return rather than crash on the unbound `job` the
         crash handler would otherwise reach for.

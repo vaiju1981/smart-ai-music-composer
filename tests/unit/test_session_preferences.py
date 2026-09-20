@@ -445,7 +445,9 @@ class TestTheLogIsItsOwnDocument:
         with pytest.raises(ValueError, match="requests_source"):
             log.rows()
 
-    def test_a_row_whose_delta_is_not_a_request_is_refused_on_load(self, log: PreferenceLog) -> None:
+    def test_a_row_whose_delta_is_not_a_request_is_refused_on_load(
+        self, log: PreferenceLog
+    ) -> None:
         self._written(log)
         _rewrite_first_row(log, delta={"knob": "SetSaxophone"})
 

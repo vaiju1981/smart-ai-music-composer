@@ -13,8 +13,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
-ruff check src tests
-ruff format --check src tests
+ruff check .
+ruff format --check .
 mypy src
 ```
 
@@ -44,22 +44,34 @@ MIT for our code. Third-party dependencies and assets are tracked in §4 of [`do
 
 ## Repo layout
 
+The served page is a local studio with two front doors, and `/health` says
+which one this machine has. With a model configured, a brief opens a
+**session**: the conductor drafts several candidates, the page shows each one's
+sketch, its thirteen quality measurements and the bars it missed, and you judge,
+edit and publish the one you want. Without a model the same brief is composed
+once, straight through — the Phase 1 path, unchanged.
+
 - `src/saimc/` — Python package
   - `spec.py` — `CompositionSpec` Pydantic schema
   - `canonical.py` — canonical JSON serializer for reproducibility (§6)
   - `llm/` — `LLMClient` interface, `OllamaAdapter`, fallback parser
   - `parser.py` — top-level prompt → spec orchestration
   - `compose/` — composition engine (NotationScore + PerformancePlan)
+  - `quality.py` — the thirteen-metric musical scorecard
+  - `judge.py` — an independent listener, and how far its order is from the scorecard's
   - `jobs/` — RQ worker + state machine + manifest emission
   - `render/` — audio / sheet / animation renderers
   - `scripts/` — FFmpeg build + other ops scripts
 - `tests/fixtures/parser_benchmark.jsonl` — the 100-prompt benchmark corpus (§8, `docs/parser-benchmark.md`)
 - `tests/unit/` — unit tests
 - `tests/acceptance/` — §8 acceptance suite (release-gate run)
+- `tests/ui/` — the served page, driven in a real browser (`pip install -e ".[ui]"`,
+  then `playwright install chromium`; the suite self-skips without one)
 - `render-service/` — Node + Playwright + OSMD/VexFlow headless notation renderer
 - `scripts/` — repo-level ops scripts (benchmark runner, etc.)
 - `docs/roadmap.md` — architecture and release gates
 - `docs/parser-benchmark.md` — benchmark corpus process
+- `docs/judge.md` — the listening judge and what its number does and does not say
 - `docs/model-fine-tuning.md` — what model work can and cannot change about the music
 - `MODELS.md` — model registry (release gate per §10 #3)
 
