@@ -109,13 +109,14 @@ commit** — this repo's habit for prose the code outgrew:
 *presentation* — draft cards with playable sketches, the scorecard's verdict per
 draft, the arbiter's reasons in plain musical language — is not built.
 
-**Why.** `src/saimc/jobs/static/index.html` has **no test witness in the repo at
-all**: no test reads it, it is served by `jobs/api.py` and that is the whole of its
-coverage. The workspace would be several hundred lines of markup and JS that
-nothing in the suite can see, and its behaviour (fetch, render, poll) cannot be
-witnessed, since the project has neither a browser nor jsdom. Every endpoint it
-needs is built and tested, so this is a surface waiting for a decision about how
-the UI is witnessed — not blocked work.
+**What changed.** The blocker was that `src/saimc/jobs/static/index.html` had
+**no test witness in the repo at all** — nothing read it, and its behaviour
+(fetch, render, poll) could not be observed, since the project had neither a
+browser nor jsdom. `tests/ui/` is now that witness: Chromium (Playwright,
+pinned to the one `render-service` already carries) driving the real page
+against a real uvicorn server, with console errors failing the test. The
+decision about how the UI is witnessed has been made, so what remains is the
+work itself rather than the question in front of it.
 
 ### B2. Draft and session retention is by session age only
 

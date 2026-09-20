@@ -56,6 +56,8 @@ MIT for our code. Third-party dependencies and assets are tracked in §4 of [`do
 - `tests/fixtures/parser_benchmark.jsonl` — the 100-prompt benchmark corpus (§8, `docs/parser-benchmark.md`)
 - `tests/unit/` — unit tests
 - `tests/acceptance/` — §8 acceptance suite (release-gate run)
+- `tests/ui/` — the served page, driven in a real browser (`pip install -e ".[ui]"`,
+  then `playwright install chromium`; the suite self-skips without one)
 - `render-service/` — Node + Playwright + OSMD/VexFlow headless notation renderer
 - `scripts/` — repo-level ops scripts (benchmark runner, etc.)
 - `docs/roadmap.md` — architecture and release gates

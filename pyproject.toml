@@ -63,6 +63,12 @@ render = [
 benchmark = [
     "tenacity==9.0.0",
 ]
+ui = [
+    # The UI suite drives a real browser (`tests/ui`). Pinned to the Playwright
+    # that `render-service/package.json` already depends on, so the repo keeps
+    # one Chromium revision on disk instead of two.
+    "playwright==1.61.0",
+]
 
 [project.scripts]
 # `:_entry` and not `:main` for the four typer CLIs. `main` is the

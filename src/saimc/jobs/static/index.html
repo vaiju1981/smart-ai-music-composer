@@ -434,6 +434,43 @@
     el("error-detail").hidden = false;
     el("error-raw").textContent = job.error.error_code + " (stage: " + job.error.stage + ")\n" + job.error.message;
   }
+  // The score artifact is the one file this page turns into DOM rather than
+  // into text, so it is the one place a byte on disk could become script.
+  // Nothing reaches it today: a CompositionSpec carries no free text, and
+  // neither the sheet stage nor the Node renderer writes a title or a credit
+  // — so the SVG is note glyphs and numbers. That is a property of the
+  // current schema, though, not of this function: the day a title or a lyric
+  // field lands, `innerHTML` here would have been live XSS through an
+  // `onerror` or a `foreignObject`, with nothing in the suite able to see it.
+  //
+  // So the markup is parsed inertly (DOMParser runs no script and fetches no
+  // image), stripped, and only then adopted. The artifact is an HTML fragment
+  // — OSMD wraps its `<svg>` in a positioning `<div>` — which is why it is
+  // parsed as "text/html" and the `<svg>` is taken out of it; `#sheet-holder
+  // svg` styles it either way.
+  var SCRIPTABLE = "script, foreignObject, iframe, object, embed, animate, set";
+  function adoptScore(markup, holder) {
+    var parsed = new DOMParser().parseFromString(markup, "text/html");
+    var svg = parsed.body.querySelector("svg");
+    if (!svg) { throw new Error("the score artifact carries no SVG"); }
+    slice(svg.querySelectorAll(SCRIPTABLE)).forEach(function (node) { node.parentNode.removeChild(node); });
+    slice(svg.querySelectorAll("*")).concat([svg]).forEach(function (node) {
+      slice(node.attributes).forEach(function (attr) {
+        var name = attr.name.toLowerCase();
+        var link = name === "href" || name === "xlink:href";
+        // `on*` is a handler; a link out of the document is a fetch we did
+        // not ask for. A same-document `#id` reference is how `<use>` works
+        // and is kept.
+        if (name.indexOf("on") === 0 || (link && attr.value.trim().charAt(0) !== "#")) {
+          node.removeAttribute(attr.name);
+        }
+      });
+    });
+    holder.textContent = "";
+    holder.appendChild(document.importNode(svg, true));
+  }
+  function slice(collection) { return Array.prototype.slice.call(collection); }
+
   function renderArtifacts(job) {
     previews.style.display = "block";
     var kinds = Object.keys(job.artifacts || {});
@@ -443,7 +480,7 @@
     if (kinds.indexOf("sheet") !== -1) {
       window.fetch(artifactUrl("sheet"))
         .then(function (response) { if (!response.ok) { throw new Error("score unavailable"); } return response.text(); })
-        .then(function (markup) { el("sheet-holder").innerHTML = markup; })
+        .then(function (markup) { adoptScore(markup, el("sheet-holder")); })
         .catch(function () { el("sheet-holder").textContent = "The score preview could not be loaded."; });
     }
     if (job.input_spec) {
