@@ -423,6 +423,59 @@ def compose(spec: CompositionSpec, *, plan: CompositionPlan | None = None) -> En
 # ---------------------------------------------------------------------------
 
 
+def _bass_bar(
+    figure: tuple[tuple[int, int, int], ...] | None,
+    *,
+    anchor: int,
+    chord_root: int,
+    chord_tones: tuple[int, ...],
+    ceiling: int,
+    bar_tick: int,
+    bar_pos: float,
+    ticks_per_bar: int,
+    rng_seed: int,
+) -> list[NoteEvent]:
+    """One bar of the left hand: the slot's figure, sounded.
+
+    Rung 0 states the walk's landing tone on the bar line, and the rungs above
+    it decorate the chord — which is what makes the left hand an accompaniment
+    rather than a new idea every bar.
+
+    `figure` of `None` means the piece's last bar. A close is *stated*, not
+    decorated, so that bar plays the plain figure whatever its slot drew, and
+    the cadence's pinned degree stays where the final bar's harmony already is.
+    """
+    if figure is None:
+        figure = bass_figure_pitches(
+            PLAIN_BASS_FIGURE,
+            anchor=anchor,
+            chord_root=chord_root,
+            chord_tones=chord_tones,
+            ceiling=ceiling,
+        )
+    written = []
+    for figure_index, (offset16, length16, pitch) in enumerate(figure):
+        onset = offset16 * ticks_per_bar // 16
+        written.append(
+            NoteEvent(
+                voice_id=VOICE_BASS,
+                pitch_midi=pitch,
+                tick=bar_tick + onset,
+                duration_ticks=length16 * ticks_per_bar // 16,
+                velocity=shaped_velocity(
+                    # The bar's first note carries the weight; the ones after
+                    # it are answered, not stated.
+                    base=56 if figure_index == 0 else 50,
+                    position=bar_pos,
+                    tick=bar_tick + onset,
+                    ticks_per_bar=ticks_per_bar,
+                    rng_seed=rng_seed,
+                ),
+            )
+        )
+    return written
+
+
 def _slot_offset(slot_index: int, slot_count: int, key_offset: int) -> int:
     """The transposition one slot takes, exempting the final cadence.
 
@@ -1143,39 +1196,20 @@ def _generate_section(
             bar_pos = (cursor + _bar * ticks_per_bar) / max(1, section_ticks)
             is_final_bar = is_final_section and bar_index == total_bars - 1
 
-            # Left hand: the slot's figure, whose rung 0 states the walk's
-            # landing tone on the bar line. A close is stated, not
-            # decorated, so the piece's last bar plays the plain figure
-            # whatever its slot drew — and the cadence's pinned degree
-            # stays where the final bar's harmony already is.
-            figure = bar_figure
-            if is_final_bar:
-                figure = bass_figure_pitches(
-                    PLAIN_BASS_FIGURE,
-                    anchor=bass_pitch,
-                    chord_root=chord_root,
-                    chord_tones=chord_tones,
-                    ceiling=bass.ceiling,
-                )
-            for figure_index, (offset16, length16, pitch) in enumerate(figure):
-                onset = offset16 * ticks_per_bar // 16
-                notes.append(
-                    NoteEvent(
-                        voice_id=VOICE_BASS,
-                        pitch_midi=pitch,
-                        tick=bar_tick + onset,
-                        duration_ticks=length16 * ticks_per_bar // 16,
-                        velocity=shaped_velocity(
-                            # The bar's first note carries the weight;
-                            # the ones after it are answered, not stated.
-                            base=56 if figure_index == 0 else 50,
-                            position=bar_pos,
-                            tick=bar_tick + onset,
-                            ticks_per_bar=ticks_per_bar,
-                            rng_seed=seed_for_variation,
-                        ),
-                    )
-                )
+            # Kept, not just extended: the melody is placed against the bass
+            # *sounding in its own bar*, and these are those notes.
+            bass_bar = _bass_bar(
+                None if is_final_bar else bar_figure,
+                anchor=bass_pitch,
+                chord_root=chord_root,
+                chord_tones=chord_tones,
+                ceiling=bass.ceiling,
+                bar_tick=bar_tick,
+                bar_pos=bar_pos,
+                ticks_per_bar=ticks_per_bar,
+                rng_seed=seed_for_variation,
+            )
+            notes.extend(bass_bar)
 
             # Melody voice: one bar derived from the section's motif.
             # The last bar of the piece resolves at home; a
@@ -1282,7 +1316,7 @@ def _generate_section(
                 apex=is_apex,
                 breathe=breathe,
                 pickup=pickup,
-                bass_pitches=tuple(pitch for _offset, _length, pitch in figure),
+                bass_pitches=tuple(note.pitch_midi for note in bass_bar),
                 prev_leap=last_melody_leap,
             )
             melody_notes.extend(bar_melody)

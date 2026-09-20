@@ -1089,6 +1089,113 @@ def _final_closing_degree(rng: random.Random, *, shape: MelodyShape = DEFAULT_ME
     return 0 if rng.random() < 0.6 else shape.chord_tone_degrees
 
 
+def _voiced_bar(
+    variant: MotifVariant,
+    *,
+    rng: random.Random,
+    bar_ticks: int,
+    chord_tones: tuple[int, ...],
+    closing_degree: int | None,
+    shape: MelodyShape,
+    is_final_bar: bool,
+    short: bool,
+) -> tuple[list[BarSlot], int | None]:
+    """How long the bar is written, and how its slots are voiced.
+
+    Returns the bar's slots and the length its closing note is held to — or
+    `None` where nothing closes. Everything here happens in degree space: a
+    slot's pitch depends on the bar's octave, which depends on the whole bar,
+    so the walk is settled — walked, answered, landed on a chord tone — before
+    any pitch is spelled, and `melody_bar` does the spelling.
+
+    `short` is a bar that ends its phrase: a half cadence or a breath.
+    """
+    # A bar that ends its phrase is a breath shorter than its bar line,
+    # and it is *written* that short: the walk, the rhythm library and
+    # the closing gesture all see `written_ticks`, so the phrase's own
+    # ending is inside the room the phrase has. Truncating a full bar
+    # afterwards was the earlier shape of this and it took that ending
+    # with it — the walk answers a leap with the note after it, so a bar
+    # whose last slot was dropped ended on whatever interval was left
+    # over. Re-measured over the 3-mood x 7-duration x 10-seed grid by
+    # reconstructing the truncation: it drops 1444 slots the rhythm
+    # library had voiced across 4311 bars, and leaves the mean
+    # `leap_recovery_ratio` at 0.8256 against 0.8297 written short, with
+    # the same 13 pieces of 210 below the bar. So the reason to write the
+    # bar short is the dropped notes rather than where the ratio lands — a
+    # note the bar never plays is a note the phrase never had.
+    written_ticks = bar_ticks - BREATH_TICKS if not is_final_bar and short else bar_ticks
+    degrees, durations = _walk_shape(
+        variant,
+        bar_ticks=written_ticks,
+        tone_count=len(chord_tones),
+        closing_degree=closing_degree,
+        shape=shape,
+    )
+    degrees, durations = _land_on_chord(
+        degrees,
+        durations,
+        tone_count=len(chord_tones),
+        closing_degree=closing_degree,
+    )
+    slots = [
+        (sum(durations[:index]), duration, degrees[index])
+        for index, duration in enumerate(durations)
+    ]
+    rhythm_slots: list[BarSlot]
+    if is_final_bar:
+        # The closing bar keeps the motif's own rhythm: the resolution
+        # is the one event that should not be dressed up.
+        rhythm_slots = [(o, d, t, False) for o, d, t in slots]
+    else:
+        rhythm_slots = apply_rhythm(
+            slots,
+            rng=rng,
+            weights=shape.rhythm_weights,
+            remainders=chord_tone_degrees(len(chord_tones)),
+        )
+
+    # The gesture's durations are the last word on the bar, so they are
+    # taken after the rhythm library has re-voiced it — and for the bar
+    # that ends the piece, so is the bar's length.
+    #
+    # A bar that half-closes or breathes has to leave silence the ear
+    # reads as air, and the silence is a named length rather than a
+    # fraction of whatever the bar happened to end on. Halving the last
+    # slot was the first shape of this and it left the breath to the
+    # rhythm library's mercy: a bar closing on a 32nd left a 32nd of
+    # rest, which is a seam, not a breath. The marking pass recorded the
+    # phrase as ended and the listener heard it run straight on. The
+    # named length is now the room `written_ticks` leaves, and the rest
+    # is what is left over — nothing is removed after the bar is written,
+    # so every note the rhythm library voiced is a note the bar plays.
+    closing_ticks: int | None = None
+    if rhythm_slots:
+        last_offset, _last_duration, _last_degree, _last_tie = rhythm_slots[-1]
+        if is_final_bar:
+            # Held to the bar line.
+            closing_ticks = bar_ticks - last_offset
+        # A tie on the bar's last slot holds it into a slot the bar does
+        # not have: the tie that crosses a bar line is drawn later, by
+        # the pass that pairs one bar's last note with the next bar's
+        # first. Left set, the licence pass reads a tie as a group of
+        # two, so the walk leaves the bar looking for a slot beyond it.
+        #
+        # Measured: the rhythm library does not currently produce one.
+        # `_op_tie` marks only the head of a pair, so the final slot is
+        # never a head; removing this clearing leaves all 1080 pieces of
+        # a 3-mood x 9-duration x 40-seed sweep byte-identical, and no
+        # plan rhythm weighting tried made it fire either. It is kept as
+        # the normalisation that makes the bar well-formed by
+        # construction — `_legal_slots`' assert is the matching invariant
+        # — rather than as a repair for a fault that is being reached.
+        if rhythm_slots[-1][3]:
+            offset, duration, degree, _tie = rhythm_slots[-1]
+            rhythm_slots[-1] = (offset, duration, degree, False)
+
+    return rhythm_slots, closing_ticks
+
+
 def melody_bar(
     *,
     band: MelodyBand,
@@ -1170,90 +1277,16 @@ def melody_bar(
     # chord tone, which is what most of the passing-tone licence needs
     # and what the rhythm library then dresses.
     #
-    # A bar that ends its phrase is a breath shorter than its bar line,
-    # and it is *written* that short: the walk, the rhythm library and
-    # the closing gesture all see `written_ticks`, so the phrase's own
-    # ending is inside the room the phrase has. Truncating a full bar
-    # afterwards was the earlier shape of this and it took that ending
-    # with it — the walk answers a leap with the note after it, so a bar
-    # whose last slot was dropped ended on whatever interval was left
-    # over. Re-measured over the 3-mood x 7-duration x 10-seed grid by
-    # reconstructing the truncation: it drops 1444 slots the rhythm
-    # library had voiced across 4311 bars, and leaves the mean
-    # `leap_recovery_ratio` at 0.8256 against 0.8297 written short, with
-    # the same 13 pieces of 210 below the bar. So the reason to write the
-    # bar short is the dropped notes rather than where the ratio lands — a
-    # note the bar never plays is a note the phrase never had.
-    written_ticks = (
-        bar_ticks - BREATH_TICKS if not is_final_bar and (half_cadence or breathe) else bar_ticks
-    )
-    degrees, durations = _walk_shape(
+    rhythm_slots, closing_ticks = _voiced_bar(
         variant,
-        bar_ticks=written_ticks,
-        tone_count=len(chord_tones),
+        rng=rng,
+        bar_ticks=bar_ticks,
+        chord_tones=chord_tones,
         closing_degree=closing_degree,
         shape=shape,
+        is_final_bar=is_final_bar,
+        short=half_cadence or breathe,
     )
-    degrees, durations = _land_on_chord(
-        degrees,
-        durations,
-        tone_count=len(chord_tones),
-        closing_degree=closing_degree,
-    )
-    slots = [
-        (sum(durations[:index]), duration, degrees[index])
-        for index, duration in enumerate(durations)
-    ]
-    rhythm_slots: list[BarSlot]
-    if is_final_bar:
-        # The closing bar keeps the motif's own rhythm: the resolution
-        # is the one event that should not be dressed up.
-        rhythm_slots = [(o, d, t, False) for o, d, t in slots]
-    else:
-        rhythm_slots = apply_rhythm(
-            slots,
-            rng=rng,
-            weights=shape.rhythm_weights,
-            remainders=chord_tone_degrees(len(chord_tones)),
-        )
-
-    # The gesture's durations are the last word on the bar, so they are
-    # taken after the rhythm library has re-voiced it — and for the bar
-    # that ends the piece, so is the bar's length.
-    #
-    # A bar that half-closes or breathes has to leave silence the ear
-    # reads as air, and the silence is a named length rather than a
-    # fraction of whatever the bar happened to end on. Halving the last
-    # slot was the first shape of this and it left the breath to the
-    # rhythm library's mercy: a bar closing on a 32nd left a 32nd of
-    # rest, which is a seam, not a breath. The marking pass recorded the
-    # phrase as ended and the listener heard it run straight on. The
-    # named length is now the room `written_ticks` leaves, and the rest
-    # is what is left over — nothing is removed after the bar is written,
-    # so every note the rhythm library voiced is a note the bar plays.
-    closing_ticks: int | None = None
-    if rhythm_slots:
-        last_offset, _last_duration, _last_degree, _last_tie = rhythm_slots[-1]
-        if is_final_bar:
-            # Held to the bar line.
-            closing_ticks = bar_ticks - last_offset
-        # A tie on the bar's last slot holds it into a slot the bar does
-        # not have: the tie that crosses a bar line is drawn later, by
-        # the pass that pairs one bar's last note with the next bar's
-        # first. Left set, the licence pass reads a tie as a group of
-        # two, so the walk leaves the bar looking for a slot beyond it.
-        #
-        # Measured: the rhythm library does not currently produce one.
-        # `_op_tie` marks only the head of a pair, so the final slot is
-        # never a head; removing this clearing leaves all 1080 pieces of
-        # a 3-mood x 9-duration x 40-seed sweep byte-identical, and no
-        # plan rhythm weighting tried made it fire either. It is kept as
-        # the normalisation that makes the bar well-formed by
-        # construction — `_legal_slots`' assert is the matching invariant
-        # — rather than as a repair for a fault that is being reached.
-        if rhythm_slots[-1][3]:
-            offset, duration, degree, _tie = rhythm_slots[-1]
-            rhythm_slots[-1] = (offset, duration, degree, False)
 
     # An apex bar is placed by height, not by its approach: it is the
     # section's peak, and the top of the band is worth a wide interval
