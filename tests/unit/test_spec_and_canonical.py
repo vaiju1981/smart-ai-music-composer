@@ -17,6 +17,8 @@ from saimc.canonical import (
 from saimc.spec import (
     DURATION_SECONDS_MAX,
     DURATION_SECONDS_MIN,
+    ENSEMBLE_MAX_VOICES,
+    ROLE_LIMITS,
     SPEC_SCHEMA_VERSION,
     TEMPO_BPM_MAX,
     TEMPO_BPM_MIN,
@@ -179,3 +181,49 @@ class TestSpecError:
         e = SpecError(error_code="x", message="y", stage="parsing")
         with pytest.raises(ValidationError):
             e.error_code = "z"  # type: ignore[misc]
+
+
+class TestTheEnsembleCeilingMeetsTheRender:
+    """The spec's ceiling and the render's channel budget are one decision.
+
+    They live in two modules because `render` imports `spec` and a dependency
+    back would be a cycle, so the numbers are written twice and held together
+    here. The spec is written to *meet* the render's bound rather than to guess
+    under it: one melody, twelve harmony, one bass and a kit is fifteen, and
+    fifteen pitched channels is exactly what MIDI leaves once the kit has
+    channel 10.
+    """
+
+    def test_every_voice_the_spec_permits_has_a_channel(self) -> None:
+        from saimc.compose.score import VOICE_HARMONY
+        from saimc.render.audio import MELODIC_CHANNELS, _channel_for_voice
+
+        pitched = ENSEMBLE_MAX_VOICES - ROLE_LIMITS[VoiceRole.PERCUSSION]
+        assert pitched <= len(MELODIC_CHANNELS)
+        # Voice ids are bass=0, melody=1, percussion=2, harmony=3.., so the
+        # highest id a legal ensemble can reach is the last harmony layer's.
+        highest = VOICE_HARMONY + ROLE_LIMITS[VoiceRole.HARMONY] - 1
+        assert _channel_for_voice(highest) in MELODIC_CHANNELS
+
+    def test_one_more_harmony_voice_than_the_spec_allows_would_have_none(self) -> None:
+        """The ceiling is at the bound, not under it: the next voice has no channel."""
+        from saimc.compose.score import VOICE_HARMONY
+        from saimc.render.audio import AudioRenderError, _channel_for_voice
+
+        with pytest.raises(AudioRenderError):
+            _channel_for_voice(VOICE_HARMONY + ROLE_LIMITS[VoiceRole.HARMONY])
+
+    def test_the_largest_legal_ensemble_validates(self) -> None:
+        entries = [{"role": "melody", "instrument": "piano"}]
+        harmonies = [
+            "strings", "choir", "pipe_organ", "celesta", "harp", "flute",
+            "clarinet", "oboe", "trumpet", "french_horn", "trombone", "vibraphone",
+        ]  # fmt: skip
+        assert len(harmonies) == ROLE_LIMITS[VoiceRole.HARMONY]
+        entries += [{"role": "harmony", "instrument": i} for i in harmonies]
+        entries.append({"role": "bass", "instrument": "cello"})
+        entries.append({"role": "percussion", "instrument": "drum_set"})
+        spec = CompositionSpec.model_validate(
+            {"mood": "calming", "duration_seconds": 60, "instrumentation": entries}
+        )
+        assert len(spec.instrumentation) == ENSEMBLE_MAX_VOICES

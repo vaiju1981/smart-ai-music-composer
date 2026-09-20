@@ -142,9 +142,13 @@ class TestTheCeilingIsStated:
             "() => document.getElementById('ensemble-note').textContent.length > 0"
         )
         note = page.locator("#ensemble-note").inner_text()
-        assert "up to 5 voices" in note
-        assert "1 melody" in note
-        assert "2 harmony" in note
+        # The numbers are the next test's business — this one holds that the
+        # sentence is there, names every role, and says what it is about.
+        # Pinning "up to 5 voices" here is what this test did first, and the
+        # ceiling moving to fifteen broke it for no reason worth a failure.
+        assert "voices" in note
+        for role in ("melody", "harmony", "bass", "percussion"):
+            assert role in note
 
     def test_the_sentence_is_built_from_what_the_schema_enforces(
         self, studio: Studio, page: Any

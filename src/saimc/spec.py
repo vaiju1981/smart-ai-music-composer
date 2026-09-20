@@ -211,18 +211,27 @@ ROLE_ORDER: tuple[VoiceRole, ...] = (
 
 ROLE_LIMITS: dict[VoiceRole, int] = {
     VoiceRole.MELODY: 1,
-    VoiceRole.HARMONY: 2,
+    VoiceRole.HARMONY: 12,
     VoiceRole.BASS: 1,
     VoiceRole.PERCUSSION: 1,
 }
 """How many voices each role may have. **This is the whole ensemble ceiling.**
 
-One melody, a pair of harmony voices, a bass and a kit — five instruments, and
-a brief asking for a fifteen-piece band is asking for something this engine
-does not write. That is a property of the engine (`compose/score.py` has four
-voice ids and the harmony bed is the only one that repeats) and of the render
-(each voice takes its own MIDI channel, and melodic voices must stay off
-channel 10).
+One melody, up to twelve harmony voices, a bass and a kit: fifteen instruments,
+which is exactly what MIDI can carry. The kit owns channel 10 and each pitched
+voice takes one of the fifteen that are left, so `render/audio.py`'s
+`MELODIC_CHANNELS` is the real bound and this table is written to meet it
+rather than to guess under it — `test_spec_and_canonical.py` holds the two
+together.
+
+The harmony count is where the room is, and that is a fact about the engine:
+`compose/score.py` has one melody, one bass and one kit, and the harmony bed is
+the only voice that repeats. Twelve was two until a brief asking for "10 to 15
+instruments" came back with four.
+
+**More voices is not more music on its own.** Every layer past the leading one
+writes a sustained pad, so a large ensemble is many instruments playing the same
+chords unless `HarmonyVoices.divisi` distributes them — see `compose/harmony.py`.
 
 A table rather than four comparisons inside the validator, because the numbers
 are asked for in two other places: `/meta` publishes them so the page can state
@@ -329,7 +338,7 @@ class CompositionSpec(BaseModel):
         description=(
             "The ensemble the piece is written for: role-tagged entries "
             "sorted melody-first. Exactly one melody; at most one bass, "
-            "one percussion (drum_set only), and two harmony voices; "
+            "one percussion (drum_set only), and twelve harmony voices; "
             "instruments must be distinct. A bare instrument string is "
             "accepted for backwards compatibility and expands to the "
             "mood's default ensemble."

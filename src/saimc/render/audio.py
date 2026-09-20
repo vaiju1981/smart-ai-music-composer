@@ -398,19 +398,44 @@ def build_smf(
     return midi
 
 
+PERCUSSION_CHANNEL: int = 9
+"""GM channel 10, where the note pitch IS the drum piece."""
+
+MELODIC_CHANNELS: tuple[int, ...] = tuple(c for c in range(16) if c != PERCUSSION_CHANNEL)
+"""Every channel a pitched voice may take, in the order voices take them.
+
+**This tuple is the ensemble's real ceiling.** MIDI has sixteen channels and
+the kit owns one of them, so fifteen pitched voices is the most any
+arrangement can be rendered with, whatever the spec's own limits say.
+"""
+
+
 def _channel_for_voice(voice_id: int, *, percussion: bool = False) -> int:
     """Map a voice ID to a MIDI channel.
 
     Channel 10 (index 9) is the GM percussion kit — melodic voices are
     mapped around it, but a percussion voice (drum set) is pinned
     exactly there: on channel 10 the note pitch IS the drum piece.
+
+    **Refuses past the budget rather than wrapping.** This was
+    `voice_id % 16` with a bump past 9, which is right for the fifteen
+    voices there are channels for and wrong either side of that: voice 15
+    produced channel 16, which mido rejects outright, and voice 16 wrapped
+    silently onto channel 0 — the bass's — so two instruments would have
+    shared a patch and a sustain pedal with nothing to say so. Unreachable
+    while the spec capped an ensemble at five, and a crash the moment that
+    cap moved.
     """
     if percussion:
-        return 9
-    channel = voice_id % 16
-    if channel >= 9:
-        channel += 1
-    return channel
+        return PERCUSSION_CHANNEL
+    if not 0 <= voice_id < len(MELODIC_CHANNELS):
+        raise AudioRenderError(
+            AudioRenderErrorCode.MIDI_BUILD_FAILED,
+            f"voice {voice_id} has no MIDI channel: a kit takes channel 10, which "
+            f"leaves {len(MELODIC_CHANNELS)} for pitched voices (0-"
+            f"{len(MELODIC_CHANNELS) - 1})",
+        )
+    return MELODIC_CHANNELS[voice_id]
 
 
 def _hash_file(path: Path, *, cached: bool = False) -> str:
