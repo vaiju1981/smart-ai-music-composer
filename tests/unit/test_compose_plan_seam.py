@@ -53,7 +53,6 @@ from saimc.compose.harmony import (
     melody_band_for,
     settle_harmony_register,
 )
-from saimc.compose.linter import LintCode
 from saimc.compose.melody import (
     _answer_leaps,
     _apex_starts,
@@ -526,39 +525,44 @@ class TestTheHarmonyKnobsReachTheCodaToo:
             "differ for the reason it gives"
         )
 
-    def test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds(self) -> None:
-        """`(1,)` is the one reading this engine cannot compose at a coda.
+    def test_a_pinned_bass_degree_is_lifted_with_the_chord_it_belongs_to(self) -> None:
+        """The coda's forced tonic sounds, in the key the modulation put it in.
 
-        Pinned because it is the *engine's* answer and not the vocabulary's,
-        and the two have to be told apart. The vocabulary never emits a
-        one-bar pattern — "chords change faster" is `(2, 1, 1)`, for the
-        measured reason that a one-bar pulse reads 0.0 on
-        `harmonic_rhythm_variety` — but a plan built by hand, by a UI control
-        or by a conductor can name one, and what it gets is a named refusal
-        rather than a wrong piece.
+        This replaces `test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds`,
+        which pinned the defect rather than the fix and said to be deleted the
+        day it was fixed. What it recorded was that `(1,)` is the one rhythm
+        the engine could not compose at a coda: a one-bar pattern cuts the coda
+        into one-bar slots, so `_truncate_template_for_coda`'s `bass_degree=0`
+        *sounds* instead of sitting on the zero-bar phantom a cadence leaves
+        behind — and the walk wrote a non-chord tone there.
 
-        The trigger is `_truncate_template_for_coda`'s forced tonic, the
-        `bass_degree=0` on its last kept slot. At the four bars every
-        reachable coda has, that slot is usually the zero-bar phantom
-        `apply_final_cadence` leaves behind and nothing plays it — but a
-        one-bar pattern cuts the coda into one-bar slots, so the pin *sounds*
-        as the coda's second bar and the bass walk writes a non-chord tone
-        there. No other pattern in the vocabulary's own range reaches it.
+        The cause was narrower than that account. A pinned degree was resolved
+        against the key offset left over from the chord pre-resolution loop —
+        the *last* slot's, always 0 — while its chord was resolved against its
+        own. On a modulated final section the two were a different key, so the
+        pin was a tone of the key the piece had left. Only a one-bar pattern
+        made a pin sound early enough for it to matter, which is why that was
+        the only reading that ever failed.
 
-        **A witness, not an endorsement.** The defect is the pin on a slot
-        that can sound, and it belongs to the coda rather than to this knob.
-        The day it is fixed this test fails, and the right answer is to delete
-        it rather than to widen it.
+        Measured across the offsets: before the fix, 0 and 1 composed and 2 and
+        7 raised `chord_tone_violation`. Every landing in the coda is now a
+        tone of its own bar's chord, which is what this asserts, at the offset
+        the old defect fired on.
         """
-        with pytest.raises(CompositionEngineError) as raised:
-            self._compose(harmonic_rhythm=(1,))
-        assert raised.value.code == EngineErrorCode.LINT_FAILED
-        assert [issue.code for issue in raised.value.lint_issues] == [
-            LintCode.CHORD_TONE_VIOLATION
-        ], (
-            "the refusal is no longer the chord-tone violation the forced-slot pin produces, "
-            "so this test's account of the cause is wrong"
-        )
+        output = self._compose(harmonic_rhythm=(1,))
+        ticks = bar_ticks(_CODA_SPEC.time_signature.value)
+        coda_start = self._coda_start(output)
+        landings = {}
+        for note in sorted(output.notation_score.notes, key=lambda n: n.tick):
+            bar = note.tick // ticks
+            if note.voice_id == VOICE_BASS and bar >= coda_start and bar not in landings:
+                landings[bar] = note.pitch_midi
+        assert landings, "the coda wrote no bass, so this asserts nothing"
+        for bar, pitch in landings.items():
+            assert pitch % 12 in output.chord_bars[bar], (
+                f"the coda's bar {bar} lands on {pitch % 12}, which is not in "
+                f"{output.chord_bars[bar]} — a pin resolved against the wrong key"
+            )
 
     def _coda_bass_onsets(self, output: EngineOutput) -> tuple[int, ...]:
         """Every bass onset in the coda, in ticks from the coda's first bar."""

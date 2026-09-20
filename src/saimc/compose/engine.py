@@ -52,8 +52,10 @@ from typing import Any, Final
 
 from saimc.compose.bass import BassRegister, bass_figure_pitches, bass_register
 from saimc.compose.duration import (
+    ArrangementKnobs,
     DurationArrangement,
     DurationUnfulfillableError,
+    SectionArc,
     arrange_for_duration,
     bar_ticks,
     section_seed,
@@ -421,6 +423,359 @@ def compose(spec: CompositionSpec, *, plan: CompositionPlan | None = None) -> En
 # ---------------------------------------------------------------------------
 
 
+def _slot_offset(slot_index: int, slot_count: int, key_offset: int) -> int:
+    """The transposition one slot takes, exempting the final cadence.
+
+    `key_offset` lifts a long piece's final repetition into the new key. The
+    last two slots are the cadence and stay where they are: the piece lifts,
+    and then comes home for its close.
+    """
+    return 0 if slot_index >= slot_count - 2 else key_offset
+
+
+def _resolve_chords(
+    template: ChordTemplate,
+    *,
+    key: KeySignature,
+    key_offset: int,
+    tonic_midi: int,
+) -> tuple[list[tuple[int, tuple[int, ...], int]], list[tuple[int, ...]], list[KeySignature]]:
+    """Every slot's chord, up front, plus the per-bar tables the linter reads.
+
+    Resolved ahead of the writing because a bar can pick up *into* the next
+    chord's register — an anacrusis needs to know what it leads to — and that
+    is not knowable from a loop that resolves as it goes.
+
+    The two tables travel together on purpose: every bar of a slot sounds the
+    same pitch classes, and the linter checks melody and bass against that set
+    while reading its passing-tone licence against the key those classes belong
+    to. A bar whose classes and key came from different places is a bar the
+    linter can judge against a key it is not in.
+    """
+    chords: list[tuple[int, tuple[int, ...], int]] = []
+    bar_pcs: list[tuple[int, ...]] = []
+    bar_keys: list[KeySignature] = []
+    for slot_index, slot in enumerate(template.chords):
+        slot_offset = _slot_offset(slot_index, len(template.chords), key_offset)
+        chord_root = (
+            tonic_midi + slot_offset + chord_root_offset(slot.degree, key, borrowed=slot.borrowed)
+        )
+        chord_tones = _chord_intervals(
+            slot.degree, key, seventh=slot.seventh, borrowed=slot.borrowed
+        )
+        chords.append((chord_root, chord_tones, slot.bars))
+        bar_pcs.extend(
+            tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones}))
+            for _ in range(slot.bars)
+        )
+        bar_keys.extend([transposed_key(key, slot_offset)] * slot.bars)
+    return chords, bar_pcs, bar_keys
+
+
+def _bass_landing(
+    slot: ChordSlot,
+    *,
+    key: KeySignature,
+    tonic_midi: int,
+    key_offset: int,
+    chord_root: int,
+    chord_tones: tuple[int, ...],
+    bass: BassRegister,
+    root_motion: bool,
+    prev_bass: int | None,
+) -> int:
+    """The tone the bar's walk lands on — the figure's rung 0 and the walk's step.
+
+    The pinned degree wins where a cadence pins one; otherwise the walk takes
+    the chord tone nearest where it already was, which is what makes the bass
+    move stepwise through inversions instead of jumping root to root.
+
+    **A pin is a degree, not an octave.** The pinned tone keeps its pitch class
+    and takes the register nearest the line it joins, exactly as every other
+    landing tone is drawn from the register nearest the walk. With the octave
+    fixed as well, the cadence became the one place in the piece the bass
+    leaps, because the walk had no say in where the pin landed. The register
+    filter matters for the same reason: an octave above the walk's ceiling
+    leaves the figure every rung clamped below its own anchor, and the bar
+    loses its bass.
+
+    Without a pin, `root_motion` decides what the landing may choose from. The
+    root alone states a chord change where it happens; every chord tone lets
+    the walk join the last bar by the smallest step and land on an inversion —
+    or on a tone the two chords share, and then the bass does not move at all.
+    Two octaves of candidates keep the walk inside the bass register even in
+    sharp minor keys whose chord roots sit above the middle of the keyboard.
+    """
+    if slot.bass_degree is not None:
+        # A pinned degree belongs to the chord's own table, so a borrowed
+        # chord would pin the other mode's degree.
+        # `test_a_pinned_bass_degree_is_never_a_borrowed_chord` sweeps the
+        # tables and holds that no pin is ever borrowed — the argument is
+        # inert today and correct if that changes.
+        pinned = _octave_down(
+            tonic_midi
+            + key_offset
+            + chord_root_offset(slot.bass_degree, key, borrowed=slot.borrowed),
+            octaves=1,
+        )
+        if prev_bass is None:
+            return pinned
+        in_register = [
+            p
+            for p in (pinned - 12, pinned, pinned + 12)
+            if bass.window.low_midi <= p <= bass.window.high_midi
+        ]
+        last_bass = prev_bass
+        return min(in_register or [pinned], key=lambda p: (abs(p - last_bass), p))
+
+    tones = (0,) if root_motion else chord_tones
+    candidates = [
+        _octave_down(chord_root + tone, octaves=octaves) for tone in tones for octaves in (1, 2)
+    ]
+    candidates = [c for c in candidates if bass.window.low_midi <= c <= bass.window.high_midi]
+    if not candidates:
+        return _octave_down(chord_root, octaves=2)
+    if prev_bass is None:
+        return candidates[0]
+    last_bass = prev_bass
+    return min(candidates, key=lambda c: abs(c - last_bass))
+
+
+def _settle_bed(
+    notes: list[NoteEvent],
+    *,
+    harmony_voices: tuple[tuple[int, str], ...],
+    clearance: int,
+) -> list[NoteEvent]:
+    """Drop the pad clear of the tune, once the tune exists.
+
+    The bed's register is a property of the *finished* piece, not of the
+    section that wrote it: the melody's floor and ceiling are one number each
+    for the whole piece, so the pad is settled against them once, here. It has
+    to wait until every section exists — the tune's band is not known until the
+    tune is — which is the same reason this is a post-pass at all rather than a
+    bound inside `generate_harmony_section`.
+
+    The sort is not incidental. The pass moves notes after the sections sorted
+    them, and a moved note can land under another note of its own voice at the
+    same tick (a pad's fifth folded below the root that stayed). Canonical
+    order is what the engraving and the plan read the score back by, so it is
+    restored here rather than left to the call order of the pass.
+    """
+    melody_pitches = [note.pitch_midi for note in notes if note.voice_id == VOICE_MELODY]
+    if not melody_pitches:
+        return notes
+    settled = settle_harmony_register(
+        notes,
+        melody_floor=min(melody_pitches),
+        melody_ceiling=max(melody_pitches),
+        registers={voice_id: bed_registers(name) for voice_id, name in harmony_voices},
+        clearance=clearance,
+    )
+    settled.sort(key=lambda note: (note.tick, note.voice_id, note.pitch_midi))
+    return settled
+
+
+def _kit(
+    *,
+    plan: CompositionPlan,
+    arrangement: DurationArrangement,
+    time_signature: str,
+    seed: int,
+    long_piece: bool,
+    arc: SectionArc,
+    written: list[NoteEvent],
+) -> list[NoteEvent]:
+    """The drum part, written last because it is written against the bass.
+
+    When the piece is for the kit, the piano stays as the accompaniment and a
+    percussion voice plays the mood's pattern (voice 2, GM channel-10 keys).
+    Styles with A/B variants rotate across sections, matching the chord
+    templates' rule. Meters the library does not cover (5/4, 7/8) get no
+    percussion rather than a wrong pattern.
+
+    **The kit does not open the piece.** The intro rests it for as long as the
+    intro lasts, and `percussion_entry_bar` is the floor under that — the bed
+    and the bass state the groove first and the kit arrives on a downbeat with
+    a crash. A short piece has no intro bars at all, so without the floor it
+    opened on the crash. `generate_percussion` rests everything below
+    `entry_bar` itself, so the two cannot disagree; only bars silent for
+    another reason travel separately.
+
+    A long piece also rests the kit through one mid-piece section, so the
+    texture has a hole in it before it refills.
+    """
+    entry_bar = max(arrangement.intro_bars if long_piece else 0, plan.percussion_entry_bar)
+    rest_bars: set[int] = set()
+    if long_piece:
+        rest_bars.update(
+            range(
+                plan.percussion_rest_section * arrangement.form_bars,
+                (plan.percussion_rest_section + 1) * arrangement.form_bars,
+            )
+        )
+    return generate_percussion(
+        kit=plan.drum_kit(),
+        time_signature=time_signature,
+        form_bars=arrangement.form_bars,
+        repetition_count=arrangement.repetition_count,
+        total_bars=arrangement.total_bars_with_coda,
+        seed=seed,
+        rest_bars=frozenset(rest_bars),
+        entry_bar=entry_bar,
+        # The bass is already written, so the kit is written knowing where it
+        # attacks — see `generate_percussion`.
+        bass_onsets=bass_onsets_by_bar(written, bar_ticks(time_signature)),
+        arc=arc,
+    )
+
+
+def _section_template(
+    spec: CompositionSpec,
+    arrangement: DurationArrangement,
+    plan: CompositionPlan,
+    section_index: int,
+    *,
+    is_final: bool,
+) -> ChordTemplate:
+    """The chords one section plays, and the way it stops.
+
+    Three rewrites, and the order between them is the only subtle part.
+
+    The first section carries the arrangement's own template and later ones
+    cycle the mood's remaining variants (an A/B form), so a repeat differs
+    harmonically and not only in surface rhythm.
+
+    The plan's harmonic rate is cut in *before* the ending is rewritten. A
+    close is two one-bar chords, so re-cutting the bars afterwards would
+    overwrite the cadence the plan just asked for.
+
+    The last repetition lands at home; every earlier one closes the way the
+    plan says, which by default is a half cadence whose V resolves into the
+    next section's I. A phrase that stops mid-thought leaves the bar's harmony
+    unstated and gives that resolution nothing to resolve.
+    """
+    template = (
+        arrangement.template
+        if section_index == 0
+        else get_template_for_form(
+            spec.mood.value, arrangement.form_bars, variant_index=section_index
+        )
+    )
+    template = _with_harmonic_rhythm(template, plan)
+    if is_final:
+        return apply_final_cadence(
+            template, cadence_degree=plan.cadence_degree, seventh=plan.cadence_seventh
+        )
+    return apply_section_close(
+        template,
+        close=plan.section_close,
+        cadence_degree=plan.cadence_degree,
+        seventh=plan.cadence_seventh,
+    )
+
+
+def _seam(
+    section_notes: list[NoteEvent],
+    time_signature: str,
+    *,
+    carried: tuple[int | None, int | None, int | None],
+) -> tuple[int | None, int | None, int | None]:
+    """What the next section joins onto: the bass's landing tone and the tune's last step.
+
+    A section boundary is a bar line, and the bar after it has to join the line
+    the way any other bar does — so these travel across it rather than the next
+    section starting against nothing. `carried` is what came in, returned
+    unchanged for a voice this section did not write, which is how a
+    bass-alone intro hands the melody's seam through to the section that has
+    one.
+
+    The bass carries its **landing** tone, not its last note heard. A figure
+    decorates above its landing tone, so a bar's last note is wherever the
+    figure climbed to, and joining the next chord to *that* would move the walk
+    by the figure's reach instead of by the harmony's step. The landing tone is
+    the last bar's lowest bass note: every rung resolves at or above it, and
+    rung 0 sounds it on the bar line.
+    """
+    prev_bass, prev_melody, prev_melody_leap = carried
+    ticks = bar_ticks(time_signature)
+    bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
+    if bass_notes:
+        last_bar = max(n.tick for n in bass_notes) // ticks
+        prev_bass = min(n.pitch_midi for n in bass_notes if n.tick // ticks == last_bar)
+    melody_notes = [n for n in section_notes if n.voice_id == VOICE_MELODY]
+    if melody_notes:
+        prev_melody = melody_notes[-1].pitch_midi
+        prev_melody_leap = (
+            melody_notes[-1].pitch_midi - melody_notes[-2].pitch_midi
+            if len(melody_notes) >= 2
+            else None
+        )
+    return prev_bass, prev_melody, prev_melody_leap
+
+
+def _terraced(
+    notes: list[NoteEvent],
+    section_index: int,
+    arrangement: DurationArrangement,
+    arc: SectionArc,
+) -> list[NoteEvent]:
+    """A section's notes at its step of the arc.
+
+    Terraced rather than continuous: the section's whole dynamic sits at one
+    step, the way a repeat is louder than the statement before it, rather than
+    drifting inside the section. The body and the coda both need this and a
+    scale of 1.0 rebuilds nothing, which is the case the guard is for.
+    """
+    scale = section_velocity_scale(section_index, arrangement.repetition_count, arc)
+    if scale == 1.0:
+        return notes
+    return [
+        replace(note, velocity=max(1, min(127, round(note.velocity * scale)))) for note in notes
+    ]
+
+
+def _measures(arrangement: DurationArrangement, time_signature: str) -> list[Measure]:
+    """One measure per bar, coda included, at a fixed width."""
+    ticks = bar_ticks(time_signature)
+    return [
+        Measure(
+            index=bar_idx,
+            start_tick=bar_idx * ticks,
+            end_tick=(bar_idx + 1) * ticks,
+            time_signature=time_signature,
+        )
+        for bar_idx in range(arrangement.total_bars_with_coda)
+    ]
+
+
+def _ritardando(
+    arrangement: DurationArrangement,
+    knobs: ArrangementKnobs,
+    time_signature: str,
+) -> tuple[TempoPoint, ...]:
+    """The outro slowdown, as a tempo change or as nothing.
+
+    A coda'd piece slows across its whole coda; a long piece without one eases
+    in over its final cadence bars. `arrange_for_duration` already counted the
+    slowdown when it fitted the piece to its length, so the tempo map and the
+    realised duration agree by construction rather than by luck.
+    """
+    if arrangement.ritardando_factor >= 1.0:
+        return ()
+    ticks = bar_ticks(time_signature)
+    if arrangement.coda_bars > 0:
+        change_tick = arrangement.repetition_count * arrangement.form_bars * ticks
+    else:
+        change_tick = (arrangement.total_bars - knobs.ritardando_bars) * ticks
+    return (
+        TempoPoint(
+            tick=change_tick,
+            bpm=round(arrangement.tempo_bpm * arrangement.ritardando_factor, 1),
+        ),
+    )
+
+
 def _build_score(
     spec: CompositionSpec,
     key: KeySignature,
@@ -457,7 +812,6 @@ def _build_score(
         clearance=voices.melody_clearance,
     )
     bass = bass_register(ensemble.bass)
-    measures: list[Measure] = []
     notes: list[NoteEvent] = []
     chord_bars: list[tuple[int, ...]] = []
     bar_keys: list[KeySignature] = []
@@ -488,46 +842,10 @@ def _build_score(
     for section_idx in range(arrangement.repetition_count):
         section_rng = random.Random(section_seed(spec.seed, section_idx))
         section_starts.append(cursor_tick)
-        # Rotate the chord-template variants across repetitions: the
-        # first section carries the arrangement's template, later ones
-        # cycle the mood's remaining variants (an A/B form) so repeats
-        # differ harmonically, not just in surface rhythm.
-        if section_idx == 0:
-            section_template = arrangement.template
-        else:
-            section_template = get_template_for_form(
-                spec.mood.value,
-                arrangement.form_bars,
-                variant_index=section_idx,
-            )
         is_final_section = section_idx == arrangement.repetition_count - 1
-        # The plan's rate, cut in before anything rewrites the section's
-        # ending: a close is two one-bar chords, and re-cutting the bars
-        # after it would overwrite the cadence the plan asked for.
-        section_template = _with_harmonic_rhythm(section_template, plan)
-        if is_final_section:
-            # The last repetition must land at home: rewrite its last
-            # two bars as the plan's cadence (earlier sections may end
-            # open — their V resolves into the next section's I).
-            section_template = apply_final_cadence(
-                section_template,
-                cadence_degree=plan.cadence_degree,
-                seventh=plan.cadence_seventh,
-            )
-        else:
-            # Every earlier section closes the way the plan says, which by
-            # default is a half cadence: a phrase that stops mid-thought
-            # leaves the bar's harmony unstated, and the resolution the
-            # comment above describes had nothing to resolve. The piece's
-            # own ending is not governed by this field — a piece that does
-            # not land at home is a different request than this vocabulary
-            # has a name for.
-            section_template = apply_section_close(
-                section_template,
-                close=plan.section_close,
-                cadence_degree=plan.cadence_degree,
-                seventh=plan.cadence_seventh,
-            )
+        section_template = _section_template(
+            spec, arrangement, plan, section_idx, is_final=is_final_section
+        )
         # Long pieces lift the final repetition by the plan's offset —
         # the piece ends in the new key, so the coda (which follows it)
         # stays lifted too and the ending keeps its cadence.
@@ -564,37 +882,13 @@ def _build_score(
         bar_keys.extend(section_bar_keys)
         # Terraced dynamics: the section's whole dynamic sits at its
         # step of the arc rather than drifting continuously.
-        velocity_scale = section_velocity_scale(section_idx, arrangement.repetition_count, arc)
-        if velocity_scale != 1.0:
-            section_notes = [
-                replace(
-                    note,
-                    velocity=max(1, min(127, round(note.velocity * velocity_scale))),
-                )
-                for note in section_notes
-            ]
+        section_notes = _terraced(section_notes, section_idx, arrangement, arc)
         notes.extend(section_notes)
-        bass_notes = [n for n in section_notes if n.voice_id == VOICE_BASS]
-        if bass_notes:
-            # The walk carries the *landing* tone across the seam, not
-            # the last note heard: a figure decorates above its landing
-            # tone, so the last note of a bar is wherever the figure
-            # climbed to, and joining the next chord to it would move the
-            # walk by the figure's reach rather than by the harmony's
-            # step. The landing tone is the last bar's lowest bass note —
-            # every rung is resolved at or above it, and rung 0 sounds it
-            # on the bar line.
-            ticks = bar_ticks(time_signature)
-            last_bar = max(n.tick for n in bass_notes) // ticks
-            prev_bass = min(n.pitch_midi for n in bass_notes if n.tick // ticks == last_bar)
-        melody_notes = [n for n in section_notes if n.voice_id == VOICE_MELODY]
-        if melody_notes:
-            prev_melody = melody_notes[-1].pitch_midi
-            prev_melody_leap = (
-                melody_notes[-1].pitch_midi - melody_notes[-2].pitch_midi
-                if len(melody_notes) >= 2
-                else None
-            )
+        prev_bass, prev_melody, prev_melody_leap = _seam(
+            section_notes,
+            time_signature,
+            carried=(prev_bass, prev_melody, prev_melody_leap),
+        )
         cursor_tick += arrangement.form_bars * bar_ticks(time_signature)
 
     # Optional coda: append a coda-length tail using the same chord
@@ -643,123 +937,25 @@ def _build_score(
         coda_notes, coda_chord_bars, coda_bar_keys, _ = coda_result
         chord_bars.extend(coda_chord_bars)
         bar_keys.extend(coda_bar_keys)
-        velocity_scale = section_velocity_scale(
-            arrangement.repetition_count, arrangement.repetition_count, arc
-        )
-        if velocity_scale != 1.0:
-            coda_notes = [
-                replace(
-                    note,
-                    velocity=max(1, min(127, round(note.velocity * velocity_scale))),
-                )
-                for note in coda_notes
-            ]
+        # The coda sits at the step *after* the last section's, which is what
+        # makes it the piece's outro rather than one more repeat.
+        coda_notes = _terraced(coda_notes, arrangement.repetition_count, arrangement, arc)
         notes.extend(coda_notes)
         cursor_tick += arrangement.coda_bars * bar_ticks(time_signature)
 
-    # The bed's register is a property of the finished piece, not of the
-    # section that wrote it: the melody's floor and ceiling are one
-    # number each for the whole piece, so the pad is settled against them
-    # once, here. It has to wait until every section exists — the tune's
-    # band is not known until the tune is — which is the same reason it
-    # is a post-pass at all rather than a bound inside
-    # `generate_harmony_section`.
-    melody_pitches = [note.pitch_midi for note in notes if note.voice_id == VOICE_MELODY]
-    if melody_pitches:
-        notes = settle_harmony_register(
-            notes,
-            melody_floor=min(melody_pitches),
-            melody_ceiling=max(melody_pitches),
-            registers={voice_id: bed_registers(name) for voice_id, name in harmony_voices},
-            clearance=voices.melody_clearance,
-        )
-        # The pass moves notes after the sections sorted them, and a moved
-        # note can land under another note of its own voice at the same
-        # tick (a pad's fifth folded below the root that stayed). The
-        # score's canonical order is what the engraving and the plan read
-        # it back by, so it is restored here rather than left to the call
-        # order of the pass.
-        notes.sort(key=lambda note: (note.tick, note.voice_id, note.pitch_midi))
+    notes = _settle_bed(notes, harmony_voices=harmony_voices, clearance=voices.melody_clearance)
 
-    # Drum set: when the piece is written for the kit, the piano stays
-    # as the accompaniment and a percussion voice plays the mood's
-    # rhythm pattern in every bar (voice 2, GM channel-10 keys). Styles
-    # with A/B variants rotate across sections, matching the chord
-    # templates' variation rule. Melodic meters the library does not
-    # cover (5/4, 7/8) get no percussion rather than a wrong pattern.
-    # Long pieces rest the kit during the bass-alone intro bars and one
-    # mid-piece section, so the texture has a hole before it refills.
     if ensemble.percussion == "drum_set":
-        # The kit does not open the piece. The intro rests it for as long
-        # as the intro lasts, and `percussion_entry_bar` is the floor
-        # under that — the bed and the bass state the groove first, and
-        # the kit arrives on a downbeat with a crash. A short piece has
-        # no intro bars at all, so without the floor it opened on the
-        # crash. The pass rests everything below `entry_bar` itself, so
-        # the two cannot disagree; only bars silent for another reason
-        # travel separately.
-        entry_bar = max(
-            arrangement.intro_bars if long_piece else 0,
-            plan.percussion_entry_bar,
-        )
-        rest_bars: set[int] = set()
-        if long_piece:
-            rest_bars.update(
-                range(
-                    plan.percussion_rest_section * arrangement.form_bars,
-                    (plan.percussion_rest_section + 1) * arrangement.form_bars,
-                )
-            )
         notes.extend(
-            generate_percussion(
-                kit=plan.drum_kit(),
+            _kit(
+                plan=plan,
+                arrangement=arrangement,
                 time_signature=time_signature,
-                form_bars=arrangement.form_bars,
-                repetition_count=arrangement.repetition_count,
-                total_bars=arrangement.total_bars_with_coda,
                 seed=rng_base_seed,
-                rest_bars=frozenset(rest_bars),
-                entry_bar=entry_bar,
-                # The bass is already written, so the kit is written knowing
-                # where it attacks — see `generate_percussion`.
-                bass_onsets=bass_onsets_by_bar(notes, bar_ticks(time_signature)),
+                long_piece=long_piece,
                 arc=arc,
+                written=notes,
             )
-        )
-
-    # Build measures with strict 1-based bar indexing, including any
-    # coda bars after the full repetitions.
-    total_bars = arrangement.total_bars_with_coda
-    for bar_idx in range(total_bars):
-        start = bar_idx * bar_ticks(time_signature)
-        measures.append(
-            Measure(
-                index=bar_idx,
-                start_tick=start,
-                end_tick=start + bar_ticks(time_signature),
-                time_signature=time_signature,
-            )
-        )
-
-    # The outro ritardando: a coda'd piece slows across its whole coda;
-    # a long piece without a coda eases in over its final cadence bars.
-    # The arrangement's duration math already included the slowdown, so
-    # the tempo map and the realised duration agree.
-    tempo_changes: tuple[TempoPoint, ...] = ()
-    if arrangement.ritardando_factor < 1.0:
-        if arrangement.coda_bars > 0:
-            change_tick = (
-                arrangement.repetition_count * arrangement.form_bars * bar_ticks(time_signature)
-            )
-        else:
-            change_tick = (arrangement.total_bars - knobs.ritardando_bars) * bar_ticks(
-                time_signature
-            )
-        tempo_changes = (
-            TempoPoint(
-                tick=change_tick,
-                bpm=round(arrangement.tempo_bpm * arrangement.ritardando_factor, 1),
-            ),
         )
 
     return (
@@ -768,9 +964,9 @@ def _build_score(
             key=key,
             time_signature=time_signature,
             tempo_bpm=arrangement.tempo_bpm,
-            measures=measures,
+            measures=_measures(arrangement, time_signature),
             notes=notes,
-            tempo_changes=tempo_changes,
+            tempo_changes=_ritardando(arrangement, knobs, time_signature),
         ),
         tuple(chord_bars),
         tuple(bar_keys),
@@ -855,8 +1051,6 @@ def _generate_section(
     """
     notes: list[NoteEvent] = []
     melody_notes: list[NoteEvent] = []
-    bar_pcs: list[tuple[int, ...]] = []
-    bar_keys: list[KeySignature] = []
     # The melody's last sounding pitch, carried bar to bar so each bar is
     # placed where it continues the line rather than restarting it, and
     # the interval that arrived there — a bar entered after a leap is
@@ -891,30 +1085,9 @@ def _generate_section(
     apex_bar = min(math.ceil(template.bars * shape.apex_position), template.bars - 2)
     motif = generate_motif(rng, bar_ticks=ticks_per_bar, shape=shape)
 
-    # Pre-resolve each slot's chord so a bar can pick up into the next
-    # chord's register (the anacrusis needs to know what it leads to).
-    # `key_offset` transposes the section (the modulation lift on a
-    # long piece's final repetition) but exempts the final cadence —
-    # the piece lifts and then comes home for its close.
-    chords: list[tuple[int, tuple[int, ...], int]] = []
-    for slot_index, slot in enumerate(template.chords):
-        slot_offset = 0 if slot_index >= len(template.chords) - 2 else key_offset
-        degree = slot.degree
-        dur = slot.bars
-        root_offset = chord_root_offset(degree, key, borrowed=slot.borrowed)
-        chord_root = tonic_midi + slot_offset + root_offset
-        chord_tones = _chord_intervals(degree, key, seventh=slot.seventh, borrowed=slot.borrowed)
-        chords.append((chord_root, chord_tones, dur))
-        # The key this slot's harmony belongs to — the score's, or the
-        # lifted one the modulation carries it to. Every bar of the slot
-        # sounds the same pitch classes; the linter checks melody and bass
-        # against this set and reads the passing-tone licence against this
-        # key, so the two travel together.
-        bar_key = transposed_key(key, slot_offset)
-        bar_pcs.extend(
-            tuple(sorted({(chord_root + tone) % 12 for tone in chord_tones})) for _ in range(dur)
-        )
-        bar_keys.extend([bar_key] * dur)
+    chords, bar_pcs, bar_keys = _resolve_chords(
+        template, key=key, key_offset=key_offset, tonic_midi=tonic_midi
+    )
 
     cursor = 0
     bar_index = 0
@@ -941,68 +1114,17 @@ def _generate_section(
         if dur == 0:
             continue
 
-        # Walking bass: the pinned bass degree wins; otherwise the
-        # chord tone nearest the previous bass (root on the first
-        # chord). That tone is the bar's landing tone — the figure's
-        # rung 0 and the walk's own step.
-        if slot.bass_degree is not None:
-            # The cadence pins the degree, not the octave: the pinned
-            # tone keeps its pitch class and takes the register nearest
-            # the line it joins, the way every other chord's landing tone
-            # is drawn from the register nearest the walk. Without this
-            # the fixed octave makes the cadence the one place the bass
-            # leaps, since the walk has no say in where the pin lands.
-            pinned = _octave_down(
-                tonic_midi
-                + slot_offset
-                # A pinned degree belongs to the chord's own table, so a
-                # borrowed chord would pin the other mode's degree.
-                # `test_a_pinned_bass_degree_is_never_a_borrowed_chord`
-                # sweeps the tables and holds that no pin is ever borrowed —
-                # the argument is inert today and correct if that changes.
-                + chord_root_offset(slot.bass_degree, key, borrowed=slot.borrowed),
-                octaves=1,
-            )
-            if prev_bass is None:
-                bass_pitch = pinned
-            else:
-                # The pin is chosen the way the walk's own landing is, and
-                # that includes whose register it may take it in: an octave
-                # above the walk's ceiling leaves the figure every rung
-                # clamped below its own anchor, and the bar loses its bass.
-                in_register = [
-                    p
-                    for p in (pinned - 12, pinned, pinned + 12)
-                    if bass.window.low_midi <= p <= bass.window.high_midi
-                ]
-                last_bass = prev_bass
-                bass_pitch = min(in_register or [pinned], key=lambda p: (abs(p - last_bass), p))
-        else:
-            # Which of the chord's tones the landing may choose from. The
-            # plan's root motion narrows it to the root, so a chord change
-            # is stated where it happens; the alternative is every chord
-            # tone, which lets the walk join the last bar by the smallest
-            # step and land on an inversion — or on a tone the two chords
-            # share, and then the bass does not move at all.
-            tones = (0,) if bass_root_motion else chord_tones
-            # Two octaves of candidates keep the walk inside the bass
-            # register even in sharp minor keys whose chord roots sit
-            # above the middle of the keyboard.
-            candidates = [
-                _octave_down(chord_root + tone, octaves=octaves)
-                for tone in tones
-                for octaves in (1, 2)
-            ]
-            candidates = [
-                c for c in candidates if bass.window.low_midi <= c <= bass.window.high_midi
-            ]
-            if not candidates:
-                bass_pitch = _octave_down(chord_root, octaves=2)
-            elif prev_bass is None:
-                bass_pitch = candidates[0]
-            else:
-                last_bass = prev_bass
-                bass_pitch = min(candidates, key=lambda c: abs(c - last_bass))
+        bass_pitch = _bass_landing(
+            slot,
+            key=key,
+            tonic_midi=tonic_midi,
+            key_offset=_slot_offset(slot_index, len(template.chords), key_offset),
+            chord_root=chord_root,
+            chord_tones=chord_tones,
+            bass=bass,
+            root_motion=bass_root_motion,
+            prev_bass=prev_bass,
+        )
         # The slot's figure, its rungs resolved onto this chord and this
         # landing tone. Every bar of the slot plays it, which is what
         # makes the left hand an accompaniment rather than a new idea

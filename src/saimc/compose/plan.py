@@ -354,18 +354,19 @@ class CompositionPlan:
     the template before the close rewrites the last two bars, so the cadence
     a section ends on survives whatever the pattern says.
 
-    **A one-bar pattern is legal here and refused by the engine on any piece
-    with a coda**, and both halves of that are deliberate. It is a pulse at
-    any rate, so it reads 0.0 on `harmonic_rhythm_variety` — measured, and
-    the reason the vocabulary's "faster" is `(2, 1, 1)`. And it is the only
-    pattern that makes `_truncate_template_for_coda`'s forced tone sound as a
-    bar of its own, where the bass walk writes a non-chord tone: composed, it
-    raises `lint_failed` rather than producing a piece. A plan is thus a
-    document that can be *read* and cannot be *honoured* for this one value,
-    which is the plan's own rule — the refusal is named, and the tool surface
-    carries it to the user per candidate — but it is a fact a writer of this
-    field has to know, so it is here rather than in the phase that found it.
-    See `test_a_one_bar_pattern_is_refused_where_the_codas_forced_tonic_sounds`.
+    **A one-bar pattern is legal and composes, and it is still not what the
+    vocabulary emits.** It is a pulse at any rate, so it reads 0.0 on
+    `harmonic_rhythm_variety` — measured, and the reason the vocabulary's
+    "faster" is `(2, 1, 1)`. What it is *not* any more is unbuildable. This
+    paragraph used to record that the engine refused it on any piece with a
+    coda, because `_truncate_template_for_coda`'s forced tone sounds as a bar
+    of its own under a one-bar pattern and the walk wrote a non-chord tone
+    there. The cause was narrower: a pinned bass degree was resolved against
+    the key offset left over from the chord pre-resolution loop rather than
+    against its own slot's, so on a modulated final section the pin was a tone
+    of the key the piece had left. `_bass_landing` takes the slot's own offset
+    and every coda landing is a tone of its own bar's chord. See
+    `test_a_pinned_bass_degree_is_lifted_with_the_chord_it_belongs_to`.
 
     **`None` is this plan's one deliberate deferral, and it is structural.**
     It means "the template's own rhythm" — the rate the hand-coded
