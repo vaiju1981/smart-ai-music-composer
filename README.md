@@ -44,6 +44,13 @@ MIT for our code. Third-party dependencies and assets are tracked in §4 of [`do
 
 ## Repo layout
 
+The served page is a local studio with two front doors, and `/health` says
+which one this machine has. With a model configured, a brief opens a
+**session**: the conductor drafts several candidates, the page shows each one's
+sketch, its thirteen quality measurements and the bars it missed, and you judge,
+edit and publish the one you want. Without a model the same brief is composed
+once, straight through — the Phase 1 path, unchanged.
+
 - `src/saimc/` — Python package
   - `spec.py` — `CompositionSpec` Pydantic schema
   - `canonical.py` — canonical JSON serializer for reproducibility (§6)

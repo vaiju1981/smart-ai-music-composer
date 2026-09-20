@@ -27,6 +27,7 @@ import os
 import socket
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,9 +36,20 @@ import pytest
 import uvicorn
 
 import saimc.jobs.worker
+import saimc.session.tools as session_tools
 from saimc.jobs.api import create_app
 from saimc.jobs.storage import JobStorage
+from saimc.llm.base import (
+    ChatRequest,
+    ChatResult,
+    LLMError,
+    ParseRequest,
+    ParseResult,
+    ToolCall,
+)
+from saimc.render.audio import AudioArtifact
 from saimc.session.store import SessionStorage
+from saimc.spec import CompositionSpec, Mood
 
 try:  # pragma: no cover - the import is the thing being reported on
     from playwright import sync_api as playwright_api
@@ -100,6 +112,7 @@ class Studio:
     jobs: JobStorage
     sessions: SessionStorage
     app: Any
+    model: Any
 
 
 def _free_port() -> int:
@@ -108,21 +121,97 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-@pytest.fixture
-def studio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Studio]:
-    """Serve the real app on a loopback port for the length of one test.
+class ScriptedModel:
+    """A conductor with a script: one reply per turn, in order, then a refusal.
 
-    Hermetic in the two ways that matter: the broker is never touched
-    (`enqueue_job` is replaced, as every other job test does), and the three
-    storages are under `tmp_path`, so a test's jobs and sessions cannot
-    outlive it or reach the developer's own `var/`.
+    It satisfies `LLMClient` and `ChatClient` on one object, which is what a
+    real build has and what the app's single model slot assumes. The default
+    script is the shape a first turn actually takes — read the brief, draft
+    twice, sketch both — so a test that only wants a session to look at gets
+    one without writing a script of its own.
+
+    Running out of script answers with a named error rather than silence, so a
+    test that scripts too few turns fails as an `llm_unreachable` turn instead
+    of as a page that mysteriously stopped.
     """
-    monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
-    app = create_app(
-        jobs_root=tmp_path / "jobs",
-        sessions_root=tmp_path / "sessions",
-        preferences_root=tmp_path / "preferences",
+
+    model_identifier = "scripted-conductor"
+
+    def __init__(self) -> None:
+        self.spec = CompositionSpec(mood=Mood.CALMING, duration_seconds=30, seed=5)
+        self.replies: list[ChatResult] = list(self.opening_script())
+        self.requests: list[ChatRequest] = []
+
+    @staticmethod
+    def opening_script() -> tuple[ChatResult, ...]:
+        return (
+            ChatResult(
+                content="Reading the brief, then drafting two candidates to compare.",
+                tool_calls=(
+                    ToolCall("parse_brief", {}),
+                    ToolCall("draft", {"n": 2}),
+                    ToolCall("sketch", {"draft_id": "draft-0"}),
+                    ToolCall("sketch", {"draft_id": "draft-1"}),
+                ),
+            ),
+        )
+
+    async def parse(self, request: ParseRequest) -> ParseResult:
+        return ParseResult(parser_source="llm", spec=self.spec)
+
+    async def chat(self, request: ChatRequest) -> ChatResult:
+        self.requests.append(request)
+        if not self.replies:
+            return ChatResult(error=LLMError("llm_unreachable", "the script is empty"))
+        return self.replies.pop(0)
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.fixture
+def sketching(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Stand in for the FluidSynth pass, writing the files it claims to.
+
+    Faked at the renderer's boundary, as `test_session_tools.py` does, so the
+    paths a draft records are the paths a real render writes — which is what
+    makes the page's `<audio src>` a real request to a real route rather than
+    a URL nobody resolves. The bytes are not audio; what is under test is that
+    the sketch is reachable, not that Chromium can decode it.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def _fake(plan: Any, **kwargs: Any) -> AudioArtifact:
+        out_dir: Path = kwargs["out_dir"]
+        job_id: str = kwargs["job_id"]
+        calls.append({"job_id": job_id, **kwargs})
+        (out_dir / f"{job_id}.mid").write_bytes(b"MThd")
+        wav = out_dir / "audio.wav"
+        wav.write_bytes(b"RIFF")
+        ogg = out_dir / "audio.ogg"
+        ogg.write_bytes(b"OggS")
+        return AudioArtifact(
+            primary_path=wav,
+            primary_container="wav",
+            primary_codec="pcm_s16le",
+            primary_sha256="a" * 64,
+            primary_size_bytes=4,
+            ogg_path=ogg,
+            ogg_codec="opus",
+            ogg_sha256="b" * 64,
+            ogg_size_bytes=4,
+        )
+
+    monkeypatch.setattr(session_tools, "render_sketch", _fake)
+    monkeypatch.setattr(
+        session_tools, "resolve_job_soundfont", lambda _voices: Path("/tmp/one.sf2")
     )
+    return calls
+
+
+@contextmanager
+def _serving(app: Any) -> Iterator[str]:
+    """Run `app` on a loopback port for the length of the block."""
     port = _free_port()
     server = uvicorn.Server(
         uvicorn.Config(
@@ -133,10 +222,10 @@ def studio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Studio]:
             lifespan="off",
             # The page uses SSE, never a socket. Leaving the WebSocket
             # protocol on makes uvicorn import `websockets.legacy`, whose
-            # import-time DeprecationWarning is an error under this
-            # project's `filterwarnings` — raised on the server thread,
-            # where it reads as a thread crash rather than as the
-            # third-party deprecation it is.
+            # import-time DeprecationWarning is an error under this project's
+            # `filterwarnings` — raised on the server thread, where it reads
+            # as a thread crash rather than as the third-party deprecation it
+            # is.
             ws="none",
         )
     )
@@ -151,15 +240,64 @@ def studio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Studio]:
     else:  # pragma: no cover - only on a machine that cannot bind at all
         pytest.fail("the test server never started")
     try:
-        yield Studio(
-            url=f"http://127.0.0.1:{port}",
-            jobs=app.state.job_storage,
-            sessions=app.state.session_storage,
-            app=app,
-        )
+        yield f"http://127.0.0.1:{port}"
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: Any) -> Any:
+    """The real app, with its three storages under `tmp_path` and no broker.
+
+    Hermetic in the two ways that matter: `enqueue_job` is replaced, as every
+    other job test does, and nothing written here can outlive the test or
+    reach the developer's own `var/`.
+    """
+    monkeypatch.setattr(saimc.jobs.worker, "enqueue_job", lambda job_id, **_: f"rq:{job_id}")
+    return create_app(
+        jobs_root=tmp_path / "jobs",
+        sessions_root=tmp_path / "sessions",
+        preferences_root=tmp_path / "preferences",
+        session_llm=model,
+    )
+
+
+@pytest.fixture
+def studio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Studio]:
+    """The app as a machine with no model has it: the one-shot front door."""
+    app = _app(tmp_path, monkeypatch, None)
+    with _serving(app) as url:
+        yield Studio(
+            url=url,
+            jobs=app.state.job_storage,
+            sessions=app.state.session_storage,
+            app=app,
+            model=None,
+        )
+
+
+@pytest.fixture
+def conducted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sketching: list[dict[str, Any]]
+) -> Iterator[Studio]:
+    """The app with a conductor: the session front door, on a scripted model.
+
+    The model is scripted rather than live for the reason every other session
+    test scripts one — a turn's content is the thing under test, and a real
+    host would make it the thing least under control. Everything below the
+    model is real: the engine composes, the linter lints, the scorecard
+    measures, and the page reads what they produced.
+    """
+    model = ScriptedModel()
+    app = _app(tmp_path, monkeypatch, model)
+    with _serving(app) as url:
+        yield Studio(
+            url=url,
+            jobs=app.state.job_storage,
+            sessions=app.state.session_storage,
+            app=app,
+            model=model,
+        )
 
 
 @pytest.fixture

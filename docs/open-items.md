@@ -103,20 +103,25 @@ commit** — this repo's habit for prose the code outgrew:
 
 ## B. Deliberately deferred, with a recorded reason
 
-### B1. The "show the top 3" presentation (Phase E5)
+### B1. Ranking is not shown, and the workspace does not say which draft won
 
-**What is open.** The fan-out and its ranking exist and are tested; the
-*presentation* — draft cards with playable sketches, the scorecard's verdict per
-draft, the arbiter's reasons in plain musical language — is not built.
+**What is open.** The arbiter ranks a fan-out (`session/arbiter.py`) and the
+session workspace does not show that order: the cards are in the order the
+drafts were made, and nothing on screen says which one the ratchet would keep.
+`SessionResponse` carries no ranking, so the page cannot show one without
+inventing it — which is why it shows none.
 
-**What changed.** The blocker was that `src/saimc/jobs/static/index.html` had
-**no test witness in the repo at all** — nothing read it, and its behaviour
-(fetch, render, poll) could not be observed, since the project had neither a
-browser nor jsdom. `tests/ui/` is now that witness: Chromium (Playwright,
-pinned to the one `render-service` already carries) driving the real page
-against a real uvicorn server, with console errors failing the test. The
-decision about how the UI is witnessed has been made, so what remains is the
-work itself rather than the question in front of it.
+**What was closed instead.** The presentation itself. `jobs/static/index.html`
+now shows the conductor's turns and tool calls, the candidates with playable
+sketches, all thirteen measurements per draft with the misses marked and read
+back in plain language, the verdict buttons, the edit box and its
+applied/refused/unread report, and publish. `tests/ui/` drives all of it in a
+browser.
+
+**What closing this involves.** Either `rank` on the session surface (the
+arbiter's order, as a list of draft ids with the element that decided each
+pair), or a `compare` call the page makes and renders. The first is the honest
+one: the order is a property of the drafts, not of a question about them.
 
 ### B2. Draft and session retention is by session age only
 

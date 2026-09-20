@@ -67,6 +67,7 @@
     color: var(--muted); background: rgba(16, 19, 29, 0.72); border: 1px solid var(--border);
     border-radius: 999px; font-size: 0.78rem; white-space: nowrap;
   }
+  .pills { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .service-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 4px rgba(111, 119, 138, 0.1); }
   .service-pill.ready .service-dot { background: var(--success); box-shadow: 0 0 0 4px rgba(87, 211, 155, 0.1); }
   .service-pill.warning .service-dot { background: var(--warning); box-shadow: 0 0 0 4px rgba(240, 179, 93, 0.1); }
@@ -155,6 +156,93 @@
   .downloads { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
   .downloads a { padding: 8px 12px; color: var(--muted); text-decoration: none; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 9px; font-size: 0.78rem; font-weight: 620; }
   .downloads a:hover { color: var(--text); border-color: var(--violet); }
+  /* --- the session workspace -------------------------------------------- */
+  .session-panel::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, var(--cyan), var(--violet), transparent 88%); }
+  .spec-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 18px; }
+  .spec-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 10px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; font-size: 0.74rem; }
+  .spec-chip .k { color: var(--faint); letter-spacing: 0.05em; text-transform: uppercase; font-size: 0.64rem; font-weight: 720; }
+  .spec-chip .v { color: var(--text); font-weight: 600; }
+  .drafts { display: grid; gap: 13px; }
+  .draft-card { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 15px; transition: border-color 160ms ease; }
+  .draft-card.is-selected { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(155, 135, 245, 0.09); }
+  .draft-card.is-published { border-color: rgba(87, 211, 155, 0.4); }
+  .draft-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+  .draft-name { margin: 0; font-size: 0.92rem; font-weight: 690; letter-spacing: -0.015em; }
+  .draft-lineage { margin: 3px 0 0; color: var(--faint); font-size: 0.72rem; }
+  .draft-tags { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .tag { padding: 3px 8px; border: 1px solid var(--border-bright); border-radius: 999px; color: var(--muted); font-size: 0.64rem; font-weight: 720; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+  .tag.ok { color: var(--success); border-color: rgba(87, 211, 155, 0.3); }
+  .tag.bad { color: var(--danger); border-color: rgba(240, 120, 120, 0.3); }
+  .tag.note { color: var(--cyan); border-color: rgba(93, 216, 208, 0.3); }
+  .draft-card audio { margin-bottom: 12px; height: 38px; }
+  .no-sketch { margin: 0 0 12px; padding: 10px 12px; color: var(--faint); background: var(--surface-soft); border-radius: 9px; font-size: 0.76rem; }
+  .scorecard { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 5px; }
+  .metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 6px 9px; background: var(--surface-soft); border-left: 2px solid transparent; border-radius: 7px; font-size: 0.71rem; }
+  .metric .m-name { min-width: 0; overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
+  .metric .m-val { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 640; }
+  .metric.miss { border-left-color: var(--warning); background: rgba(240, 179, 93, 0.07); }
+  .metric.miss .m-val { color: var(--warning); }
+  .metric.na .m-val { color: var(--faint); }
+  .findings { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+  .finding { padding: 9px 11px; background: rgba(240, 179, 93, 0.06); border: 1px solid rgba(240, 179, 93, 0.2); border-radius: 9px; font-size: 0.77rem; line-height: 1.5; }
+  .finding .f-axis { margin-right: 7px; color: var(--warning); font-size: 0.64rem; font-weight: 760; letter-spacing: 0.06em; text-transform: uppercase; }
+  .finding .f-hint { margin-top: 6px; color: var(--faint); font-size: 0.73rem; }
+  .finding .f-hint summary { cursor: pointer; color: var(--muted); list-style: none; }
+  .finding .f-hint summary::-webkit-details-marker { display: none; }
+  .finding .f-hint summary::before { content: "▸ "; color: var(--faint); }
+  .finding .f-hint[open] summary::before { content: "▾ "; }
+  .finding .f-hint span { display: block; margin-top: 5px; line-height: 1.6; }
+  .clean-note { margin: 12px 0 0; padding: 9px 11px; color: var(--success); background: rgba(87, 211, 155, 0.06); border: 1px solid rgba(87, 211, 155, 0.2); border-radius: 9px; font-size: 0.77rem; }
+  .draft-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border); }
+  button.vote { min-height: 32px; padding: 5px 11px; color: var(--muted); background: transparent; border: 1px solid var(--border-bright); font-size: 0.78rem; font-weight: 620; }
+  button.vote:hover:not(:disabled) { color: var(--text); border-color: var(--violet); }
+  button.vote.on { color: var(--text); background: rgba(155, 135, 245, 0.14); border-color: var(--violet); }
+  button.tiny { min-height: 32px; padding: 5px 11px; font-size: 0.78rem; }
+  .draft-spacer { flex: 1; }
+  .revise-shell { margin-top: 18px; padding: 13px; background: var(--surface-soft); border: 1px solid var(--border-bright); border-radius: 13px; transition: border-color 160ms ease, box-shadow 160ms ease; }
+  .revise-shell:focus-within { border-color: var(--violet); box-shadow: 0 0 0 4px rgba(155, 135, 245, 0.09); }
+  .revise-label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 0.8rem; font-weight: 620; }
+  #revise { display: block; width: 100%; min-height: 62px; padding: 0; resize: vertical; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 0.92rem; line-height: 1.55; }
+  #revise::placeholder { color: #737b8f; }
+  .revise-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .revise-target { min-width: 0; overflow: hidden; color: var(--faint); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
+  .revise-actions { display: flex; flex-shrink: 0; gap: 7px; }
+  .edit-report { display: grid; gap: 7px; margin-top: 13px; }
+  .edit-line { padding: 9px 11px; border-radius: 9px; font-size: 0.78rem; line-height: 1.5; }
+  .edit-line.applied { color: var(--success); background: rgba(87, 211, 155, 0.06); border: 1px solid rgba(87, 211, 155, 0.2); }
+  .edit-line.refused { color: #ffc98d; background: rgba(240, 179, 93, 0.06); border: 1px solid rgba(240, 179, 93, 0.22); }
+  .edit-line.unread { color: var(--muted); background: var(--surface-soft); border: 1px solid var(--border); }
+  .edit-line .nearest { display: block; margin-top: 4px; color: var(--faint); font-size: 0.73rem; }
+  .turns { margin: 0; padding: 0; list-style: none; }
+  .turn { position: relative; padding: 0 0 16px 20px; border-left: 1px solid var(--border); }
+  .turn:last-child { padding-bottom: 0; border-left-color: transparent; }
+  .turn::before { content: ""; position: absolute; top: 5px; left: -4px; width: 7px; height: 7px; background: var(--violet-strong); border-radius: 50%; }
+  .turn-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .turn-trigger { color: var(--violet); font-size: 0.64rem; font-weight: 760; letter-spacing: 0.08em; text-transform: uppercase; }
+  .turn-meta { margin-left: auto; color: var(--faint); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+  .turn-narration { margin: 6px 0 0; color: var(--text); font-size: 0.83rem; line-height: 1.55; }
+  .turn-error { margin: 6px 0 0; color: var(--danger); font-size: 0.78rem; }
+  .calls { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .call { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; color: var(--muted); font: 0.68rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .call::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+  .call.refused { color: #ffc98d; border-color: rgba(240, 179, 93, 0.28); }
+  .call.refused::before { background: var(--warning); }
+  .call.failed { color: #ffaaaa; border-color: rgba(240, 120, 120, 0.28); }
+  .call.failed::before { background: var(--danger); }
+  .digest { margin-top: 16px; color: var(--faint); font-size: 0.76rem; }
+  .digest summary { cursor: pointer; color: var(--muted); }
+  .digest pre { max-height: 300px; margin: 9px 0 0; padding: 12px; overflow: auto; background: #0b0d14; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font: 0.7rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  .working { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.82rem; }
+  .working::before { content: ""; width: 13px; height: 13px; border: 2px solid rgba(155, 135, 245, 0.28); border-top-color: var(--violet); border-radius: 50%; animation: spin 720ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-drafts { margin: 0; padding: 26px 6px; color: var(--faint); font-size: 0.82rem; text-align: center; }
+  @media (max-width: 640px) {
+    .draft-head { flex-direction: column; }
+    .draft-tags { justify-content: flex-start; }
+    .revise-footer { flex-direction: column; align-items: stretch; }
+    .revise-actions { justify-content: stretch; }
+    .revise-actions button { flex: 1; }
+  }
   .library-panel { box-shadow: none; }
   #history-list { list-style: none; margin: 0; padding: 0; }
   .history-item { border-top: 1px solid var(--border); }
@@ -176,6 +264,7 @@
     .topbar, .workspace { width: min(100% - 24px, 1180px); }
     .topbar { min-height: 66px; }
     .brand-sub { display: none; }
+    #conductor-pill { display: none; }
     .workspace { padding-top: 26px; }
     .panel { padding: 17px; border-radius: 15px; }
     .prompt-footer { align-items: flex-end; }
@@ -195,7 +284,10 @@
       <span class="brand-mark" aria-hidden="true">♪</span>
       <span class="brand-copy"><span class="brand-name">SAIMC Studio</span><span class="brand-sub">Local generative music workspace</span></span>
     </div>
-    <div class="service-pill" id="service-pill" role="status" aria-live="polite"><span class="service-dot" aria-hidden="true"></span><span id="service-text">Checking studio…</span></div>
+    <div class="pills">
+      <div class="service-pill" id="conductor-pill" role="status" aria-live="polite"><span class="service-dot" aria-hidden="true"></span><span id="conductor-text">Checking conductor…</span></div>
+      <div class="service-pill" id="service-pill" role="status" aria-live="polite"><span class="service-dot" aria-hidden="true"></span><span id="service-text">Checking studio…</span></div>
+    </div>
   </header>
   <main class="workspace">
     <div class="main-column">
@@ -205,7 +297,7 @@
       <section class="panel composer-panel">
         <form id="compose-form">
           <div class="section-head">
-            <div><h2>Creative brief</h2><p class="section-kicker">Specific musical direction produces the strongest result.</p></div>
+            <div><h2>Creative brief</h2><p class="section-kicker" id="compose-kicker">Specific musical direction produces the strongest result.</p></div>
             <span class="shortcut">⌘ / Ctrl + Enter</span>
           </div>
           <div class="prompt-shell">
@@ -224,6 +316,47 @@
           <p class="alert" id="form-error" role="alert"></p>
         </form>
       </section>
+      <section class="panel session-panel" id="session-panel" hidden>
+        <div class="section-head">
+          <div>
+            <h2>Session</h2>
+            <p class="section-kicker" id="session-brief"></p>
+          </div>
+          <span class="state-badge" id="session-badge">Drafting</span>
+        </div>
+        <div class="spec-chips" id="spec-chips"></div>
+        <div class="drafts" id="draft-list" aria-live="polite"></div>
+        <p class="empty-drafts" id="empty-drafts" hidden>The conductor made no candidate this turn.</p>
+        <p class="alert" id="session-error" role="alert"></p>
+        <div class="revise-shell">
+          <label class="revise-label" for="revise">Ask for a change</label>
+          <textarea id="revise" maxlength="4096" autocomplete="off" placeholder="Make the melody move more, and take the tempo down a little…"></textarea>
+          <div class="revise-footer">
+            <span class="revise-target" id="revise-target"></span>
+            <div class="revise-actions">
+              <button id="revise-edit" class="secondary tiny" type="button">Edit this draft</button>
+              <button id="revise-send" class="primary tiny" type="button">Ask the conductor</button>
+            </div>
+          </div>
+        </div>
+        <div class="edit-report" id="edit-report"></div>
+      </section>
+
+      <section class="panel" id="conductor-panel" hidden>
+        <div class="section-head">
+          <div>
+            <h2>Conductor log</h2>
+            <p class="section-kicker">Every turn, and the tools it called. No note here was written by the model.</p>
+          </div>
+          <button id="session-undo" class="secondary tiny" type="button">Undo last turn</button>
+        </div>
+        <ol class="turns" id="turn-list"></ol>
+        <details class="digest">
+          <summary>What the conductor is told next</summary>
+          <pre id="digest"></pre>
+        </details>
+      </section>
+
       <section class="panel" id="status-panel" hidden>
         <div class="section-head">
           <div><h2>Production progress</h2><p class="section-kicker">Longer pieces spend most of their time rendering video.</p></div>
@@ -328,9 +461,15 @@
   var remixBtn = el("remix");
   var reproduceBtn = el("reproduce");
 
-  function setJob(id) {
+  // `route` is false when the job is a *part* of something already on screen.
+  // A session that publishes owns the address bar: the piece is one thing the
+  // session did, and sending the user to `#/job/...` would lose the drafts,
+  // the log and the verdicts behind a progress bar.
+  function setJob(id, route) {
     jobId = id;
-    if (window.location.hash !== "#/job/" + id) { window.history.replaceState(null, "", "#/job/" + id); }
+    if (route !== false && window.location.hash !== "#/job/" + id) {
+      window.history.replaceState(null, "", "#/job/" + id);
+    }
     try { localStorage.setItem("saimc.job_id", id); } catch (e) { /* private mode */ }
   }
   function jobFromHash() {
@@ -527,20 +666,581 @@
     } else {
       pill.className = "service-pill offline"; text.textContent = "Studio unavailable";
     }
+    renderConductorPill(snapshot.conductor);
     if (lastJob && lastJob.state === "queued") { stageNoteEl.textContent = stageMessage(lastJob); }
   }
+  // Two front doors, and the pill says which one this machine has. The page
+  // cannot offer a session and discover halfway through that there was no
+  // model to conduct it, so the difference is stated before the brief is
+  // typed rather than after it is sent.
+  function renderConductorPill(info) {
+    var pill = el("conductor-pill");
+    var text = el("conductor-text");
+    var kicker = el("compose-kicker");
+    if (info && info.available) {
+      pill.className = "service-pill ready";
+      text.textContent = "Conductor · " + (info.model || "ready");
+      composeBtn.textContent = "Open a session";
+      kicker.textContent = "The conductor drafts several candidates; you hear them and choose.";
+    } else {
+      pill.className = "service-pill warning";
+      text.textContent = "No conductor";
+      composeBtn.textContent = "Create piece";
+      kicker.textContent = "No model is configured, so a brief is composed once, straight through.";
+    }
+  }
+
   function refreshHealth() {
     window.fetch("/health", { cache: "no-store" })
       .then(function (response) { return response.json(); })
       .then(renderHealth)
       .catch(function () { renderHealth({ status: "unavailable", broker: "unavailable", workers: 0, queue_depth: null }); });
   }
+  // --- the session workspace ---------------------------------------------
+  //
+  // The page has two front doors and the machine decides which one is open.
+  // With a conductor (`/health` says so), a brief opens a *session*: the model
+  // reads it, drafts candidates through the engine, and the user hears them,
+  // judges them, asks for changes, and publishes one. Without a conductor the
+  // same brief is a one-shot job, which is the fallback `POST /jobs` takes for
+  // the same reason. Everything below is the first door; the code above is the
+  // second, and publishing hands control back to it.
+  //
+  // Nothing here composes anything. Every draft on screen came out of the
+  // deterministic engine, and every button is one of the session routes.
+  var METRIC_LABELS = {
+    step_ratio: "Steps in the line",
+    leap_ratio: "Leaps in the line",
+    repeat_ratio: "Repeated notes",
+    leap_recovery_ratio: "Leaps answered",
+    max_leap_semitones: "Widest leap",
+    range_semitones: "Melodic range",
+    distinct_durations: "Rhythmic variety",
+    texture_hierarchy: "Melody over bed",
+    register_separation_semitones: "Register gap",
+    tessitura_overlap_semitones: "Tessitura overlap",
+    bass_onset_patterns: "Bass figures",
+    harmony_pad_coverage: "Bed coverage",
+    harmonic_rhythm_variety: "Harmonic rhythm"
+  };
+  var AXIS_LABELS = { melody: "Melody", accompaniment: "Accompaniment", bass: "Bass", harmony: "Harmony" };
+  var sessionId = null;
+  var session = null;
+  var selectedDraftId = null;
+  var sessionBusy = false;
+  var sessionPanel = el("session-panel");
+  var conductorPanel = el("conductor-panel");
+  var sessionErrEl = el("session-error");
+  var draftListEl = el("draft-list");
+  var reviseEl = el("revise");
+  var reviseSendBtn = el("revise-send");
+  var reviseEditBtn = el("revise-edit");
+  var undoBtn = el("session-undo");
+
+  function conductorAvailable() {
+    return !!(health && health.conductor && health.conductor.available);
+  }
+  function sessionFromHash() {
+    var match = window.location.hash.match(/^#\/session\/([a-zA-Z0-9-]+)$/);
+    return match ? match[1] : null;
+  }
+  function setSession(id) {
+    sessionId = id;
+    if (window.location.hash !== "#/session/" + id) { window.history.replaceState(null, "", "#/session/" + id); }
+    try { localStorage.setItem("saimc.session_id", id); } catch (e) { /* private mode */ }
+  }
+  function setSessionBusy(busy, what) {
+    sessionBusy = busy;
+    composeBtn.disabled = busy;
+    reviseSendBtn.disabled = busy;
+    reviseEditBtn.disabled = busy || !selectedDraftId;
+    undoBtn.disabled = busy;
+    el("session-badge").textContent = busy ? (what || "Working") : sessionBadgeText();
+    el("session-badge").className = "state-badge" + (busy ? "" : sessionBadgeClass());
+  }
+  function sessionBadgeText() {
+    if (!session) { return "Drafting"; }
+    if (session.finalized_job_id) { return "Published"; }
+    return session.drafts.length === 1 ? "1 draft" : session.drafts.length + " drafts";
+  }
+  function sessionBadgeClass() {
+    return session && session.finalized_job_id ? " complete" : "";
+  }
+  // The request helper every session button goes through: one place that
+  // disables the controls, surfaces the server's own sentence on a refusal
+  // (the session routes answer with a `detail` that is written to be read by a
+  // person), and re-enables afterwards whatever happened.
+  function sessionRequest(path, options, what) {
+    sessionErrEl.textContent = "";
+    setSessionBusy(true, what);
+    return window.fetch(path, options)
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (payload) {
+          if (!response.ok) {
+            throw new Error(detailText(payload) || ("the studio answered " + response.status));
+          }
+          return payload;
+        });
+      })
+      .catch(function (error) { sessionErrEl.textContent = error.message; throw error; })
+      .then(function (payload) { setSessionBusy(false); return payload; },
+            function (error) { setSessionBusy(false); throw error; });
+  }
+  // FastAPI's `detail` is a string for our own raises and a list of objects for
+  // a body it rejected; both reach the user, so both are rendered.
+  function detailText(payload) {
+    var detail = payload && payload.detail;
+    if (typeof detail === "string") { return detail; }
+    if (Object.prototype.toString.call(detail) === "[object Array]") {
+      return detail.map(function (item) { return item.msg || JSON.stringify(item); }).join("; ");
+    }
+    return "";
+  }
+  function jsonPost(body) {
+    return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  }
+  // `auto_finalize: false` on both session routes, and that is the workspace's
+  // whole argument. On — the server's default, and what `POST /jobs` keeps —
+  // one brief is one mastered piece and the passive user is served. Here the
+  // candidates *are* the product: publishing one is the user's act, and a pass
+  // that published on its own would have chosen for them before they heard it.
+  function openSession(brief) {
+    return sessionRequest("/sessions", jsonPost({ brief: brief, auto_finalize: false }), "Reading the brief")
+      .then(function (payload) {
+        stopPolling();
+        jobId = null;
+        previews.style.display = "none";
+        statusPanel.hidden = true;
+        setSession(payload.session_id);
+        renderSession(payload);
+      });
+  }
+  function loadSession(id) {
+    return sessionRequest("/sessions/" + encodeURIComponent(id), { cache: "no-store" }, "Loading")
+      .then(function (payload) { setSession(payload.session_id); renderSession(payload); })
+      .catch(function () { /* the message is already on screen */ });
+  }
+  function renderSession(payload) {
+    session = payload;
+    sessionPanel.hidden = false;
+    conductorPanel.hidden = false;
+    el("session-brief").textContent = payload.brief;
+    renderSpecChips(payload.spec);
+    renderDrafts(payload);
+    renderTurns(payload.turns);
+    el("digest").textContent = payload.digest;
+    setSessionBusy(false);
+    if (payload.finalized_job_id) { followPublishedJob(payload.finalized_job_id); }
+  }
+  function renderSpecChips(spec) {
+    var host = el("spec-chips");
+    host.textContent = "";
+    if (!spec) {
+      host.appendChild(chip("brief", "not yet read into a spec"));
+      return;
+    }
+    var rows = [
+      ["mood", spec.mood],
+      ["key", spec.key || "chosen by the engine"],
+      ["tempo", spec.tempo_bpm ? spec.tempo_bpm + " bpm" : "chosen by the engine"],
+      ["metre", spec.time_signature],
+      ["length", formatSeconds(spec.duration_seconds)],
+      ["seed", spec.seed === null || spec.seed === undefined ? "unset" : String(spec.seed)]
+    ];
+    var players = (spec.instrumentation || []).map(function (entry) {
+      return typeof entry === "string" ? entry : entry.instrument;
+    });
+    if (players.length) { rows.push(["ensemble", players.join(", ")]); }
+    rows.forEach(function (row) { if (row[1]) { host.appendChild(chip(row[0], row[1])); } });
+  }
+  function chip(key, value) {
+    var node = document.createElement("span");
+    var k = document.createElement("span");
+    var v = document.createElement("span");
+    node.className = "spec-chip";
+    k.className = "k"; k.textContent = key;
+    v.className = "v"; v.textContent = value;
+    node.appendChild(k); node.appendChild(v);
+    return node;
+  }
+  function formatSeconds(total) {
+    if (!total && total !== 0) { return ""; }
+    var minutes = Math.floor(total / 60);
+    var seconds = total % 60;
+    return minutes ? minutes + " min " + (seconds ? seconds + " sec" : "").trim() : seconds + " sec";
+  }
+  // The latest verdict wins on screen, and the log keeps them all: verdicts
+  // accumulate server-side because changing your mind is informative, but a
+  // card can only show one state.
+  function latestVerdict(draftId) {
+    var found = null;
+    (session.verdicts || []).forEach(function (verdict) {
+      if (verdict.draft_id === draftId && verdict.value) { found = verdict.value; }
+    });
+    return found;
+  }
+  function renderDrafts(payload) {
+    draftListEl.textContent = "";
+    el("empty-drafts").hidden = payload.drafts.length > 0;
+    if (selectedDraftId && !payload.drafts.some(function (d) { return d.draft_id === selectedDraftId; })) {
+      selectedDraftId = null;
+    }
+    if (!selectedDraftId && payload.drafts.length) {
+      selectedDraftId = payload.drafts[payload.drafts.length - 1].draft_id;
+    }
+    payload.drafts.forEach(function (draft, index) {
+      draftListEl.appendChild(draftCard(draft, index, payload));
+    });
+    updateReviseTarget();
+  }
+  function draftCard(draft, index, payload) {
+    var card = document.createElement("article");
+    card.className = "draft-card";
+    card.dataset.draftId = draft.draft_id;
+    if (draft.draft_id === selectedDraftId) { card.className += " is-selected"; }
+    var published = draft.draft_id === payload.finalized_draft_id;
+    if (published) { card.className += " is-published"; }
+
+    var head = document.createElement("div");
+    head.className = "draft-head";
+    var names = document.createElement("div");
+    var name = document.createElement("h3");
+    name.className = "draft-name";
+    name.textContent = "Draft " + (index + 1);
+    names.appendChild(name);
+    var lineage = document.createElement("p");
+    lineage.className = "draft-lineage";
+    lineage.textContent = draft.parent_id
+      ? "a revision, asked for in " + (draft.requests_source || "requests")
+      : "drafted from the brief";
+    if (draft.seed !== null && draft.seed !== undefined) { lineage.textContent += " · seed " + draft.seed; }
+    names.appendChild(lineage);
+    head.appendChild(names);
+
+    var tags = document.createElement("div");
+    tags.className = "draft-tags";
+    tags.appendChild(tag(draft.lint_passed ? "Legal" : "Lint failed", draft.lint_passed ? "ok" : "bad"));
+    var missed = draft.findings.length;
+    tags.appendChild(tag(missed ? missed + " of 13 missed" : "Clears all 13", missed ? "" : "ok"));
+    if (published) { tags.appendChild(tag("Published", "ok")); }
+    head.appendChild(tags);
+    card.appendChild(head);
+
+    if (draft.sketch) {
+      var audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "none";
+      audio.src = draft.sketch.url;
+      card.appendChild(audio);
+    } else {
+      var missing = document.createElement("p");
+      missing.className = "no-sketch";
+      missing.textContent = "No sketch was rendered for this draft, so there is nothing to play yet.";
+      card.appendChild(missing);
+    }
+
+    card.appendChild(scorecard(draft));
+    card.appendChild(findingsList(draft));
+    card.appendChild(draftActions(draft, published));
+    card.addEventListener("click", function (event) {
+      if (event.target.closest("button, audio, a")) { return; }
+      selectDraft(draft.draft_id);
+    });
+    return card;
+  }
+  function tag(text, kind) {
+    var node = document.createElement("span");
+    node.className = "tag" + (kind ? " " + kind : "");
+    node.textContent = text;
+    return node;
+  }
+  // The measurements and the misses are shown together on purpose: the misses
+  // are what a next decision is about, and the numbers are what the misses are
+  // a reading of. A card that showed only a verdict would be asking to be
+  // trusted about music, which is the one thing this page should not do.
+  function scorecard(draft) {
+    var grid = document.createElement("div");
+    grid.className = "scorecard";
+    var missed = {};
+    draft.findings.forEach(function (finding) { missed[finding.metric] = finding; });
+    Object.keys(METRIC_LABELS).forEach(function (metric) {
+      var value = draft.quality[metric];
+      var row = document.createElement("div");
+      var label = document.createElement("span");
+      var reading = document.createElement("span");
+      row.className = "metric" + (missed[metric] ? " miss" : "") + (value === null || value === undefined ? " na" : "");
+      label.className = "m-name";
+      label.textContent = METRIC_LABELS[metric];
+      label.title = metric;
+      reading.className = "m-val";
+      reading.textContent = value === null || value === undefined ? "n/a" : formatMetric(value);
+      row.appendChild(label); row.appendChild(reading);
+      grid.appendChild(row);
+    });
+    return grid;
+  }
+  function formatMetric(value) {
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+  function findingsList(draft) {
+    if (!draft.findings.length) {
+      var clean = document.createElement("p");
+      clean.className = "clean-note";
+      clean.textContent = "This draft clears every quality bar the project measures.";
+      return clean;
+    }
+    var list = document.createElement("ul");
+    list.className = "findings";
+    draft.findings.forEach(function (finding) {
+      var item = document.createElement("li");
+      var axis = document.createElement("span");
+      var hint = document.createElement("details");
+      item.className = "finding";
+      axis.className = "f-axis";
+      axis.textContent = AXIS_LABELS[finding.axis] || finding.axis;
+      item.appendChild(axis);
+      item.appendChild(document.createTextNode(findingSentence(finding)));
+      // The hint names the engine code that writes the offending notes. That
+      // is exactly what a repair loop needs and exactly what a musician does
+      // not, so it is folded away rather than dropped: the reading stays in
+      // plain language and the remedy is one click for whoever wants it.
+      hint.className = "f-hint";
+      var summary = document.createElement("summary");
+      summary.textContent = "How the engine would move it";
+      hint.appendChild(summary);
+      var body = document.createElement("span");
+      body.textContent = finding.hint;
+      hint.appendChild(body);
+      item.appendChild(hint);
+      list.appendChild(item);
+    });
+    return list;
+  }
+  function findingSentence(finding) {
+    var comparator = finding.direction === "min" ? "below" : "above";
+    var where = (finding.bars || []).map(function (span) {
+      return span.first_bar === span.last_bar ? "bar " + span.first_bar : "bars " + span.first_bar + "-" + span.last_bar;
+    });
+    return (METRIC_LABELS[finding.metric] || finding.metric) + " is " + formatMetric(finding.measured) +
+      ", " + comparator + " the " + formatMetric(finding.target) + " this project asks for" +
+      (where.length ? " (" + where.join(", ") + ")" : "") + ". " + finding.rationale + ".";
+  }
+  function draftActions(draft, published) {
+    var row = document.createElement("div");
+    row.className = "draft-actions";
+    var verdict = latestVerdict(draft.draft_id);
+    row.appendChild(voteButton(draft.draft_id, "like", "Keep this one", verdict === "like"));
+    row.appendChild(voteButton(draft.draft_id, "dislike", "Not this one", verdict === "dislike"));
+    var spacer = document.createElement("span");
+    spacer.className = "draft-spacer";
+    row.appendChild(spacer);
+    var select = document.createElement("button");
+    select.type = "button";
+    select.className = "secondary tiny";
+    select.textContent = draft.draft_id === selectedDraftId ? "Selected" : "Select";
+    select.disabled = draft.draft_id === selectedDraftId;
+    select.addEventListener("click", function () { selectDraft(draft.draft_id); });
+    row.appendChild(select);
+    var publish = document.createElement("button");
+    publish.type = "button";
+    publish.className = "primary tiny";
+    publish.textContent = "Publish";
+    // A session publishes once. The server refuses a second publish with the
+    // sentence the conductor reads; the button goes away rather than waiting
+    // to be told that.
+    publish.disabled = !!(session && session.finalized_job_id) || !draft.lint_passed;
+    if (published) { publish.textContent = "Published"; }
+    publish.addEventListener("click", function () { publishDraft(draft.draft_id); });
+    row.appendChild(publish);
+    return row;
+  }
+  function voteButton(draftId, value, label, on) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "vote" + (on ? " on" : "");
+    button.textContent = label;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.addEventListener("click", function () { recordVerdict(draftId, value); });
+    return button;
+  }
+  function selectDraft(draftId) {
+    selectedDraftId = draftId;
+    if (session) { renderDrafts(session); }
+  }
+  function updateReviseTarget() {
+    var index = -1;
+    (session ? session.drafts : []).forEach(function (draft, position) {
+      if (draft.draft_id === selectedDraftId) { index = position; }
+    });
+    el("revise-target").textContent = index === -1
+      ? "No draft selected — the conductor decides what to change."
+      : "Editing draft " + (index + 1) + " directly, or ask the conductor to decide.";
+    reviseEditBtn.disabled = sessionBusy || index === -1;
+  }
+  function recordVerdict(draftId, value) {
+    sessionRequest(
+      "/sessions/" + encodeURIComponent(sessionId) + "/verdict",
+      jsonPost({ draft_id: draftId, value: value }),
+      "Recording"
+    ).then(renderSession).catch(function () { /* reported */ });
+  }
+  function publishDraft(draftId) {
+    sessionRequest(
+      "/sessions/" + encodeURIComponent(sessionId) + "/finalize",
+      jsonPost({ draft_id: draftId }),
+      "Publishing"
+    ).then(function (payload) {
+      followPublishedJob(payload.job_id);
+      return loadSession(sessionId);
+    }).catch(function () { /* reported */ });
+  }
+  function followPublishedJob(id) {
+    if (jobId === id) { return; }
+    setJob(id, false);
+    statusPanel.hidden = false;
+    startPolling();
+    refreshHistory();
+  }
+  function askConductor(message) {
+    return sessionRequest(
+      "/sessions/" + encodeURIComponent(sessionId) + "/message",
+      jsonPost({ message: message, auto_finalize: false }),
+      "Thinking"
+    ).then(function (payload) { reviseEl.value = ""; el("edit-report").textContent = ""; renderSession(payload); });
+  }
+  function editSelected(feedback) {
+    return sessionRequest(
+      "/sessions/" + encodeURIComponent(sessionId) + "/deltas",
+      jsonPost({ draft_id: selectedDraftId, feedback: feedback }),
+      "Revising"
+    ).then(function (payload) {
+      reviseEl.value = "";
+      renderEditReport(payload);
+      selectedDraftId = payload.draft.draft_id;
+      return loadSession(sessionId);
+    });
+  }
+  // An edit answers with three lists and all three are the user's business:
+  // what the engine did, what it refused and what it would take instead, and
+  // what the translator could not read at all. Showing only the first would
+  // make a partly-honoured request look like a whole one.
+  function renderEditReport(payload) {
+    var host = el("edit-report");
+    host.textContent = "";
+    (payload.applied || []).forEach(function (applied) {
+      host.appendChild(editLine("applied", describeDelta(applied)));
+    });
+    (payload.refused || []).forEach(function (refusal) {
+      var line = editLine("refused", refusal.message);
+      if (refusal.nearest) {
+        var nearest = document.createElement("span");
+        nearest.className = "nearest";
+        nearest.textContent = "Nearest it will do: " + refusal.nearest;
+        line.appendChild(nearest);
+      }
+      host.appendChild(line);
+    });
+    (payload.unread || []).forEach(function (phrase) {
+      host.appendChild(editLine("unread", "Not read as a request: " + phrase));
+    });
+    if (payload.sketch_error) {
+      host.appendChild(editLine("refused", "The draft is real but its audio did not render: " + payload.sketch_error));
+    }
+    if (payload.note) { host.appendChild(editLine("unread", payload.note)); }
+  }
+  function editLine(kind, text) {
+    var node = document.createElement("p");
+    node.className = "edit-line " + kind;
+    node.textContent = text;
+    return node;
+  }
+  function describeDelta(delta) {
+    var kind = delta.kind || delta.type || "change";
+    var rest = Object.keys(delta)
+      .filter(function (key) { return key !== "kind" && key !== "type"; })
+      .map(function (key) { return key.replace(/_/g, " ") + " " + delta[key]; });
+    return rest.length ? kind.replace(/_/g, " ") + ": " + rest.join(", ") : kind.replace(/_/g, " ");
+  }
+  function renderTurns(turns) {
+    var list = el("turn-list");
+    list.textContent = "";
+    turns.forEach(function (turn) {
+      var item = document.createElement("li");
+      var head = document.createElement("div");
+      var trigger = document.createElement("span");
+      var meta = document.createElement("span");
+      item.className = "turn";
+      head.className = "turn-head";
+      trigger.className = "turn-trigger";
+      trigger.textContent = turn.trigger;
+      meta.className = "turn-meta";
+      meta.textContent = (turn.model || "model") + " · " + turn.latency_ms + " ms";
+      head.appendChild(trigger); head.appendChild(meta);
+      item.appendChild(head);
+      if (turn.narration) {
+        var narration = document.createElement("p");
+        narration.className = "turn-narration";
+        narration.textContent = turn.narration;
+        item.appendChild(narration);
+      }
+      if (turn.llm_error) {
+        var failed = document.createElement("p");
+        failed.className = "turn-error";
+        failed.textContent = "This turn's model call failed (" +
+          (turn.llm_error.error_code || "error") + "), so it ran no tools: " +
+          (turn.llm_error.message || "");
+        item.appendChild(failed);
+      }
+      if (turn.calls.length) {
+        var calls = document.createElement("div");
+        calls.className = "calls";
+        turn.calls.forEach(function (call) {
+          var node = document.createElement("span");
+          node.className = "call" + (call.outcome === "ok" ? "" : " " + call.outcome);
+          node.textContent = call.name + " · " + call.duration_ms + " ms";
+          node.title = call.outcome === "ok" ? call.result : (call.error_code || "") + " " + call.result;
+          calls.appendChild(node);
+        });
+        item.appendChild(calls);
+      }
+      list.appendChild(item);
+    });
+  }
+  reviseSendBtn.addEventListener("click", function () {
+    var text = reviseEl.value.trim();
+    if (!text || !sessionId) { return; }
+    askConductor(text).catch(function () { /* reported */ });
+  });
+  reviseEditBtn.addEventListener("click", function () {
+    var text = reviseEl.value.trim();
+    if (!text || !sessionId || !selectedDraftId) { return; }
+    editSelected(text).catch(function () { /* reported */ });
+  });
+  reviseEl.addEventListener("keydown", function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); reviseSendBtn.click(); }
+  });
+  undoBtn.addEventListener("click", function () {
+    if (!sessionId) { return; }
+    sessionRequest("/sessions/" + encodeURIComponent(sessionId) + "/undo", { method: "POST" }, "Undoing")
+      .then(renderSession).catch(function () { /* reported */ });
+  });
+
   var pendingSeed = null;
   el("compose-form").addEventListener("submit", function (event) {
     event.preventDefault(); formErrEl.textContent = "";
     var prompt = el("prompt").value.trim();
     if (!prompt) { return; }
     composeBtn.disabled = true;
+    // A brief with a conductor opens a session; one without it, or one that
+    // pins a seed, is the one-shot job. The seed is the same decision
+    // `create_job` makes on the server: a seed asks for one exact piece,
+    // which is the one-shot contract, not a request to be chosen for.
+    if (conductorAvailable() && pendingSeed === null) {
+      openSession(prompt)
+        .then(function () { composeBtn.disabled = false; refreshHealth(); })
+        .catch(function () { composeBtn.disabled = false; });
+      return;
+    }
     var body = { prompt: prompt };
     if (pendingSeed !== null) { body.seed = pendingSeed; }
     pendingSeed = null;
@@ -607,11 +1307,17 @@
   }
   window.addEventListener("hashchange", function () {
     var id = jobFromHash();
-    if (id && id !== jobId) { previews.style.display = "none"; setJob(id); startPolling(); }
+    if (id && id !== jobId) { previews.style.display = "none"; statusPanel.hidden = false; setJob(id); startPolling(); }
+    var openId = sessionFromHash();
+    if (openId && openId !== sessionId) { loadSession(openId); }
   });
-  var bootId = jobFromHash();
-  if (!bootId) { try { bootId = localStorage.getItem("saimc.job_id"); } catch (e) { /* private mode */ } }
-  if (bootId) { setJob(bootId); startPolling(); }
+  var bootSession = sessionFromHash();
+  var bootId = bootSession ? null : jobFromHash();
+  if (!bootSession && !bootId) {
+    try { bootId = localStorage.getItem("saimc.job_id"); } catch (e) { /* private mode */ }
+  }
+  if (bootSession) { loadSession(bootSession); }
+  if (bootId) { statusPanel.hidden = false; setJob(bootId); startPolling(); }
   refreshHealth(); window.setInterval(refreshHealth, HEALTH_MS); refreshHistory();
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refreshHealth(); if (jobId) { startPolling(); } } });
   window.addEventListener("focus", function () { refreshHealth(); if (jobId) { startPolling(); } });

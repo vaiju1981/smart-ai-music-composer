@@ -341,6 +341,33 @@ class TestHealth:
             "broker": "ready",
             "workers": 1,
             "queue_depth": 2,
+            # A test app is built with no model, and the page reads this to
+            # decide which of its two front doors to open.
+            "conductor": {"available": False, "model": None},
+        }
+
+    def test_health_names_the_conductor_the_app_was_built_with(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The identifier is read off the client, not out of configuration.
+
+        A proxy's tag namespace need not be the one that was asked for, so the
+        name worth reporting is the one being served — the same reasoning
+        `benchmark_cli` applies when it records a swept model.
+        """
+        monkeypatch.setattr(
+            saimc.jobs.api,
+            "_service_health",
+            lambda: {"status": "ready", "broker": "ready", "workers": 1, "queue_depth": 0},
+        )
+
+        class Named(_Scripted):
+            model_identifier = "served-tag:latest"
+
+        client = TestClient(create_app(jobs_root=tmp_path, session_llm=Named()))
+        assert client.get("/health").json()["conductor"] == {
+            "available": True,
+            "model": "served-tag:latest",
         }
 
     def test_worker_pid_liveness_rejects_missing_process(self) -> None:

@@ -216,6 +216,15 @@ class SessionResponse(BaseModel):
     brief: str
     spec: dict[str, Any] | None
     finalized_job_id: str | None
+    finalized_draft_id: str | None
+    """The draft that job was queued from, beside the job itself.
+
+    Both halves or neither, for `Session.publication`'s own reason: a session
+    that cannot name the piece it shipped alongside the piece the user heard
+    has published something nobody can point at. This used to send the job
+    half alone, which left every reader — the page included — unable to say
+    which of the candidates on screen is the one that went out.
+    """
     digest: str
     turns: list[TurnResponse]
     drafts: list[DraftResponse]
@@ -568,6 +577,7 @@ def _serialize_session(session: Session) -> SessionResponse:
         brief=session.brief,
         spec=None if session.spec is None else session.spec.model_dump(mode="json"),
         finalized_job_id=session.finalized_job_id,
+        finalized_draft_id=None if session.publication is None else session.publication.draft_id,
         digest=digest(session),
         turns=[_serialize_turn(turn) for turn in session.turns],
         drafts=[_serialize_draft(session.session_id, draft) for draft in session.drafts],
